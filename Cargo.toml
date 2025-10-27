@@ -1,0 +1,45 @@
+[package]
+name = "bovista"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "23"
+bytemuck = { version = "1.14", features = ["derive"] }
+glam = "0.29"
+winit = "0.30"
+pollster = "0.3"
+raw-window-handle = "0.6"
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+numpy = { version = "0.22", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+console_log = "1.0"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlCanvasElement",
+] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python = ["pyo3", "numpy"]
+
+[[example]]
+name = "point_cloud"
+path = "examples/point_cloud.rs"
+
+[[example]]
+name = "image_simple"
+path = "examples/image_simple.rs"

@@ -1,0 +1,9 @@
+/target
+*.zarr/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+web/pkg/
+TODO.txt
+*.md

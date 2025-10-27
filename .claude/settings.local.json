@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Read(//Users/aandersoniii/.cargo/**)",
+      "Bash(cargo install:*)",
+      "Bash($HOME/.cargo/bin/wasm-bindgen:*)",
+      "Bash(~/.asdf/installs/rust/1.86.0/bin/wasm-bindgen:*)",
+      "Bash(cargo check:*)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(maturin develop:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
