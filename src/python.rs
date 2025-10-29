@@ -817,6 +817,7 @@ impl PyTiledImageVisual {
     ///     loader: Python callable that takes (z, y, x) and returns numpy array or None
     ///     max_loaded_chunks: Maximum number of chunks to keep in memory (default: 100)
     #[staticmethod]
+    #[pyo3(signature = (viewer, volume_size, chunk_size, loader, max_loaded_chunks=None))]
     fn from_loader(
         viewer: &PyViewer,
         volume_size: (u32, u32, u32),
@@ -824,7 +825,7 @@ impl PyTiledImageVisual {
         loader: PyObject,
         max_loaded_chunks: Option<usize>,
     ) -> PyResult<Self> {
-        let renderer = viewer.renderer.as_ref()
+        let _renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
         let max_chunks = max_loaded_chunks.unwrap_or(100);
@@ -833,16 +834,6 @@ impl PyTiledImageVisual {
         let loader_arc = Arc::new(loader);
         let loader_fn = Arc::new(move |request: TiledChunkRequest| -> Option<TiledChunkData> {
             Python::with_gil(|py| {
-                // Debug first few calls
-                static CALL_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-                let count = CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if count < 5 {
-                    eprintln!("  🦀 RUST BINDINGS v2 call #{}: ChunkRequest z={}, y={}, x={} -> Python({}, {}, {})",
-                             count, request.chunk_z, request.chunk_y, request.chunk_x,
-                             request.chunk_z, request.chunk_y, request.chunk_x);
-                }
-
-                // Call Python loader with chunk indices
                 // Call Python loader with (z, y, x) indices
                 let result = loader_arc.call1(
                     py,

@@ -11,7 +11,8 @@
       "Bash(maturin develop:*)",
       "WebFetch(domain:docs.rs)",
       "Bash(cargo doc:*)",
-      "Bash(cargo tree:*)"
+      "Bash(cargo tree:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []

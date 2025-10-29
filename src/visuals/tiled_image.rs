@@ -148,10 +148,6 @@ impl TiledImageVisual {
                     // CRITICAL: tuple must be (z_chunk_idx, y_chunk_idx, x_chunk_idx) = (cz, cy, cx)
                     if self.chunk_intersects_slice((cz, cy, cx)) {
                         self.visible_chunks.insert((cz, cy, cx));
-                        // Debug first few visible chunks
-                        if self.visible_chunks.len() <= 3 {
-                            eprintln!("  update_visible_chunks: Added tuple ({},{},{}) to visible set", cz, cy, cx);
-                        }
                     }
                 }
             }
@@ -200,14 +196,6 @@ impl TiledImageVisual {
             chunk_y: y_chunk,
             chunk_z: z_chunk,
         };
-
-        // Debug first few requests (always show first 5)
-        static LOAD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let count = LOAD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count < 5 {
-            eprintln!("  RUST load_chunk #{}: tuple=({},{},{}) -> ChunkRequest(x={}, y={}, z={})",
-                     count, z_chunk, y_chunk, x_chunk, request.chunk_x, request.chunk_y, request.chunk_z);
-        }
 
         if let Some(chunk_data) = (self.loader)(request) {
             // Calculate world-space position
@@ -299,15 +287,8 @@ impl TiledImageVisual {
 
         // Load visible chunks that aren't loaded yet
         let visible: Vec<_> = self.visible_chunks.iter().copied().collect();
-        let mut load_count = 0;
         for chunk_idx in visible {
             if !self.chunks.contains_key(&chunk_idx) {
-                // Debug first few load calls
-                if load_count < 3 {
-                    eprintln!("  prepare_chunks: About to load chunk tuple ({},{},{})",
-                             chunk_idx.0, chunk_idx.1, chunk_idx.2);
-                    load_count += 1;
-                }
                 self.load_chunk(device, queue, surface_format, camera_bind_group_layout, chunk_idx);
             } else {
                 // Update access time
