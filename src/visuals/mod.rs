@@ -1,6 +1,6 @@
 pub mod custom;
 pub mod image;
-pub mod image_strategy;
+mod image_strategy;  // Private - implementation detail of ImageVisual
 pub mod lines;
 pub mod points;
 pub mod tiled_image;
@@ -10,7 +10,7 @@ mod chunk_visual;
 
 pub use custom::CustomVisual;
 pub use image::{ImageVisual, SliceOrientation, SlicePlane};
-pub use image_strategy::{ChunkData, ChunkLoaderFn, ChunkRequest};
 pub use lines::LinesVisual;
 pub use points::PointsVisual;
 pub use tiled_image::TiledImageVisual;
+pub use tiled_image::{ChunkData, ChunkLoaderFn, ChunkRequest};

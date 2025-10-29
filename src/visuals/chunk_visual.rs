@@ -49,7 +49,9 @@ struct ChunkUniforms {
 
 /// A single chunk rendered as a 3D textured quad
 pub struct ChunkVisual {
+    #[allow(dead_code)]  // Held for GPU resource lifetime
     texture: wgpu::Texture,
+    #[allow(dead_code)]  // Held for GPU resource lifetime
     texture_view: wgpu::TextureView,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -339,6 +341,8 @@ impl Visual for ChunkVisual {
         // Update slice geometry if needed
         if self.needs_vertex_update {
             let min = self.world_position;
+            // Use chunk_size (actual voxel dimensions) for world space sizing
+            // This correctly handles anisotropic data where chunks might be 1x275x271
             let max = self.world_position + Vec3::new(
                 self.chunk_size.0 as f32,
                 self.chunk_size.1 as f32,

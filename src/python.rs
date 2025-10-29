@@ -14,6 +14,41 @@ use crate::visuals::tiled_image::{ChunkRequest as TiledChunkRequest, ChunkData a
 // Type alias for visual references
 type VisualRef = Arc<Mutex<dyn Visual>>;
 
+/// Helper macro to downcast a locked Visual to a specific type and execute code
+macro_rules! with_visual {
+    // Mutable access
+    ($visual_ref:expr, $type:ty, $body:expr) => {{
+        let mut visual = $visual_ref.lock()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
+
+        use std::any::Any;
+        let visual_any: &mut dyn Any = &mut *visual;
+        if let Some(typed_visual) = visual_any.downcast_mut::<$type>() {
+            Ok($body(typed_visual))
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                format!("Not a {}", stringify!($type))
+            ))
+        }
+    }};
+
+    // Immutable access (read-only)
+    (ref $visual_ref:expr, $type:ty, $body:expr) => {{
+        let visual = $visual_ref.lock()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
+
+        use std::any::Any;
+        let visual_any: &dyn Any = &*visual;
+        if let Some(typed_visual) = visual_any.downcast_ref::<$type>() {
+            Ok($body(typed_visual))
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                format!("Not a {}", stringify!($type))
+            ))
+        }
+    }};
+}
+
 /// Python wrapper for the Viewer (combines window, renderer, camera, scene)
 #[pyclass]
 pub struct PyViewer {
@@ -730,79 +765,38 @@ impl PyImageVisual {
 
     /// Set the slice plane position along Z axis
     fn set_slice_z(&self, z: f32) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        // Downcast to ImageVisual
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(image_visual) = visual_any.downcast_mut::<ImageVisual>() {
-            image_visual.set_slice_z(z);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not an ImageVisual"))
-        }
+        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
+            v.set_slice_z(z);
+        })
     }
 
     /// Set the slice plane position along Y axis
     fn set_slice_y(&self, y: f32) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(image_visual) = visual_any.downcast_mut::<ImageVisual>() {
-            image_visual.set_slice_y(y);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not an ImageVisual"))
-        }
+        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
+            v.set_slice_y(y);
+        })
     }
 
     /// Set the slice plane position along X axis
     fn set_slice_x(&self, x: f32) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(image_visual) = visual_any.downcast_mut::<ImageVisual>() {
-            image_visual.set_slice_x(x);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not an ImageVisual"))
-        }
+        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
+            v.set_slice_x(x);
+        })
     }
 
     /// Set contrast limits
     fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(image_visual) = visual_any.downcast_mut::<ImageVisual>() {
-            image_visual.set_contrast_limits(min, max);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not an ImageVisual"))
-        }
+        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
+            v.set_contrast_limits(min, max);
+        })
     }
 
     /// Set an arbitrary slice plane
     fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(image_visual) = visual_any.downcast_mut::<ImageVisual>() {
+        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
             let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
-            image_visual.set_slice_plane(plane);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not an ImageVisual"))
-        }
+            v.set_slice_plane(plane);
+        })
     }
 }
 
@@ -839,10 +833,20 @@ impl PyTiledImageVisual {
         let loader_arc = Arc::new(loader);
         let loader_fn = Arc::new(move |request: TiledChunkRequest| -> Option<TiledChunkData> {
             Python::with_gil(|py| {
+                // Debug first few calls
+                static CALL_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let count = CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count < 5 {
+                    eprintln!("  🦀 RUST BINDINGS v2 call #{}: ChunkRequest z={}, y={}, x={} -> Python({}, {}, {})",
+                             count, request.chunk_z, request.chunk_y, request.chunk_x,
+                             request.chunk_z, request.chunk_y, request.chunk_x);
+                }
+
                 // Call Python loader with chunk indices
+                // Call Python loader with (z, y, x) indices
                 let result = loader_arc.call1(
                     py,
-                    (request.chunk_z, request.chunk_y, request.chunk_x)
+                    (request.chunk_z, request.chunk_y, request.chunk_x)  // Already in (z, y, x) order
                 );
 
                 match result {
@@ -867,8 +871,8 @@ impl PyTiledImageVisual {
                             depth: shape[0] as u32,
                         })
                     }
-                    Err(e) => {
-                        eprintln!("Error calling Python chunk loader: {}", e);
+                    Err(_) => {
+                        // Chunk loader failed - this is expected for out-of-bounds chunks
                         None
                     }
                 }
@@ -890,62 +894,31 @@ impl PyTiledImageVisual {
 
     /// Set the slice plane
     fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(tiled_visual) = visual_any.downcast_mut::<TiledImageVisual>() {
+        with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
             let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
-            tiled_visual.set_slice_plane(plane);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not a TiledImageVisual"))
-        }
+            v.set_slice_plane(plane);
+        })
     }
 
     /// Set contrast limits
     fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(tiled_visual) = visual_any.downcast_mut::<TiledImageVisual>() {
-            tiled_visual.set_contrast_limits(min, max);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not a TiledImageVisual"))
-        }
+        with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
+            v.set_contrast_limits(min, max);
+        })
     }
 
     /// Get statistics about loaded chunks
     fn get_stats(&self) -> PyResult<(usize, usize)> {
-        let visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &dyn Any = &*visual;
-        if let Some(tiled_visual) = visual_any.downcast_ref::<TiledImageVisual>() {
-            Ok((tiled_visual.loaded_chunk_count(), tiled_visual.visible_chunk_count()))
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not a TiledImageVisual"))
-        }
+        with_visual!(ref self.inner, TiledImageVisual, |v: &TiledImageVisual| {
+            (v.loaded_chunk_count(), v.visible_chunk_count())
+        })
     }
 
     /// Enable/disable debug visualization (wireframes and color-coded Z-layers)
     fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(tiled_visual) = visual_any.downcast_mut::<TiledImageVisual>() {
-            tiled_visual.set_debug_mode(enabled);
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not a TiledImageVisual"))
-        }
+        with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
+            v.set_debug_mode(enabled);
+        })
     }
 
     /// Prepare chunks (load visible ones, evict old ones)
@@ -954,22 +927,14 @@ impl PyTiledImageVisual {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
-        let mut visual = self.inner.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(tiled_visual) = visual_any.downcast_mut::<TiledImageVisual>() {
-            tiled_visual.prepare_chunks(
+        with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
+            v.prepare_chunks(
                 renderer.device(),
                 renderer.queue(),
                 renderer.surface_format(),
                 renderer.camera_bind_group_layout(),
             );
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Not a TiledImageVisual"))
-        }
+        })
     }
 }
 

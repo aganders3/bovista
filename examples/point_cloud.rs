@@ -36,10 +36,6 @@ impl State {
     async fn new(window: std::sync::Arc<winit::window::Window>) -> Self {
         let mut size = window.inner_size();
 
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&format!("State::new - window.inner_size(): {}x{}",
-            size.width, size.height).into());
-
         // Ensure we have a valid size (handle 0x0 window on WASM)
         if size.width == 0 || size.height == 0 {
             size.width = size.width.max(1);
@@ -90,10 +86,6 @@ impl State {
             .copied()
             .find(|mode| matches!(mode, wgpu::CompositeAlphaMode::Opaque))
             .unwrap_or(surface_caps.alpha_modes[0]);
-
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&format!("Surface format: {:?}, Alpha mode: {:?}",
-            surface_format, alpha_mode).into());
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -305,11 +297,6 @@ impl ApplicationHandler for App {
                 let width = (rect.width().round() * dpr) as u32;
                 let height = (rect.height().round() * dpr) as u32;
 
-                web_sys::console::log_1(&format!("DPR: {}, Rect: {}x{}, Canvas: {}x{}, Setting: {}x{}",
-                    dpr, rect.width(), rect.height(),
-                    canvas_element.width(), canvas_element.height(),
-                    width, height).into());
-
                 canvas_element.set_width(width);
                 canvas_element.set_height(height);
 
@@ -368,7 +355,7 @@ impl ApplicationHandler for App {
                                 Ok(_) => {}
                                 Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                                 Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                                Err(e) => eprintln!("{:?}", e),
+                                Err(_) => {} // Other surface errors can be ignored (transient)
                             }
                             state.window.request_redraw();
                         }

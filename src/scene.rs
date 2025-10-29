@@ -20,23 +20,19 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// Create a new empty scene
     pub fn new() -> Self {
         Self {
             visuals: Vec::new(),
         }
     }
 
-    /// Add a visual to the scene
-    /// Returns an index that can be used to access or remove the visual later
+    /// Returns an index that can be used to remove the visual later
     pub fn add(&mut self, visual: VisualRef) -> usize {
         let index = self.visuals.len();
         self.visuals.push(visual);
         index
     }
 
-    /// Remove a visual at the given index
-    /// Returns the removed visual if the index was valid
     pub fn remove(&mut self, index: usize) -> Option<VisualRef> {
         if index < self.visuals.len() {
             Some(self.visuals.remove(index))

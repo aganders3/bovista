@@ -28,8 +28,11 @@ pub type ChunkLoaderFn = Arc<dyn Fn(ChunkRequest) -> Option<ChunkData> + Send + 
 /// A single chunk of volumetric image data
 struct ImageChunk {
     visual: Arc<Mutex<ChunkVisual>>,
+    #[allow(dead_code)]  // Kept for potential future spatial queries
     chunk_index: (u32, u32, u32),
+    #[allow(dead_code)]  // Kept for potential future spatial queries
     world_min: Vec3,
+    #[allow(dead_code)]  // Kept for potential future spatial queries
     world_max: Vec3,
     last_accessed: usize,  // Frame counter for LRU
 }
@@ -136,13 +139,19 @@ impl TiledImageVisual {
     fn update_visible_chunks(&mut self) {
         self.visible_chunks.clear();
 
-        // For now, simple approach: check all chunks for slice intersection
-        // TODO: Optimize with spatial data structure (octree, etc.)
-        for cz in 0..self.grid_size.2 {
-            for cy in 0..self.grid_size.1 {
-                for cx in 0..self.grid_size.0 {
-                    if self.chunk_intersects_slice((cx, cy, cz)) {
-                        self.visible_chunks.insert((cx, cy, cz));
+        // Simple brute-force approach - could be optimized with octree/BVH for very large grids
+        // Note: grid_size is (z, y, x) so iterate accordingly
+        // Loop variables cz/cy/cx refer to which dimension's chunks we're iterating
+        for cz in 0..self.grid_size.0 {  // Z chunks (dimension 0)
+            for cy in 0..self.grid_size.1 {  // Y chunks (dimension 1)
+                for cx in 0..self.grid_size.2 {  // X chunks (dimension 2)
+                    // CRITICAL: tuple must be (z_chunk_idx, y_chunk_idx, x_chunk_idx) = (cz, cy, cx)
+                    if self.chunk_intersects_slice((cz, cy, cx)) {
+                        self.visible_chunks.insert((cz, cy, cx));
+                        // Debug first few visible chunks
+                        if self.visible_chunks.len() <= 3 {
+                            eprintln!("  update_visible_chunks: Added tuple ({},{},{}) to visible set", cz, cy, cx);
+                        }
                     }
                 }
             }
@@ -151,19 +160,22 @@ impl TiledImageVisual {
 
     /// Check if a chunk intersects with the current slice plane
     fn chunk_intersects_slice(&self, chunk_idx: (u32, u32, u32)) -> bool {
-        let (cx, cy, cz) = chunk_idx;
+        // chunk_idx is (z_chunk, y_chunk, x_chunk)
+        let (z_chunk, y_chunk, x_chunk) = chunk_idx;
 
         // Calculate world-space AABB for this chunk
+        // chunk_size and volume_size are (z, y, x) dimensions
+        // World space needs (x, y, z) for Vec3
         let min = Vec3::new(
-            (cx * self.chunk_size.0) as f32,
-            (cy * self.chunk_size.1) as f32,
-            (cz * self.chunk_size.2) as f32,
+            (x_chunk * self.chunk_size.2) as f32,  // X from dimension 2
+            (y_chunk * self.chunk_size.1) as f32,  // Y from dimension 1
+            (z_chunk * self.chunk_size.0) as f32,  // Z from dimension 0
         );
 
         let max = Vec3::new(
-            ((cx + 1) * self.chunk_size.0).min(self.volume_size.0) as f32,
-            ((cy + 1) * self.chunk_size.1).min(self.volume_size.1) as f32,
-            ((cz + 1) * self.chunk_size.2).min(self.volume_size.2) as f32,
+            ((x_chunk + 1) * self.chunk_size.2).min(self.volume_size.2) as f32,  // X
+            ((y_chunk + 1) * self.chunk_size.1).min(self.volume_size.1) as f32,  // Y
+            ((z_chunk + 1) * self.chunk_size.0).min(self.volume_size.0) as f32,  // Z
         );
 
         // Test if AABB intersects with slice plane
@@ -179,28 +191,40 @@ impl TiledImageVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         chunk_idx: (u32, u32, u32),
     ) -> bool {
-        let (cx, cy, cz) = chunk_idx;
+        // chunk_idx is (z_chunk, y_chunk, x_chunk)
+        let (z_chunk, y_chunk, x_chunk) = chunk_idx;
 
-        // Request chunk data
+        // Create ChunkRequest - this will be passed to Python as (z, y, x)
         let request = ChunkRequest {
-            chunk_x: cx,
-            chunk_y: cy,
-            chunk_z: cz,
+            chunk_x: x_chunk,
+            chunk_y: y_chunk,
+            chunk_z: z_chunk,
         };
+
+        // Debug first few requests (always show first 5)
+        static LOAD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let count = LOAD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 5 {
+            eprintln!("  RUST load_chunk #{}: tuple=({},{},{}) -> ChunkRequest(x={}, y={}, z={})",
+                     count, z_chunk, y_chunk, x_chunk, request.chunk_x, request.chunk_y, request.chunk_z);
+        }
 
         if let Some(chunk_data) = (self.loader)(request) {
             // Calculate world-space position
+            // chunk indices are (z_chunk, y_chunk, x_chunk)
+            // chunk_size is (z, y, x) dimensions
+            // World space needs (x, y, z) for Vec3
             let world_min = Vec3::new(
-                (cx * self.chunk_size.0) as f32,
-                (cy * self.chunk_size.1) as f32,
-                (cz * self.chunk_size.2) as f32,
+                (x_chunk * self.chunk_size.2) as f32,  // X from dimension 2
+                (y_chunk * self.chunk_size.1) as f32,  // Y from dimension 1
+                (z_chunk * self.chunk_size.0) as f32,  // Z from dimension 0
             );
 
             let world_max = world_min
                 + Vec3::new(
-                    chunk_data.width as f32,
-                    chunk_data.height as f32,
-                    chunk_data.depth as f32,
+                    chunk_data.width as f32,   // X extent
+                    chunk_data.height as f32,  // Y extent
+                    chunk_data.depth as f32,   // Z extent
                 );
 
             // Create ChunkVisual for this chunk with 3D positioning
@@ -275,8 +299,15 @@ impl TiledImageVisual {
 
         // Load visible chunks that aren't loaded yet
         let visible: Vec<_> = self.visible_chunks.iter().copied().collect();
+        let mut load_count = 0;
         for chunk_idx in visible {
             if !self.chunks.contains_key(&chunk_idx) {
+                // Debug first few load calls
+                if load_count < 3 {
+                    eprintln!("  prepare_chunks: About to load chunk tuple ({},{},{})",
+                             chunk_idx.0, chunk_idx.1, chunk_idx.2);
+                    load_count += 1;
+                }
                 self.load_chunk(device, queue, surface_format, camera_bind_group_layout, chunk_idx);
             } else {
                 // Update access time

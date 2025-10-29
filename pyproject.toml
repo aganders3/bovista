@@ -13,8 +13,11 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
+    "aiohttp>=3.10.11",
+    "fsspec>=2025.3.0",
     "numpy>=1.20",
     "pyside6>=6.6.3.1",
+    "requests>=2.32.4",
     "scikit-image>=0.21.0",
     "zarr>=2.16.1",
 ]
@@ -26,4 +29,9 @@ module-name = "bovista"
 [tool.uv]
 dev-dependencies = [
     "maturin>=1.7",
+]
+# Cache keys for automatic Rust rebuilds
+cache-keys = [
+    {file = "Cargo.toml"},
+    {file = "src/**/*.rs"}
 ]

@@ -23,7 +23,6 @@ impl Renderer {
         queue: wgpu::Queue,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
-        // Create camera uniform buffer for view-projection matrix
         let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Camera Uniform Buffer"),
             size: std::mem::size_of::<CameraUniforms>() as u64,
@@ -65,7 +64,6 @@ impl Renderer {
         }
     }
 
-    /// Update the camera uniform buffer with the current camera state
     pub fn update_camera(&self, camera: &Camera) {
         let uniforms = CameraUniforms {
             view_proj: camera.view_projection_matrix().to_cols_array_2d(),
@@ -77,7 +75,6 @@ impl Renderer {
         );
     }
 
-    /// Create a depth texture for 3D rendering
     pub fn create_depth_texture(&self, width: u32, height: u32) -> wgpu::TextureView {
         let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
@@ -97,7 +94,6 @@ impl Renderer {
         depth_texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
-    /// Render a scene to the given texture view
     pub fn render(
         &self,
         scene: &Scene,
@@ -144,23 +140,18 @@ impl Renderer {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    /// Get a reference to the GPU device
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
-    /// Get a reference to the GPU queue
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
 
-    /// Get the surface format this renderer is configured for
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.surface_format
     }
 
-    /// Get a reference to the camera bind group layout
-    /// Visuals can use this to ensure compatibility with the renderer's camera system
     pub fn camera_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.camera_bind_group_layout
     }
