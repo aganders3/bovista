@@ -1,13 +1,56 @@
+//! GPU renderer that manages graphics resources and coordinates scene rendering.
+//!
+//! The [`Renderer`] is the central component responsible for:
+//! - Managing GPU device and command queue
+//! - Creating and updating camera uniforms
+//! - Providing shared GPU resources (bind group layouts)
+//! - Coordinating render passes and frame presentation
+
 use crate::{Camera, Scene};
 use bytemuck::{Pod, Zeroable};
 
+/// GPU-compatible camera uniform buffer structure.
+///
+/// This structure is uploaded to the GPU and made available to all shaders
+/// via bind group 0. It contains the combined view-projection matrix for
+/// transforming vertices from world space to clip space.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct CameraUniforms {
+    /// Combined view-projection matrix (projection * view)
     pub view_proj: [[f32; 4]; 4],
 }
 
-/// The main renderer manages GPU resources and coordinates scene rendering
+/// The main renderer manages GPU resources and coordinates scene rendering.
+///
+/// The renderer owns the GPU device and queue, and provides shared resources
+/// like camera bind groups that all visuals can access. It implements a
+/// standard forward rendering pipeline with depth testing.
+///
+/// # Architecture
+///
+/// ```text
+/// ┌──────────────────────────────────────────────────┐
+/// │                   Renderer                       │
+/// ├──────────────────────────────────────────────────┤
+/// │  - WGPU Device & Queue                           │
+/// │  - Camera Uniform Buffer (Bind Group 0)          │
+/// │  - Surface Format Configuration                  │
+/// │  - Depth Texture Management                      │
+/// └──────────────────────────────────────────────────┘
+///         │                       │
+///         ▼                       ▼
+///    ┌─────────┐           ┌──────────┐
+///    │  Scene  │           │  Camera  │
+///    └─────────┘           └──────────┘
+///         │
+///         ▼
+///    ┌─────────────────┐
+///    │  Visual Objects │
+///    │  (Points, Lines,│
+///    │   Images, etc.) │
+///    └─────────────────┘
+/// ```
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,

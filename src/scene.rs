@@ -1,3 +1,9 @@
+//! Scene graph for managing and rendering collections of visual objects.
+//!
+//! The [`Scene`] is a container that manages multiple visual objects and coordinates
+//! their preparation and rendering. It handles platform-specific threading models
+//! (`Arc<Mutex>` on native, `Rc<RefCell>` on WASM).
+
 use crate::visual::Visual;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -8,13 +14,44 @@ use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 
+/// Platform-appropriate reference type for visual objects (thread-safe on native)
 #[cfg(not(target_arch = "wasm32"))]
 type VisualRef = Arc<Mutex<dyn Visual>>;
 
+/// Platform-appropriate reference type for visual objects (single-threaded on WASM)
 #[cfg(target_arch = "wasm32")]
 type VisualRef = Rc<RefCell<dyn Visual>>;
 
-/// A scene contains a collection of visual objects to be rendered
+/// A scene contains a collection of visual objects to be rendered.
+///
+/// The scene manages the lifetime of all visual objects and coordinates their
+/// preparation (updating GPU buffers) and rendering phases. Visuals are stored
+/// in insertion order and rendered in that same order.
+///
+/// # Platform Differences
+///
+/// On native platforms, visuals are stored in `Arc<Mutex<>>` for thread-safety.
+/// On WASM, where threads aren't available, `Rc<RefCell<>>` is used instead.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use bovista::{Scene, PointsVisual};
+/// use std::sync::{Arc, Mutex};
+///
+/// let mut scene = Scene::new();
+///
+/// // Add visuals to the scene
+/// let points = PointsVisual::test_cube(&device, &format, &layout, 10);
+/// let index = scene.add(Arc::new(Mutex::new(points)));
+///
+/// // Prepare and render
+/// scene.prepare(&device, &queue);
+/// scene.render(&mut render_pass);
+///
+/// // Remove a visual
+/// scene.remove(index);
+/// ```
 pub struct Scene {
     visuals: Vec<VisualRef>,
 }

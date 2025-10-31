@@ -1,8 +1,16 @@
+//! Core visual abstraction and vertex buffer utilities.
+//!
+//! This module defines the [`Visual`] trait that all renderable objects must implement,
+//! along with utilities for defining custom vertex layouts.
+
 use glam::Mat4;
 use std::any::Any;
 use wgpu::RenderPass;
 
-/// Describes the format of a vertex attribute
+/// Describes the format of a single vertex attribute.
+///
+/// This enum provides a platform-independent way to describe vertex data
+/// that gets mapped to WGPU vertex formats.
 #[derive(Clone, Debug)]
 pub enum VertexFormat {
     Float32,

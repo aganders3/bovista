@@ -7,7 +7,8 @@ use numpy::PyReadonlyArray3;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    Camera, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane, TiledImageVisual, Visual,
+    Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
+    TiledImageVisual, Visual, VertexBufferLayout,
 };
 use crate::visuals::tiled_image::{ChunkRequest as TiledChunkRequest, ChunkData as TiledChunkData};
 
@@ -270,25 +271,48 @@ impl PyViewer {
         Ok(())
     }
 
-    /// Add a points visual to the scene
-    fn add_points(&mut self, visual: &PyPointsVisual) -> PyResult<usize> {
-        Ok(self.scene.add(visual.inner.clone()))
+    /// Add any visual to the scene
+    ///
+    /// # Arguments
+    ///
+    /// * `visual` - Any visual object (PyPointsVisual, PyLinesVisual, PyImageVisual, PyTiledImageVisual)
+    ///
+    /// # Returns
+    ///
+    /// Index that can be used to remove the visual later
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// # All of these work:
+    /// viewer.add(points_visual)
+    /// viewer.add(lines_visual)
+    /// viewer.add(image_visual)
+    /// viewer.add(tiled_image_visual)
+    /// ```
+    fn add(&mut self, visual: &Bound<'_, PyAny>) -> PyResult<usize> {
+        // Try each visual type
+        if let Ok(points) = visual.extract::<PyRef<PyPointsVisual>>() {
+            return Ok(self.scene.add(points.inner.clone()));
+        }
+        if let Ok(lines) = visual.extract::<PyRef<PyLinesVisual>>() {
+            return Ok(self.scene.add(lines.inner.clone()));
+        }
+        if let Ok(image) = visual.extract::<PyRef<PyImageVisual>>() {
+            return Ok(self.scene.add(image.inner.clone()));
+        }
+        if let Ok(tiled) = visual.extract::<PyRef<PyTiledImageVisual>>() {
+            return Ok(self.scene.add(tiled.inner.clone()));
+        }
+        if let Ok(custom) = visual.extract::<PyRef<PyCustomVisual>>() {
+            return Ok(self.scene.add(custom.inner.clone()));
+        }
+
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "Expected a visual object (PyPointsVisual, PyLinesVisual, PyImageVisual, PyTiledImageVisual, or PyCustomVisual)"
+        ))
     }
 
-    /// Add a lines visual to the scene
-    fn add_lines(&mut self, visual: &PyLinesVisual) -> PyResult<usize> {
-        Ok(self.scene.add(visual.inner.clone()))
-    }
-
-    /// Add an image visual to the scene
-    fn add_image(&mut self, visual: &PyImageVisual) -> PyResult<usize> {
-        Ok(self.scene.add(visual.inner.clone()))
-    }
-
-    /// Add a tiled image visual to the scene
-    fn add_tiled_image(&mut self, visual: &PyTiledImageVisual) -> PyResult<usize> {
-        Ok(self.scene.add(visual.inner.clone()))
-    }
 
     /// Set camera position
     fn set_camera_position(&mut self, x: f32, y: f32, z: f32) {
@@ -599,10 +623,22 @@ impl PyViewer {
     }
 }
 
+/// Base trait for Python visual wrappers (currently unused but kept for potential future use)
+#[allow(dead_code)]
+trait PyVisualWrapper {
+    fn get_inner(&self) -> VisualRef;
+}
+
 /// Python wrapper for PointsVisual
 #[pyclass]
 pub struct PyPointsVisual {
     inner: VisualRef,
+}
+
+impl PyVisualWrapper for PyPointsVisual {
+    fn get_inner(&self) -> VisualRef {
+        self.inner.clone()
+    }
 }
 
 #[pymethods]
@@ -679,6 +715,12 @@ pub struct PyLinesVisual {
     inner: VisualRef,
 }
 
+impl PyVisualWrapper for PyLinesVisual {
+    fn get_inner(&self) -> VisualRef {
+        self.inner.clone()
+    }
+}
+
 #[pymethods]
 impl PyLinesVisual {
     /// Create an axis helper
@@ -721,6 +763,12 @@ impl PyLinesVisual {
 #[pyclass]
 pub struct PyImageVisual {
     inner: VisualRef,
+}
+
+impl PyVisualWrapper for PyImageVisual {
+    fn get_inner(&self) -> VisualRef {
+        self.inner.clone()
+    }
 }
 
 #[pymethods]
@@ -804,6 +852,12 @@ impl PyImageVisual {
 #[pyclass]
 pub struct PyTiledImageVisual {
     inner: VisualRef,
+}
+
+impl PyVisualWrapper for PyTiledImageVisual {
+    fn get_inner(&self) -> VisualRef {
+        self.inner.clone()
+    }
 }
 
 #[pymethods]
@@ -929,6 +983,151 @@ impl PyTiledImageVisual {
     }
 }
 
+/// Python wrapper for CustomVisual
+#[pyclass]
+pub struct PyCustomVisual {
+    inner: VisualRef,
+}
+
+impl PyVisualWrapper for PyCustomVisual {
+    fn get_inner(&self) -> VisualRef {
+        self.inner.clone()
+    }
+}
+
+#[pymethods]
+impl PyCustomVisual {
+    /// Create a custom visual with a user-provided WGSL shader
+    ///
+    /// # Arguments
+    ///
+    /// * `viewer` - The viewer instance
+    /// * `shader_source` - WGSL shader source code as a string
+    /// * `vertex_data` - Vertex data as bytes (use numpy.tobytes())
+    /// * `vertex_layout` - Vertex buffer layout description
+    /// * `topology` - Primitive topology ("point_list", "line_list", "triangle_list", etc.)
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import bovista as bv
+    /// import numpy as np
+    ///
+    /// shader = '''
+    /// struct Uniforms {
+    ///     view_proj: mat4x4<f32>,
+    /// }
+    /// @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+    ///
+    /// @vertex
+    /// fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
+    ///     return uniforms.view_proj * vec4<f32>(pos, 1.0);
+    /// }
+    ///
+    /// @fragment
+    /// fn fs_main() -> @location(0) vec4<f32> {
+    ///     return vec4<f32>(1.0, 0.0, 0.0, 1.0);  // Red
+    /// }
+    /// '''
+    ///
+    /// # Triangle vertices
+    /// vertices = np.array([
+    ///     [0.0, 1.0, 0.0],
+    ///     [-1.0, -1.0, 0.0],
+    ///     [1.0, -1.0, 0.0],
+    /// ], dtype=np.float32)
+    ///
+    /// # Create layout: one vec3 at location 0
+    /// layout = bv.PyVertexBufferLayout(12, [  # stride = 3 floats * 4 bytes
+    ///     (0, "Float32x3", 0)  # (location, format, offset)
+    /// ])
+    ///
+    /// visual = bv.PyCustomVisual.new(
+    ///     viewer, shader, vertices.tobytes(), layout, "triangle_list"
+    /// )
+    /// viewer.add(visual)
+    /// ```
+    #[staticmethod]
+    fn new(
+        viewer: &PyViewer,
+        shader_source: &str,
+        vertex_data: &[u8],
+        vertex_layout: PyVertexBufferLayout,
+        topology: &str,
+    ) -> PyResult<Self> {
+        let renderer = viewer.renderer.as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+
+        // Parse topology string
+        let topology = match topology.to_lowercase().as_str() {
+            "point_list" | "pointlist" => wgpu::PrimitiveTopology::PointList,
+            "line_list" | "linelist" => wgpu::PrimitiveTopology::LineList,
+            "line_strip" | "linestrip" => wgpu::PrimitiveTopology::LineStrip,
+            "triangle_list" | "trianglelist" => wgpu::PrimitiveTopology::TriangleList,
+            "triangle_strip" | "trianglestrip" => wgpu::PrimitiveTopology::TriangleStrip,
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Invalid topology: '{}'. Use 'point_list', 'line_list', 'line_strip', 'triangle_list', or 'triangle_strip'", topology)
+            )),
+        };
+
+        let visual = CustomVisual::new(
+            renderer.device(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            shader_source,
+            vertex_data,
+            vertex_layout.into_rust(),
+            topology,
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(visual)),
+        })
+    }
+}
+
+/// Python wrapper for vertex buffer layout
+#[pyclass]
+#[derive(Clone)]
+pub struct PyVertexBufferLayout {
+    stride: u64,
+    attributes: Vec<(u32, String, u64)>,  // (location, format, offset)
+}
+
+#[pymethods]
+impl PyVertexBufferLayout {
+    #[new]
+    fn new(stride: u64, attributes: Vec<(u32, String, u64)>) -> Self {
+        Self { stride, attributes }
+    }
+}
+
+impl PyVertexBufferLayout {
+    fn into_rust(self) -> VertexBufferLayout {
+        use crate::visual::VertexFormat;
+
+        let attributes = self.attributes.into_iter().map(|(location, format_str, _offset)| {
+            let format = match format_str.to_lowercase().as_str() {
+                "float32" => VertexFormat::Float32,
+                "float32x2" => VertexFormat::Float32x2,
+                "float32x3" => VertexFormat::Float32x3,
+                "float32x4" => VertexFormat::Float32x4,
+                _ => panic!("Unknown vertex format: {}", format_str),
+            };
+            crate::visual::VertexAttribute {
+                name: format!("attr_{}", location),
+                format,
+                location,
+            }
+        }).collect();
+
+        VertexBufferLayout {
+            stride: self.stride,
+            attributes,
+        }
+    }
+}
+
 /// Python module definition
 #[pymodule]
 fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -937,5 +1136,7 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLinesVisual>()?;
     m.add_class::<PyImageVisual>()?;
     m.add_class::<PyTiledImageVisual>()?;
+    m.add_class::<PyCustomVisual>()?;
+    m.add_class::<PyVertexBufferLayout>()?;
     Ok(())
 }

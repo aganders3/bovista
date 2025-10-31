@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bovista - Remote Zarr Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 1rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            color: #58a6ff;
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        #controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        select, button {
+            padding: 0.5rem 1rem;
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            cursor: pointer;
+        }
+
+        button:hover, select:hover {
+            background: #30363d;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            background: #0d1117;
+            overflow: hidden;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: #161b22;
+            padding: 2rem;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+        }
+
+        .spinner {
+            border: 3px solid #30363d;
+            border-top: 3px solid #58a6ff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #info {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            background: rgba(22, 27, 34, 0.95);
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            font-size: 0.875rem;
+            min-width: 200px;
+            display: none;
+        }
+
+        #info h3 {
+            color: #58a6ff;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        #info .stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 0.25rem 0;
+        }
+
+        #info .label {
+            color: #8b949e;
+        }
+
+        #info .value {
+            color: #c9d1d9;
+            font-weight: 500;
+        }
+
+        #help {
+            position: absolute;
+            bottom: 1rem;
+            left: 1rem;
+            background: rgba(22, 27, 34, 0.95);
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            font-size: 0.875rem;
+        }
+
+        #help h3 {
+            color: #58a6ff;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        #help kbd {
+            background: #0d1117;
+            padding: 0.125rem 0.375rem;
+            border-radius: 3px;
+            border: 1px solid #30363d;
+            font-family: monospace;
+            font-size: 0.75rem;
+        }
+
+        .error {
+            color: #f85149;
+            background: #3d1319;
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid #f85149;
+        }
+
+        /* Dual range slider styling */
+        #contrast-min, #contrast-max {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 4px;
+            background: transparent;
+            outline: none;
+        }
+
+        #contrast-min::-webkit-slider-thumb,
+        #contrast-max::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #58a6ff;
+            cursor: pointer;
+            border-radius: 50%;
+            border: 2px solid #0d1117;
+        }
+
+        #contrast-min::-moz-range-thumb,
+        #contrast-max::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: #58a6ff;
+            cursor: pointer;
+            border-radius: 50%;
+            border: 2px solid #0d1117;
+        }
+
+        #contrast-min::-webkit-slider-runnable-track,
+        #contrast-max::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            background: #30363d;
+            border-radius: 2px;
+        }
+
+        #contrast-min::-moz-range-track,
+        #contrast-max::-moz-range-track {
+            width: 100%;
+            height: 4px;
+            background: #30363d;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>🍄 Bovista - Remote Zarr Viewer</h1>
+        <div id="controls">
+            <select id="dataset-select">
+                <option value="">Select a dataset...</option>
+                <option value="idr0062">Human Mitotic Cell (IDR0062) - 257×210×253</option>
+            </select>
+            <button id="load-btn" disabled>Load Dataset</button>
+            <select id="lod-select" style="margin-left: 1rem;" disabled>
+                <option value="">LOD</option>
+            </select>
+            <select id="channel-select" style="margin-left: 0.5rem;" disabled>
+                <option value="">Channel</option>
+            </select>
+            <div style="margin-left: 1rem; display: inline-flex; align-items: center; gap: 0.5rem;">
+                <label>Contrast:</label>
+                <div style="position: relative; width: 200px; height: 20px;">
+                    <input type="range" id="contrast-min" min="0" max="255" value="0"
+                           style="position: absolute; width: 100%;">
+                    <input type="range" id="contrast-max" min="0" max="255" value="255"
+                           style="position: absolute; width: 100%;">
+                </div>
+                <span id="contrast-values" style="font-size: 0.75rem; color: #8b949e; min-width: 60px;">0-255</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="bovista-canvas"></canvas>
+
+        <div id="loading">
+            <div class="spinner"></div>
+            <div id="loading-text">Initializing WebGPU...</div>
+        </div>
+
+        <div id="info">
+            <h3>Statistics</h3>
+            <div class="stat">
+                <span class="label">Loaded chunks:</span>
+                <span class="value" id="loaded-chunks">0</span>
+            </div>
+            <div class="stat">
+                <span class="label">Pending loads:</span>
+                <span class="value" id="pending-chunks">0</span>
+            </div>
+            <div class="stat">
+                <span class="label">Slice Z:</span>
+                <span class="value" id="slice-z">0</span>
+            </div>
+        </div>
+
+        <div id="help">
+            <h3>Controls</h3>
+            <p><kbd>Left Click + Drag</kbd> Orbit camera</p>
+            <p><kbd>Right Click + Drag</kbd> Rotate slice plane (Y axis)</p>
+            <p><kbd>Shift + Right Drag</kbd> Rotate slice plane (X axis)</p>
+            <p><kbd>Right Drag Horizontal</kbd> Move slice offset</p>
+            <p><kbd>Scroll</kbd> Zoom in/out</p>
+            <p><kbd>D</kbd> Debug mode</p>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { init_chunk_cache, store_chunk, init_dataset, dataset_ready, set_contrast_limits, clear_dataset, get_slice_z } from './pkg/wasm_zarr.js';
+        import * as zarr from 'https://cdn.jsdelivr.net/npm/zarrita@latest/+esm';
+
+        // Set canvas resolution to match display size
+        function resizeCanvas() {
+            const canvas = document.getElementById('bovista-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+
+            // Set internal resolution to match display size (with device pixel ratio)
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+        }
+
+        // Resize canvas on load and window resize
+        window.addEventListener('load', resizeCanvas);
+        window.addEventListener('resize', resizeCanvas);
+
+        // Initial resize
+        resizeCanvas();
+
+        const DATASETS = {
+            idr0062: {
+                url: 'https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr',
+                description: 'Human Mitotic Cell (HeLa)',
+            }
+        };
+
+        let chunkCache = new Map();
+        let pendingLoads = new Set();
+        let zarrArray = null;
+        let volumeShape = null;
+        let chunkShape = null;
+        let wasmInitialized = false;
+        let currentRoot = null;
+        let currentMultiscales = null;
+        let currentDataset = null;
+        let currentLodIndex = 0;
+        let currentChannelIndex = 0;
+        let statsIntervalStarted = false;
+
+        // UI elements
+        const loadingDiv = document.getElementById('loading');
+        const loadingText = document.getElementById('loading-text');
+        const infoDiv = document.getElementById('info');
+        const datasetSelect = document.getElementById('dataset-select');
+        const loadBtn = document.getElementById('load-btn');
+        const lodSelect = document.getElementById('lod-select');
+        const channelSelect = document.getElementById('channel-select');
+
+        datasetSelect.addEventListener('change', (e) => {
+            loadBtn.disabled = !e.target.value;
+        });
+
+        loadBtn.addEventListener('click', async () => {
+            const datasetKey = datasetSelect.value;
+            if (!datasetKey) return;
+
+            loadBtn.disabled = true;
+            await loadDataset(DATASETS[datasetKey]);
+        });
+
+        // Contrast range slider
+        const contrastMin = document.getElementById('contrast-min');
+        const contrastMax = document.getElementById('contrast-max');
+        const contrastValues = document.getElementById('contrast-values');
+
+        function updateContrast() {
+            let minVal = parseInt(contrastMin.value);
+            let maxVal = parseInt(contrastMax.value);
+
+            // Ensure min doesn't exceed max
+            if (minVal > maxVal) {
+                minVal = maxVal;
+                contrastMin.value = minVal;
+            }
+
+            // Ensure max doesn't go below min
+            if (maxVal < minVal) {
+                maxVal = minVal;
+                contrastMax.value = maxVal;
+            }
+
+            contrastValues.textContent = `${minVal}-${maxVal}`;
+            set_contrast_limits(minVal, maxVal);
+        }
+
+        contrastMin.addEventListener('input', updateContrast);
+        contrastMax.addEventListener('input', updateContrast);
+
+        // LOD and channel selectors
+        lodSelect.addEventListener('change', async (e) => {
+            const lodIdx = parseInt(e.target.value);
+            await loadLodAndChannel(lodIdx, currentChannelIndex);
+        });
+
+        channelSelect.addEventListener('change', async (e) => {
+            const channelIdx = parseInt(e.target.value);
+            await loadLodAndChannel(currentLodIndex, channelIdx);
+        });
+
+        function showLoading(text) {
+            loadingDiv.style.display = 'block';
+            loadingText.textContent = text;
+        }
+
+        function hideLoading() {
+            loadingDiv.style.display = 'none';
+        }
+
+        async function loadLodAndChannel(lodIdx, channelIdx) {
+            if (!currentRoot || !currentMultiscales) {
+                console.error('No dataset loaded');
+                return;
+            }
+
+            // Clear existing dataset in Rust
+            clear_dataset();
+
+            // Clear chunk cache
+            chunkCache.clear();
+            pendingLoads.clear();
+
+            showLoading('Loading array metadata...');
+            const datasetPath = currentMultiscales.datasets[lodIdx].path;
+            zarrArray = await zarr.open.v2(currentRoot.resolve(datasetPath), { kind: 'array' });
+
+            console.log('Zarr array opened:', {
+                shape: zarrArray.shape,
+                chunks: zarrArray.chunks,
+                dtype: zarrArray.dtype,
+                lod: lodIdx,
+                channel: channelIdx
+            });
+
+            // Extract spatial dimensions
+            const axes = currentMultiscales.axes || [];
+            const axisNames = axes.map(ax => ax.name.toLowerCase());
+
+            const zIdx = axisNames.indexOf('z');
+            const yIdx = axisNames.indexOf('y');
+            const xIdx = axisNames.indexOf('x');
+            const cIdx = axisNames.indexOf('c');
+
+            volumeShape = {
+                z: zarrArray.shape[zIdx],
+                y: zarrArray.shape[yIdx],
+                x: zarrArray.shape[xIdx],
+                zIdx, yIdx, xIdx, cIdx
+            };
+
+            chunkShape = {
+                z: zarrArray.chunks[zIdx],
+                y: zarrArray.chunks[yIdx],
+                x: zarrArray.chunks[xIdx],
+            };
+
+            currentLodIndex = lodIdx;
+            currentChannelIndex = channelIdx;
+
+            console.log('Volume:', volumeShape);
+            console.log('Chunks:', chunkShape);
+
+            // Initialize Rust side
+            showLoading('Initializing viewer...');
+            init_dataset(
+                volumeShape.z, volumeShape.y, volumeShape.x,
+                chunkShape.z, chunkShape.y, chunkShape.x
+            );
+
+            // Pre-load center slice chunks (and adjacent ones for boundary intersection)
+            showLoading('Loading initial chunks...');
+            const centerZ = Math.floor(volumeShape.z / (2 * chunkShape.z));
+            const promises = [];
+
+            // Load center Z slice and adjacent ones (renderer may request both due to boundary intersection)
+            const zSlices = [centerZ - 1, centerZ, centerZ + 1].filter(z => z >= 0 && z < Math.ceil(volumeShape.z / chunkShape.z));
+
+            for (const z of zSlices) {
+                for (let y = 0; y < Math.ceil(volumeShape.y / chunkShape.y); y++) {
+                    for (let x = 0; x < Math.ceil(volumeShape.x / chunkShape.x); x++) {
+                        promises.push(loadChunkAsync(z, y, x));
+                    }
+                }
+            }
+
+            await Promise.all(promises);
+
+            // Signal Rust that dataset is ready
+            dataset_ready();
+
+            hideLoading();
+            infoDiv.style.display = 'block';
+
+            // Start stats update loop (only once)
+            if (!statsIntervalStarted) {
+                setInterval(updateStats, 100);
+                statsIntervalStarted = true;
+            }
+        }
+
+        async function loadDataset(dataset) {
+            try {
+                // Only initialize WASM once
+                if (!wasmInitialized) {
+                    showLoading('Initializing WASM...');
+                    await init();
+                    wasmInitialized = true;
+
+                    // Set up the chunk load callback AFTER WASM is ready
+                    window.requestChunkLoad = function(z, y, x) {
+                        if (!zarrArray) return;
+                        const key = `${z},${y},${x}`;
+                        if (!chunkCache.has(key) && !pendingLoads.has(key)) {
+                            loadChunkAsync(z, y, x);
+                        }
+                    };
+                }
+
+                showLoading('Opening Zarr store...');
+                const store = new zarr.FetchStore(dataset.url);
+                const root = await zarr.open.v2(store, { kind: 'group', attrs: true });
+
+                // Store for later use
+                currentRoot = root;
+                currentDataset = dataset;
+
+                // Access attributes from the opened group
+                const multiscales = root.attrs.multiscales[0];
+                currentMultiscales = multiscales;
+
+                // Populate LOD selector
+                lodSelect.innerHTML = '';
+                multiscales.datasets.forEach((ds, idx) => {
+                    const option = document.createElement('option');
+                    option.value = idx;
+                    option.textContent = `LOD ${idx}: ${ds.path}`;
+                    lodSelect.appendChild(option);
+                });
+                lodSelect.disabled = false;
+                lodSelect.value = '0';
+
+                // Populate channel selector based on array shape
+                const testArray = await zarr.open.v2(root.resolve(multiscales.datasets[0].path), { kind: 'array' });
+                const axes = multiscales.axes || [];
+                const axisNames = axes.map(ax => ax.name.toLowerCase());
+                const channelIdx = axisNames.indexOf('c');
+
+                channelSelect.innerHTML = '';
+                if (channelIdx !== -1) {
+                    const numChannels = testArray.shape[channelIdx];
+                    for (let i = 0; i < numChannels; i++) {
+                        const option = document.createElement('option');
+                        option.value = i;
+                        option.textContent = `Channel ${i}`;
+                        channelSelect.appendChild(option);
+                    }
+                    channelSelect.disabled = false;
+                    channelSelect.value = '0';
+                } else {
+                    const option = document.createElement('option');
+                    option.value = '0';
+                    option.textContent = 'Single Channel';
+                    channelSelect.appendChild(option);
+                    channelSelect.disabled = true;
+                }
+
+                // Load the default LOD and channel
+                await loadLodAndChannel(0, 0);
+
+            } catch (error) {
+                console.error('Failed to load dataset:', error);
+                loadingDiv.innerHTML = `
+                    <div class="error">
+                        <h3>Failed to load dataset</h3>
+                        <p>${error.message}</p>
+                        <p style="margin-top: 1rem; font-size: 0.875rem;">
+                            Check browser console for details.
+                        </p>
+                    </div>
+                `;
+                loadBtn.disabled = false;
+            }
+        }
+
+        async function loadChunkAsync(z, y, x) {
+            const key = `${z},${y},${x}`;
+
+            if (chunkCache.has(key) || pendingLoads.has(key)) {
+                return;
+            }
+
+            pendingLoads.add(key);
+
+            try {
+                // Build selection for this chunk using zarr.slice
+                const selection = zarrArray.shape.map((_, i) => {
+                    if (i === volumeShape.zIdx) {
+                        const start = z * chunkShape.z;
+                        const end = Math.min(start + chunkShape.z, volumeShape.z);
+                        return zarr.slice(start, end);
+                    } else if (i === volumeShape.yIdx) {
+                        const start = y * chunkShape.y;
+                        const end = Math.min(start + chunkShape.y, volumeShape.y);
+                        return zarr.slice(start, end);
+                    } else if (i === volumeShape.xIdx) {
+                        const start = x * chunkShape.x;
+                        const end = Math.min(start + chunkShape.x, volumeShape.x);
+                        return zarr.slice(start, end);
+                    } else if (i === volumeShape.cIdx) {
+                        return currentChannelIndex;  // Use selected channel
+                    } else {
+                        return 0;  // First time dimension (single index)
+                    }
+                });
+
+                // Fetch chunk data
+                const chunkData = await zarr.get(zarrArray, selection);
+
+                // Convert uint16 to uint8 by normalizing
+                let uint8Data;
+                if (zarrArray.dtype === 'uint16' || zarrArray.dtype === '<u2') {
+                    const uint16Data = new Uint16Array(chunkData.data);
+
+                    // Find min/max for normalization (could cache these globally)
+                    let min = uint16Data[0], max = uint16Data[0];
+                    for (let i = 1; i < uint16Data.length; i++) {
+                        const val = uint16Data[i];
+                        if (val < min) min = val;
+                        if (val > max) max = val;
+                    }
+
+                    // Normalize to 0-255
+                    uint8Data = new Uint8Array(uint16Data.length);
+                    const range = max - min || 1;
+                    for (let i = 0; i < uint16Data.length; i++) {
+                        uint8Data[i] = Math.floor(((uint16Data[i] - min) / range) * 255);
+                    }
+
+                } else {
+                    // Already uint8
+                    uint8Data = new Uint8Array(chunkData.data);
+                }
+
+                // Store in both JS cache and Rust cache
+                chunkCache.set(key, uint8Data);
+                store_chunk(z, y, x, uint8Data);
+
+            } catch (error) {
+                console.error(`Failed to load chunk (${z},${y},${x}):`, error);
+            } finally {
+                pendingLoads.delete(key);
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('loaded-chunks').textContent = chunkCache.size;
+            document.getElementById('pending-chunks').textContent = pendingLoads.size;
+            const sliceZ = get_slice_z();
+            document.getElementById('slice-z').textContent = sliceZ.toFixed(1);
+        }
+    </script>
+</body>
+</html>

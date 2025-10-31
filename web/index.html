@@ -3,154 +3,168 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bovista - Point Cloud Visualization</title>
+    <title>Bovista - WebGPU 3D Visualization</title>
     <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            margin: 0;
-            padding: 0;
-            width: 100vw;
-            height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 2rem;
         }
-
-        #container {
-            width: 90vw;
-            height: 90vh;
-            display: flex;
-            flex-direction: column;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
+        .header {
+            max-width: 1200px;
+            margin: 0 auto 3rem;
         }
-
-        #header {
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
         h1 {
-            margin: 0;
-            font-size: 28px;
-            font-weight: 600;
+            color: #58a6ff;
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
         }
-
         .subtitle {
-            margin: 5px 0 0 0;
-            font-size: 14px;
-            opacity: 0.9;
+            color: #8b949e;
+            font-size: 1.125rem;
         }
-
-        #canvas-container {
-            flex: 1;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            background: #1a1a1a;
+        .examples {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 1.5rem;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: #58a6ff;
+        }
+        .card h2 {
+            color: #58a6ff;
+            margin-bottom: 0.5rem;
+            font-size: 1.5rem;
+        }
+        .card p {
+            color: #8b949e;
+            line-height: 1.6;
+            margin-bottom: 1rem;
+        }
+        .card ul {
+            list-style: none;
+            padding: 0;
+            margin-bottom: 1.5rem;
+            color: #8b949e;
+        }
+        .card li {
+            padding: 0.25rem 0;
+            padding-left: 1.25rem;
             position: relative;
-            overflow: hidden;
-            min-height: 0;
         }
-
-        canvas {
-            max-width: 100% !important;
-            max-height: 100% !important;
-            width: 100% !important;
-            height: 100% !important;
-            display: block;
-            object-fit: contain;
-        }
-
-        #controls {
-            padding: 15px 20px;
-            background: #f5f5f5;
-            border-top: 1px solid #ddd;
-            font-size: 13px;
-            color: #666;
-        }
-
-        .control-item {
-            display: inline-block;
-            margin-right: 20px;
-        }
-
-        .control-item strong {
-            color: #333;
-        }
-
-        #loading {
+        .card li:before {
+            content: "→";
+            color: #58a6ff;
             position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
+            left: 0;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin-bottom: 1rem;
+            background: #1a7f37;
+            color: #aff5b4;
+        }
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background: #238636;
             color: white;
-            font-size: 18px;
-            text-align: center;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 500;
+            transition: background 0.2s;
         }
-
-        .spinner {
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-top: 3px solid white;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
+        .btn:hover {
+            background: #2ea043;
         }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        .requirements {
+            background: #21262d;
+            padding: 1.5rem;
+            border-radius: 6px;
+            margin-top: 3rem;
+            max-width: 1200px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .requirements h3 {
+            color: #58a6ff;
+            margin-bottom: 1rem;
+        }
+        .requirements ul {
+            list-style: none;
+            padding: 0;
+        }
+        .requirements li {
+            padding: 0.5rem 0;
+            padding-left: 1.5rem;
+            position: relative;
+        }
+        .requirements li:before {
+            content: "✓";
+            color: #3fb950;
+            position: absolute;
+            left: 0;
+            font-weight: bold;
         }
     </style>
 </head>
 <body>
-    <div id="container">
-        <div id="header">
-            <h1>🍄 Bovista</h1>
-            <p class="subtitle">Scientific Data Visualization with WebGPU</p>
+    <div class="header">
+        <h1>🍄 Bovista Examples</h1>
+        <p class="subtitle">High-performance 3D visualization with WebGPU</p>
+    </div>
+
+    <div class="examples">
+        <div class="card">
+            <span class="badge">✓ Ready</span>
+            <h2>Point Cloud</h2>
+            <p>Interactive 3D point cloud visualization with orbit controls and perspective camera.</p>
+            <ul>
+                <li>100k+ points rendered in real-time</li>
+                <li>Smooth camera controls (orbit, zoom)</li>
+                <li>WebGPU-powered performance</li>
+            </ul>
+            <a href="point_cloud.html" class="btn">Launch Demo →</a>
         </div>
-        <div id="canvas-container">
-            <div id="loading">
-                <div class="spinner"></div>
-                <div>Loading point cloud...</div>
-            </div>
-        </div>
-        <div id="controls">
-            <div class="control-item">
-                <strong>Orbit:</strong> Left click + drag
-            </div>
-            <div class="control-item">
-                <strong>Zoom:</strong> Mouse wheel
-            </div>
-            <div class="control-item">
-                <strong>Points:</strong> 8,000 (20×20×20 cube)
-            </div>
+
+        <div class="card">
+            <span class="badge">✓ Ready</span>
+            <h2>Remote Zarr Viewer</h2>
+            <p>Load and visualize multiscale OME-Zarr datasets directly from remote S3 storage.</p>
+            <ul>
+                <li>On-demand chunk loading from S3</li>
+                <li>Multiscale pyramid (LOD) support</li>
+                <li>Multi-channel fluorescence imaging</li>
+                <li>Interactive slice plane manipulation</li>
+                <li>Real-time contrast adjustment</li>
+            </ul>
+            <a href="zarr_viewer.html" class="btn">Launch Demo →</a>
         </div>
     </div>
 
-    <script type="module">
-        import init from './pkg/point_cloud.js';
-
-        async function run() {
-            try {
-                await init();
-                document.getElementById('loading').style.display = 'none';
-                console.log('Bovista initialized successfully!');
-            } catch (error) {
-                console.error('Failed to initialize:', error);
-                document.getElementById('loading').innerHTML =
-                    '<div style="color: #ff6b6b;">Failed to initialize WebGPU. Please use a browser with WebGPU support.</div>';
-            }
-        }
-
-        run();
-    </script>
+    <div class="requirements">
+        <h3>System Requirements</h3>
+        <ul>
+            <li>Modern browser with WebGPU support (Chrome 113+, Edge 113+, Safari Technology Preview)</li>
+            <li>WebGPU-capable GPU (most modern GPUs from 2018+)</li>
+            <li>Check compatibility: <a href="https://webgpureport.org/" target="_blank" style="color: #58a6ff;">webgpureport.org</a></li>
+        </ul>
+    </div>
 </body>
 </html>

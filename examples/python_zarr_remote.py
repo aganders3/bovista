@@ -4,13 +4,34 @@ Bovista + Remote Multiscale OME-Zarr Example
 This example demonstrates loading and visualizing a real multiscale OME-Zarr dataset
 from a remote S3 bucket (no download required!). This showcases Bovista's ability to:
 
-1. Access cloud-native datasets via HTTP/S3
-2. Handle multiscale pyramids for different zoom levels
-3. Load only visible chunks on-demand (efficient memory usage)
-4. Navigate TB-scale datasets interactively
+1. **Cloud-native access**: Load data directly from S3 via HTTP
+2. **Multiscale pyramids**: Switch between resolution levels (LODs)
+3. **Multi-channel support**: View different fluorescence channels
+4. **On-demand chunk loading**: Only load visible data (efficient memory usage)
+5. **Interactive navigation**: Orbit, zoom, slice plane manipulation
+6. **Contrast adjustment**: Real-time intensity windowing
+7. **TB-scale datasets**: Navigate datasets too large to fit in memory
+
+Features:
+- Multiple remote datasets to choose from
+- Resolution level selector (LOD 0 = highest resolution)
+- Channel selector (for multi-channel data)
+- Contrast min/max sliders
+- Debug mode (press 'D' key) to visualize chunk boundaries
+
+Controls:
+- Left-drag: Orbit camera around slice
+- Right-drag vertical: Rotate slice plane around Y axis
+- Shift + Right-drag vertical: Rotate slice plane around X axis
+- Right-drag horizontal: Move slice offset along Z
+- Scroll: Zoom in/out
+- D key: Toggle debug mode (shows chunk boundaries)
 
 Dataset: IDR (Image Data Resource) public OME-Zarr collection
 Source: https://www.openmicroscopy.org/2020/11/04/zarr-data.html
+
+Requirements:
+    pip install PySide6 zarr fsspec requests aiohttp bovista
 """
 
 import sys
@@ -49,7 +70,22 @@ DATASETS = {
 
 
 class BovistaWidget(QWidget):
-    """Qt widget with Bovista viewer"""
+    """Qt widget that embeds a Bovista 3D viewer.
+
+    This widget handles the Bovista rendering lifecycle:
+    - Initializes GPU resources when first shown
+    - Manages render loop with QTimer
+    - Handles mouse/keyboard input for camera control
+    - Supports slice plane manipulation
+
+    Attributes:
+        viewer: PyViewer instance for GPU rendering
+        tiled_image: Currently displayed TiledImageVisual (if any)
+        debug_mode: Whether to show chunk boundaries
+        slice_angle_x/y: Current slice plane rotation angles
+        slice_offset: Current slice plane offset
+        volume_center: Center point of the volume
+    """
 
     def __init__(self, parent=None, width=800, height=600):
         super().__init__(parent)
@@ -152,7 +188,7 @@ class BovistaWidget(QWidget):
 
     def wheelEvent(self, event):
         if self._initialized:
-            zoom_delta = -event.angleDelta().y() * 0.1
+            zoom_delta = -event.angleDelta().y() * 0.2
             self.viewer.zoom_camera(zoom_delta)
 
     def keyPressEvent(self, event):
@@ -202,7 +238,18 @@ class BovistaWidget(QWidget):
 
 
 class MainWindow(QMainWindow):
-    """Main window with remote dataset loading"""
+    """Main application window for remote OME-Zarr visualization.
+
+    Provides UI controls for:
+    - Dataset selection (from predefined list of public datasets)
+    - Resolution level (LOD) selection
+    - Channel selection (for multi-channel data)
+    - Contrast adjustment
+    - Statistics display
+
+    The window manages asynchronous loading of Zarr metadata and chunks,
+    using ThreadPoolExecutor to avoid blocking the UI thread.
+    """
 
     def __init__(self):
         super().__init__()
@@ -211,6 +258,7 @@ class MainWindow(QMainWindow):
 
         self.zarr_data = None
         self.current_resolution = 0
+        self.current_channel = 0
         self.data_range = (0.0, 255.0)  # Will be updated when data loads
         self.dataset_info = None  # Currently loaded dataset info
 
@@ -234,7 +282,7 @@ class MainWindow(QMainWindow):
         selector_layout.addStretch()
         layout.addLayout(selector_layout)
 
-        # Resolution selector
+        # Resolution and channel selectors
         res_layout = QHBoxLayout()
         res_layout.addWidget(QLabel("Resolution:"))
 
@@ -242,6 +290,13 @@ class MainWindow(QMainWindow):
         self.resolution_combo.currentIndexChanged.connect(self.change_resolution)
         self.resolution_combo.setEnabled(False)
         res_layout.addWidget(self.resolution_combo)
+
+        res_layout.addWidget(QLabel("Channel:"))
+
+        self.channel_combo = QComboBox()
+        self.channel_combo.currentIndexChanged.connect(self.change_channel)
+        self.channel_combo.setEnabled(False)
+        res_layout.addWidget(self.channel_combo)
 
         res_layout.addStretch()
         layout.addLayout(res_layout)
@@ -252,7 +307,7 @@ class MainWindow(QMainWindow):
 
         self.contrast_min_slider = QSlider(Qt.Horizontal)
         self.contrast_min_slider.setMinimum(0)
-        self.contrast_min_slider.setMaximum(1000)  # Finer granularity
+        self.contrast_min_slider.setMaximum(1000)
         self.contrast_min_slider.setValue(0)
         self.contrast_min_slider.valueChanged.connect(self.update_contrast)
         contrast_layout.addWidget(self.contrast_min_slider)
@@ -265,7 +320,7 @@ class MainWindow(QMainWindow):
 
         self.contrast_max_slider = QSlider(Qt.Horizontal)
         self.contrast_max_slider.setMinimum(0)
-        self.contrast_max_slider.setMaximum(1000)  # Finer granularity
+        self.contrast_max_slider.setMaximum(1000)
         self.contrast_max_slider.setValue(1000)
         self.contrast_max_slider.valueChanged.connect(self.update_contrast)
         contrast_layout.addWidget(self.contrast_max_slider)
@@ -382,6 +437,33 @@ class MainWindow(QMainWindow):
 
             self.zarr_data = store
             self.dataset_info = dataset_info
+
+            # Detect channels from the first resolution level
+            multiscales = store.attrs.get("multiscales", [{}])[0]
+            axes = multiscales.get("axes", [])
+            axis_names = [ax.get("name", "?").lower() for ax in axes]
+
+            # Check if there's a channel axis
+            if "c" in axis_names:
+                channel_idx = axis_names.index("c")
+                # Get shape from first resolution level
+                first_path = multiscales["datasets"][0]["path"]
+                first_array = store[first_path]
+                num_channels = first_array.shape[channel_idx]
+
+                # Populate channel combo
+                self.channel_combo.clear()
+                for i in range(num_channels):
+                    self.channel_combo.addItem(f"Channel {i}", i)
+                self.channel_combo.setEnabled(True)
+                self.channel_combo.setCurrentIndex(0)
+            else:
+                # Single channel dataset
+                self.channel_combo.clear()
+                self.channel_combo.addItem("Channel 0", 0)
+                self.channel_combo.setEnabled(False)
+
+            self.current_channel = 0
 
             # Don't auto-load any resolution - let user pick
             self.current_resolution = -1  # No resolution loaded yet
@@ -563,10 +645,14 @@ class MainWindow(QMainWindow):
                     z_idx, y_idx, x_idx = spatial_indices
                     slices = [slice(None)] * len(shape)  # Start with full slices
 
-                    # For non-spatial dimensions, take first element
+                    # For non-spatial dimensions, select appropriate index
                     for i in range(len(shape)):
                         if i not in spatial_indices:
-                            slices[i] = 0  # Take first channel/time point
+                            # Check if this is the channel dimension
+                            if "c" in axis_names and i == axis_names.index("c"):
+                                slices[i] = self.current_channel  # Use selected channel
+                            else:
+                                slices[i] = 0  # Take first element for other dimensions (e.g., time)
 
                     # Set spatial slices
                     slices[z_idx] = slice(z_start, z_end)
@@ -752,13 +838,13 @@ class MainWindow(QMainWindow):
             print(f"  Distance: {distance}")
             print(f"  View: Looking down Z axis at XY slice")
 
-            # Add to scene
-            viewer.add_tiled_image(tiled_image)
+            # Add to scene (new unified API)
+            viewer.add(tiled_image)
             self.bovista_widget.tiled_image = tiled_image
 
-            # Add axes
+            # Add axes (new unified API)
             axes = bv.PyLinesVisual.axis_helper(viewer, max(volume_size) * 0.3)
-            viewer.add_lines(axes)
+            viewer.add(axes)
 
             print("Scene loaded successfully!")
             print("Chunks will load on-demand as you navigate.")
@@ -799,6 +885,34 @@ class MainWindow(QMainWindow):
             setup_with_resolution(self.bovista_widget.viewer)
         else:
             self.bovista_widget.on_ready(setup_with_resolution)
+
+    def change_channel(self, index):
+        """Change the displayed channel"""
+        if self.zarr_data is None or index < 0:
+            return
+
+        channel = self.channel_combo.itemData(index)
+        if channel is None:
+            return
+
+        print(f"\nChanging to channel {channel}")
+
+        # Clean up old visual and reload with new channel
+        if self.bovista_widget.tiled_image is not None:
+            print("Clearing old tiled image visual for channel change...")
+            self.bovista_widget.tiled_image = None
+            self.stats_label.setText("Loading new channel...")
+
+        self.current_channel = channel
+
+        # Reload scene with new channel
+        def setup_with_channel(viewer):
+            self.setup_scene(viewer, self.dataset_info)
+
+        if self.bovista_widget._initialized:
+            setup_with_channel(self.bovista_widget.viewer)
+        else:
+            self.bovista_widget.on_ready(setup_with_channel)
 
     def update_contrast(self):
         """Update contrast range based on slider values"""

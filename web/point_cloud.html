@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bovista - Point Cloud Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            overflow: hidden;
+        }
+
+        #container {
+            width: 90vw;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        #header {
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        .subtitle {
+            margin: 5px 0 0 0;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        #canvas-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #1a1a1a;
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        canvas {
+            max-width: 100% !important;
+            max-height: 100% !important;
+            width: 100% !important;
+            height: 100% !important;
+            display: block;
+            object-fit: contain;
+        }
+
+        #controls {
+            padding: 15px 20px;
+            background: #f5f5f5;
+            border-top: 1px solid #ddd;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .control-item {
+            display: inline-block;
+            margin-right: 20px;
+        }
+
+        .control-item strong {
+            color: #333;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            text-align: center;
+        }
+
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="header">
+            <h1>🍄 Bovista</h1>
+            <p class="subtitle">Scientific Data Visualization with WebGPU</p>
+        </div>
+        <div id="canvas-container">
+            <div id="loading">
+                <div class="spinner"></div>
+                <div>Loading point cloud...</div>
+            </div>
+        </div>
+        <div id="controls">
+            <div class="control-item">
+                <strong>Orbit:</strong> Left click + drag
+            </div>
+            <div class="control-item">
+                <strong>Zoom:</strong> Mouse wheel
+            </div>
+            <div class="control-item">
+                <strong>Points:</strong> 8,000 (20×20×20 cube)
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init from './pkg/point_cloud.js';
+
+        async function run() {
+            try {
+                await init();
+                document.getElementById('loading').style.display = 'none';
+                console.log('Bovista initialized successfully!');
+            } catch (error) {
+                console.error('Failed to initialize:', error);
+                document.getElementById('loading').innerHTML =
+                    '<div style="color: #ff6b6b;">Failed to initialize WebGPU. Please use a browser with WebGPU support.</div>';
+            }
+        }
+
+        run();
+    </script>
+</body>
+</html>

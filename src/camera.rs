@@ -1,6 +1,40 @@
+//! Camera system for 3D navigation and projection.
+//!
+//! Provides a perspective camera with intuitive controls for visualizing 3D data:
+//! - Orbit: rotate around a target point
+//! - Zoom: move closer/farther from target
+//! - Pan: translate the view target
+
 use glam::{Mat4, Vec3};
 
-/// A basic perspective camera for 3D visualization
+/// A perspective camera for 3D visualization with orbit controls.
+///
+/// The camera uses a target-based system where the camera orbits around a fixed
+/// point in space (the target). This is ideal for inspecting 3D objects and volumes.
+///
+/// # Coordinate System
+///
+/// Bovista uses a right-handed coordinate system:
+/// - +X: Right
+/// - +Y: Up
+/// - +Z: Forward (towards viewer)
+///
+/// # Example
+///
+/// ```rust
+/// use bovista::Camera;
+/// use glam::Vec3;
+///
+/// let mut camera = Camera::new(16.0 / 9.0);
+/// camera.position = Vec3::new(0.0, 0.0, 10.0);
+/// camera.target = Vec3::ZERO;
+///
+/// // Orbit around target
+/// camera.orbit(0.1, 0.1);
+///
+/// // Zoom in/out
+/// camera.zoom(-1.0);
+/// ```
 #[derive(Clone)]
 pub struct Camera {
     pub position: Vec3,

@@ -12,7 +12,11 @@
       "WebFetch(domain:docs.rs)",
       "Bash(cargo doc:*)",
       "Bash(cargo tree:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(chmod:*)",
+      "Bash(./build_wasm.sh:*)",
+      "Bash(cargo update:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

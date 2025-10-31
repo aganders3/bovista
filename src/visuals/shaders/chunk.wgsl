@@ -60,6 +60,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Sample texture FIRST (uniform control flow required for textureSample)
+    let tex_value = textureSample(chunk_texture, chunk_sampler, input.texcoord).r;
+
+    // Apply contrast adjustment
+    let adjusted = (tex_value - chunk.contrast_min) / (chunk.contrast_max - chunk.contrast_min);
+    let clamped = clamp(adjusted, 0.0, 1.0);
+
     // Debug mode: show chunk boundaries with color-coded layers
     if (chunk.debug_mode > 0.5) {
         // Draw wireframe by checking distance to edges
@@ -75,23 +82,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             return vec4<f32>(1.0, 1.0, 1.0, 1.0);
         } else {
             // Tint the texture with debug color
-            let tex_value = textureSample(chunk_texture, chunk_sampler, input.texcoord).r;
-            let adjusted = (tex_value - chunk.contrast_min) / (chunk.contrast_max - chunk.contrast_min);
-            let clamped = clamp(adjusted, 0.0, 1.0);
-
-            // Blend texture with debug color
             let tinted = mix(vec3<f32>(clamped, clamped, clamped), chunk.debug_color, 0.3);
             return vec4<f32>(tinted, 1.0);
         }
     }
 
-    // Normal mode: sample the 3D texture at the computed texture coordinates
-    let tex_value = textureSample(chunk_texture, chunk_sampler, input.texcoord).r;
-
-    // Apply contrast adjustment
-    let adjusted = (tex_value - chunk.contrast_min) / (chunk.contrast_max - chunk.contrast_min);
-    let clamped = clamp(adjusted, 0.0, 1.0);
-
-    // Grayscale output
+    // Normal mode: grayscale output
     return vec4<f32>(clamped, clamped, clamped, 1.0);
 }

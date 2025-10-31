@@ -1,3 +1,47 @@
+//! Tiled image rendering with on-demand chunk loading for massive volumes.
+//!
+//! This module implements a sophisticated system for rendering volumetric image data
+//! that is too large to fit in memory. Key features:
+//!
+//! - **Spatial Partitioning**: Divides volume into a 3D grid of chunks
+//! - **Visibility Culling**: Only loads chunks intersecting the current slice plane
+//! - **LRU Caching**: Automatically evicts least-recently-used chunks when memory limit reached
+//! - **Async Loading**: Chunks loaded via callback function (typically calling Python/Zarr)
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────┐
+//! │          TiledImageVisual                        │
+//! │  - Volume grid: 10×8×12 chunks                   │
+//! │  - Max loaded: 150 chunks                        │
+//! │  - Current slice: Z=5.2                          │
+//! └─────────────────────────────────────────────────┘
+//!          │
+//!          ├─── update_visible_chunks()
+//!          │    └─→ Find chunks intersecting slice plane
+//!          │
+//!          ├─── load_chunk()
+//!          │    └─→ Call Python loader callback
+//!          │         ├─ Fetch from remote Zarr/S3
+//!          │         └─ Return uint8 array
+//!          │
+//!          ├─── evict_chunks()
+//!          │    └─→ Remove LRU chunks if over limit
+//!          │
+//!          └─── render()
+//!               └─→ Render all visible chunks
+//! ```
+//!
+//! # Coordinate System
+//!
+//! Throughout this module, dimensions follow the pattern `(Z, Y, X)`:
+//! - Z: depth (slice axis)
+//! - Y: height (rows)
+//! - X: width (columns)
+//!
+//! This matches NumPy/Zarr array indexing conventions.
+
 use crate::visual::{Transform, Visual};
 use crate::visuals::image::SlicePlane;
 use crate::visuals::chunk_visual::ChunkVisual;
@@ -6,26 +50,50 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use wgpu::RenderPass;
 
-/// Request for a chunk of data
+/// Request for a chunk of data to be loaded.
+///
+/// Chunks are identified by their integer grid coordinates in the volume.
+/// The loader callback receives this request and should return the chunk data
+/// or None if the chunk doesn't exist or can't be loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkRequest {
+    /// X coordinate in chunk grid
     pub chunk_x: u32,
+    /// Y coordinate in chunk grid
     pub chunk_y: u32,
+    /// Z coordinate in chunk grid
     pub chunk_z: u32,
 }
 
-/// Response containing chunk data
+/// Response containing loaded chunk data.
+///
+/// The data should be in row-major order (Z,Y,X) with uint8 values.
+/// Width/height/depth specify the actual size of this chunk, which may be
+/// smaller than the chunk grid size for edge chunks.
 pub struct ChunkData {
+    /// Raw uint8 voxel data in (Z,Y,X) order
     pub data: Vec<u8>,
+    /// Actual width of this chunk in voxels
     pub width: u32,
+    /// Actual height of this chunk in voxels
     pub height: u32,
+    /// Actual depth of this chunk in voxels
     pub depth: u32,
 }
 
-/// Callback for loading chunks on-demand
+/// Callback for loading chunks on-demand.
+///
+/// This function is called when a chunk needs to be loaded. It should:
+/// 1. Fetch the chunk data (e.g., from Zarr array, network, disk)
+/// 2. Convert to uint8 format if needed
+/// 3. Return Some(ChunkData) on success or None if chunk unavailable
+///
+/// The callback may be called from the render thread, so it should be fast.
+/// For slow I/O operations (like network fetches), consider using async loading
+/// in the Python layer and returning None until data is ready.
 pub type ChunkLoaderFn = Arc<dyn Fn(ChunkRequest) -> Option<ChunkData> + Send + Sync>;
 
-/// A single chunk of volumetric image data
+/// Internal representation of a loaded chunk with metadata.
 struct ImageChunk {
     visual: Arc<Mutex<ChunkVisual>>,
     #[allow(dead_code)]  // Kept for potential future spatial queries
