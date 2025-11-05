@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QSlider,
 )
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal, QObject
 import bovista as bv
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -58,12 +58,12 @@ from threading import Lock
 DATASETS = {
     "Human Mitotic Cell (small)": {
         "url": "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr",
-        "description": "HeLa cells, ~200MB, 5 resolution levels",
+        "description": "HeLa cells, 3 resolution levels",
         "camera_distance": 200.0,
     },
     "Platybrowser (medium)": {
         "url": "https://s3.embl.de/i2k-2020/platy-raw.ome.zarr",
-        "description": "Platynereis embryo, ~1GB, 3 resolution levels",
+        "description": "Platynereis embryo, 10 resolution levels",
         "camera_distance": 400.0,
     },
 }
@@ -79,8 +79,8 @@ class BovistaWidget(QWidget):
     - Supports slice plane manipulation
 
     Attributes:
-        viewer: PyViewer instance for GPU rendering
-        tiled_image: Currently displayed TiledImageVisual (if any)
+        viewer: Viewer instance for GPU rendering
+        tiled_image: Currently displayed TiledImage (if any)
         debug_mode: Whether to show chunk boundaries
         slice_angle_x/y: Current slice plane rotation angles
         slice_offset: Current slice plane offset
@@ -90,7 +90,7 @@ class BovistaWidget(QWidget):
     def __init__(self, parent=None, width=800, height=600):
         super().__init__(parent)
         self.setMinimumSize(width, height)
-        self.viewer = bv.PyViewer(width, height)
+        self.viewer = bv.Viewer(width, height)
         self._initialized = False
         self._setup_callbacks = []
 
@@ -103,16 +103,29 @@ class BovistaWidget(QWidget):
         self.slice_angle_x = 0.0
         self.slice_angle_y = 0.0
         self.slice_offset = 0.0
-        self.tiled_image = None
+        self._tiled_image = None
         self.debug_mode = False
         self.volume_center = [0, 0, 0]
 
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setFocus()
+        # Use ClickFocus instead of StrongFocus to avoid stealing focus from dropdowns
+        # StrongFocus would grab focus during tab navigation which can interfere
+        # with other widgets (especially on macOS with native window handles)
+        self.setFocusPolicy(Qt.ClickFocus)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._render_loop)
         self.timer.start(16)
+
+    @property
+    def tiled_image(self):
+        return self._tiled_image
+
+    @tiled_image.setter
+    def tiled_image(self, value):
+        print("BovistaWidget: Setting new tiled_image")
+        self._tiled_image = value
+        if self._tiled_image:
+            self._update_slice_plane()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -142,8 +155,8 @@ class BovistaWidget(QWidget):
     def _render_loop(self):
         if self._initialized:
             try:
-                if self.tiled_image:
-                    self.tiled_image.prepare_chunks(self.viewer)
+                if self._tiled_image:
+                    self._tiled_image.prepare_chunks(self.viewer)
                 self.viewer.render_frame()
             except Exception as e:
                 print(f"Render error: {e}")
@@ -171,7 +184,7 @@ class BovistaWidget(QWidget):
             self.viewer.orbit_camera(dx * 0.01, dy * 0.01)
             self.last_x = event.position().x()
             self.last_y = event.position().y()
-        elif self.right_mouse_pressed and self._initialized and self.tiled_image:
+        elif self.right_mouse_pressed and self._initialized and self._tiled_image:
             dx = event.position().x() - self.last_x
             dy = event.position().y() - self.last_y
 
@@ -194,8 +207,8 @@ class BovistaWidget(QWidget):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_D:
             self.debug_mode = not self.debug_mode
-            if self.tiled_image:
-                self.tiled_image.set_debug_mode(self.debug_mode)
+            if self._tiled_image:
+                self._tiled_image.set_debug_mode(self.debug_mode)
                 print(f"Debug mode: {'ON' if self.debug_mode else 'OFF'}")
         event.accept()
 
@@ -206,7 +219,7 @@ class BovistaWidget(QWidget):
             self._setup_callbacks.append(callback)
 
     def _update_slice_plane(self):
-        if not self.tiled_image:
+        if not self._tiled_image:
             return
 
         import math
@@ -227,7 +240,7 @@ class BovistaWidget(QWidget):
             normal_z /= length
 
         center = self.volume_center
-        self.tiled_image.set_slice_plane(
+        self._tiled_image.set_slice_plane(
             center[0],
             center[1],
             center[2] + self.slice_offset,
@@ -251,16 +264,25 @@ class MainWindow(QMainWindow):
     using ThreadPoolExecutor to avoid blocking the UI thread.
     """
 
+    # Signal for thread-safe communication from background threads to main GUI thread
+    metadata_loaded = Signal(object, object, object, str)  # store, level_info, dataset_info, dataset_name
+    metadata_error = Signal(str)  # error message
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Bovista Remote OME-Zarr Viewer")
         self.setGeometry(100, 100, 1000, 700)
+
+        # Connect signals to slots for thread-safe UI updates
+        self.metadata_loaded.connect(self._on_metadata_loaded)
+        self.metadata_error.connect(self._on_metadata_error)
 
         self.zarr_data = None
         self.current_resolution = 0
         self.current_channel = 0
         self.data_range = (0.0, 255.0)  # Will be updated when data loads
         self.dataset_info = None  # Currently loaded dataset info
+        self.camera_initialized = False  # Track if camera has been positioned
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -307,7 +329,7 @@ class MainWindow(QMainWindow):
 
         self.contrast_min_slider = QSlider(Qt.Horizontal)
         self.contrast_min_slider.setMinimum(0)
-        self.contrast_min_slider.setMaximum(1000)
+        self.contrast_min_slider.setMaximum(255)
         self.contrast_min_slider.setValue(0)
         self.contrast_min_slider.valueChanged.connect(self.update_contrast)
         contrast_layout.addWidget(self.contrast_min_slider)
@@ -320,8 +342,8 @@ class MainWindow(QMainWindow):
 
         self.contrast_max_slider = QSlider(Qt.Horizontal)
         self.contrast_max_slider.setMinimum(0)
-        self.contrast_max_slider.setMaximum(1000)
-        self.contrast_max_slider.setValue(1000)
+        self.contrast_max_slider.setMaximum(255)
+        self.contrast_max_slider.setValue(255)
         self.contrast_max_slider.valueChanged.connect(self.update_contrast)
         contrast_layout.addWidget(self.contrast_max_slider)
 
@@ -405,17 +427,16 @@ class MainWindow(QMainWindow):
                 store, level_info, error = future.result()
 
                 if error or not level_info:
-                    self.stats_label.setText(f"Error: {error or 'Unknown error'}")
-                    print(f"Error loading dataset: {error}")
-                    self.load_button.setEnabled(True)
+                    # Emit signal to main thread (thread-safe)
+                    self.metadata_error.emit(error or 'Unknown error')
                     return
 
-                self.process_loaded_store(store, level_info, dataset_info, dataset_name)
+                # Emit signal to main thread (thread-safe)
+                self.metadata_loaded.emit(store, level_info, dataset_info, dataset_name)
 
             except Exception as e:
-                self.stats_label.setText(f"Error: {e}")
-                print(f"Error in callback: {e}")
-                self.load_button.setEnabled(True)
+                # Emit error signal to main thread (thread-safe)
+                self.metadata_error.emit(str(e))
 
         # Submit to thread pool
         if not hasattr(self, "_metadata_executor"):
@@ -426,14 +447,26 @@ class MainWindow(QMainWindow):
         future = self._metadata_executor.submit(load_metadata)
         future.add_done_callback(on_metadata_loaded)
 
+    def _on_metadata_loaded(self, store, level_info, dataset_info, dataset_name):
+        """Slot called on main thread when metadata is loaded"""
+        self.process_loaded_store(store, level_info, dataset_info, dataset_name)
+
+    def _on_metadata_error(self, error):
+        """Slot called on main thread when metadata loading fails"""
+        self.stats_label.setText(f"Error: {error}")
+        print(f"Error loading dataset: {error}")
+        self.load_button.setEnabled(True)
+
     def process_loaded_store(self, store, level_info, dataset_info, dataset_name):
         """Process loaded zarr store (on main thread)"""
         try:
             # Populate resolution combo with just level numbers (shapes loaded lazily)
+            self.resolution_combo.blockSignals(True)
             self.resolution_combo.clear()
             for info in level_info:
                 i = info["index"]
                 self.resolution_combo.addItem(f"Level {i}", i)
+            self.resolution_combo.blockSignals(False)
 
             self.zarr_data = store
             self.dataset_info = dataset_info
@@ -451,28 +484,47 @@ class MainWindow(QMainWindow):
                 first_array = store[first_path]
                 num_channels = first_array.shape[channel_idx]
 
-                # Populate channel combo
+                # Populate channel combo (block signals to avoid triggering change handler)
+                self.channel_combo.blockSignals(True)
                 self.channel_combo.clear()
                 for i in range(num_channels):
                     self.channel_combo.addItem(f"Channel {i}", i)
+                # Default to last channel
+                last_channel = num_channels - 1
+                self.channel_combo.setCurrentIndex(last_channel)
+                self.channel_combo.blockSignals(False)
                 self.channel_combo.setEnabled(True)
-                self.channel_combo.setCurrentIndex(0)
+                self.current_channel = last_channel
             else:
                 # Single channel dataset
+                self.channel_combo.blockSignals(True)
                 self.channel_combo.clear()
                 self.channel_combo.addItem("Channel 0", 0)
+                self.channel_combo.setCurrentIndex(0)
+                self.channel_combo.blockSignals(False)
                 self.channel_combo.setEnabled(False)
+                self.current_channel = 0
 
-            self.current_channel = 0
+            # Default to last (lowest) resolution level
+            last_resolution_idx = len(level_info) - 1
+            self.current_resolution = level_info[last_resolution_idx]["index"]
 
-            # Don't auto-load any resolution - let user pick
-            self.current_resolution = -1  # No resolution loaded yet
-
-            # Enable resolution selector but don't select anything yet
-            self.resolution_combo.setCurrentIndex(-1)
+            # Set resolution selector to last level and enable
+            self.resolution_combo.blockSignals(True)
+            self.resolution_combo.setCurrentIndex(last_resolution_idx)
+            self.resolution_combo.blockSignals(False)
             self.resolution_combo.setEnabled(True)
 
-            self.stats_label.setText(f"Loaded: {dataset_name} - Select a resolution level")
+            # Reset camera flag when loading new dataset
+            self.camera_initialized = False
+
+            self.stats_label.setText(f"Loaded: {dataset_name} - Loading resolution level {self.current_resolution}, channel {self.current_channel}")
+
+            # Automatically load the default resolution and channel
+            if self.bovista_widget._initialized:
+                self.setup_scene(self.bovista_widget.viewer, self.dataset_info)
+            else:
+                self.bovista_widget.on_ready(lambda viewer: self.setup_scene(viewer, self.dataset_info))
 
         except Exception as e:
             self.stats_label.setText(f"Error loading dataset: {e}")
@@ -487,6 +539,8 @@ class MainWindow(QMainWindow):
         """Setup the visualization with chunked loading"""
         if self.zarr_data is None:
             return
+
+        viewer.clear_visuals()
 
         try:
             # Get the dataset at current resolution
@@ -548,64 +602,21 @@ class MainWindow(QMainWindow):
             print(f"  Extracted chunk shape: {chunk_shape}")
             print(f"  Spatial indices in array: {spatial_indices}")
 
-            # Compute contrast from a small sample
-            print("Computing contrast from data sample...")
-            try:
-                # Sample a small region from the center
-                sample_slices = [0] * len(shape)
+            # Skip contrast sampling - we use per-chunk normalization
+            # Each chunk is normalized to its own min/max, so global sampling is not needed
+            print("Using default contrast (per-chunk normalization)...")
 
-                # For non-spatial dimensions, take first element
-                for i in range(len(shape)):
-                    if i not in spatial_indices:
-                        sample_slices[i] = 0
+            # Set simple defaults based on dtype
+            if array.dtype == np.uint16:
+                data_min, data_max = 0.0, 65535.0
+            elif array.dtype == np.uint8:
+                data_min, data_max = 0.0, 255.0
+            else:
+                data_min, data_max = 0.0, 1.0
 
-                # Take a small centered sample (keep it small for fast loading from S3)
-                z_idx, y_idx, x_idx = spatial_indices
-                center_z = volume_shape[0] // 2
-                center_y = volume_shape[1] // 2
-                center_x = volume_shape[2] // 2
-
-                # Sample just 1 slice in Z, 64x64 in XY
-                sample_slices[z_idx] = center_z
-                sample_slices[y_idx] = slice(max(0, center_y - 32), min(volume_shape[1], center_y + 32))
-                sample_slices[x_idx] = slice(max(0, center_x - 32), min(volume_shape[2], center_x + 32))
-
-                print(f"  Sampling single Z slice at center (z={center_z}, y={center_y-32}:{center_y+32}, x={center_x-32}:{center_x+32})")
-                sample_data = array[tuple(sample_slices)]
-
-                data_min = float(sample_data.min())
-                data_max = float(sample_data.max())
-
-                print(f"  Sample range: {data_min} to {data_max}")
-
-                # If we got all zeros or a very narrow range, use dtype-based defaults
-                if data_max - data_min < 1.0:
-                    print(f"  Warning: Sample range too narrow ({data_min}-{data_max}), using dtype defaults")
-                    if array.dtype == np.uint16:
-                        data_min, data_max = 0.0, 65535.0
-                        global_min, global_max = 0.0, 4095.0
-                    elif array.dtype == np.uint8:
-                        data_min, data_max = 0.0, 255.0
-                        global_min, global_max = 0.0, 255.0
-                    else:
-                        # Float types - use reasonable defaults
-                        data_min, data_max = 0.0, 1.0
-                        global_min, global_max = 0.0, 1.0
-                else:
-                    global_min = float(np.percentile(sample_data, 1.0))
-                    global_max = float(np.percentile(sample_data, 99.0))
-
-                print(f"  Data range for normalization: {data_min:.1f} to {data_max:.1f}")
-                print(f"  Initial contrast window (1-99%): {global_min:.1f} to {global_max:.1f}")
-
-                # Update data range for contrast sliders
-                self.data_range = (data_min, data_max)
-            except Exception as e:
-                print(f"  Error computing contrast: {e}, using defaults")
-                import traceback
-                traceback.print_exc()
-                global_min, global_max = (0.0, 255.0) if array.dtype == np.uint8 else (0.0, 4095.0)
-                self.data_range = (global_min, global_max)
+            self.data_range = (data_min, data_max)
+            print(f"  Data type: {array.dtype}")
+            print(f"  Assumed data range: {data_min:.1f} to {data_max:.1f}")
 
             # Track chunk loading stats
             loaded_count = [0]  # Use list to allow mutation in closure
@@ -622,7 +633,6 @@ class MainWindow(QMainWindow):
 
             def load_chunk_blocking(z, y, x):
                 """Actually load a chunk from remote Zarr (blocking I/O)"""
-                print(f"    load_chunk_blocking({z},{y},{x}) STARTED in thread")
                 try:
                     cz, cy, cx = chunk_shape
                     z_start, z_end = z * cz, min((z + 1) * cz, volume_shape[0])
@@ -659,30 +669,30 @@ class MainWindow(QMainWindow):
                     slices[y_idx] = slice(y_start, y_end)
                     slices[x_idx] = slice(x_start, x_end)
 
-                    # Load from remote zarr (THIS IS WHERE THE BLOCKING I/O HAPPENS)
-                    print(f"    About to fetch from S3...")
+                    # Load from remote zarr (BLOCKING I/O)
                     chunk_data = array[tuple(slices)]
-                    print(f"    S3 fetch complete, got shape {chunk_data.shape}")
 
                     # Check if we got empty data
                     if chunk_data.size == 0:
                         return None
 
-                    # Convert to uint8 using the FULL data range (not percentiles)
-                    # The contrast sliders will remap this range for display
+                    # Convert to uint8 using PER-CHUNK normalization (like web version)
+                    # This ensures each chunk shows its full dynamic range
                     if chunk_data.dtype != np.uint8:
-                        if data_max > data_min:
-                            # Use the full data range for normalization
-                            chunk_data = np.clip(chunk_data, data_min, data_max)
+                        chunk_min = float(chunk_data.min())
+                        chunk_max = float(chunk_data.max())
+
+                        if chunk_max > chunk_min:
+                            # Normalize using this chunk's min/max
                             chunk_data = (
-                                (chunk_data - data_min)
-                                / (data_max - data_min)
+                                (chunk_data - chunk_min)
+                                / (chunk_max - chunk_min)
                                 * 255
                             ).astype(np.uint8)
                         else:
+                            # Chunk is constant
                             chunk_data = np.zeros_like(chunk_data, dtype=np.uint8)
 
-                    print(f"    load_chunk_blocking({z},{y},{x}) COMPLETED")
                     return np.array(chunk_data)
                 except Exception as e:
                     print(f"ERROR loading chunk ({z},{y},{x}): {e}")
@@ -708,23 +718,16 @@ class MainWindow(QMainWindow):
 
             def load_chunk(z, y, x):
                 """Load a chunk (non-blocking - returns cached or None and starts background load)"""
-                # Debug: print all requests
-                print(f"  load_chunk({z},{y},{x}) called from Rust")
-
                 # Check cache first
                 with cache_lock:
                     if (z, y, x) in chunk_cache:
-                        print(f"    -> returning cached chunk")
                         return chunk_cache[(z, y, x)]
 
                     # If not cached and not already loading, start background load
                     if (z, y, x) not in pending_loads:
-                        print(f"    -> starting background load")
                         pending_loads.add((z, y, x))
                         future = executor.submit(load_chunk_blocking, z, y, x)
                         future.add_done_callback(lambda f: on_chunk_loaded(z, y, x, f))
-                    else:
-                        print(f"    -> already loading")
 
                 # Return None for now - chunk will appear when ready
                 return None
@@ -732,8 +735,10 @@ class MainWindow(QMainWindow):
             # Kick off loading of initial visible chunks in background
             # Don't wait for them - they'll appear when ready
             print("Starting background loading of initial chunks...")
-            center_z = volume_shape[0] // 2
-            initial_chunks = [(center_z, 0, 0)]  # Just the center Z slice
+            # Calculate which chunk contains the center voxel
+            center_z_voxel = volume_shape[0] // 2
+            center_z_chunk = center_z_voxel // chunk_shape[0]
+            initial_chunks = [(center_z_chunk, 0, 0)]  # Chunk containing center Z slice
 
             for z, y, x in initial_chunks:
                 # Trigger async load by calling load_chunk (won't block)
@@ -747,9 +752,45 @@ class MainWindow(QMainWindow):
             grid_y = (volume_size[1] + chunk_size[1] - 1) // chunk_size[1]
             grid_x = (volume_size[2] + chunk_size[2] - 1) // chunk_size[2]
 
+            # Extract voxel spacing from OME-Zarr metadata BEFORE creating visual
+            dataset_transforms = multiscales["datasets"][self.current_resolution].get(
+                "coordinateTransformations", []
+            )
+            voxel_spacing = [1.0, 1.0, 1.0]  # Default to unit spacing (z, y, x)
+            for transform in dataset_transforms:
+                if transform.get("type") == "scale":
+                    scale = transform.get("scale", [])
+                    # Extract scales using spatial_indices to get correct z, y, x order
+                    z_idx, y_idx, x_idx = spatial_indices
+                    if len(scale) > max(z_idx, y_idx, x_idx):
+                        voxel_spacing = [scale[z_idx], scale[y_idx], scale[x_idx]]
+
+            # Scale volume_size and chunk_size to world coordinates
+            # This makes all LODs render at the same physical size
+            volume_size_world = (
+                volume_size[0] * voxel_spacing[0],  # Z
+                volume_size[1] * voxel_spacing[1],  # Y
+                volume_size[2] * voxel_spacing[2],  # X
+            )
+            chunk_size_world = (
+                chunk_size[0] * voxel_spacing[0],  # Z
+                chunk_size[1] * voxel_spacing[1],  # Y
+                chunk_size[2] * voxel_spacing[2],  # X
+            )
+
+            # Center in world coordinates (visual now renders in world space with voxel_size)
+            center = [
+                volume_size_world[2] / 2,  # X
+                volume_size_world[1] / 2,  # Y
+                volume_size_world[0] / 2,  # Z
+            ]
+
             print(f"Creating TiledImageVisual:")
-            print(f"  Volume size (z,y,x): {volume_size}")
-            print(f"  Chunk size (z,y,x): {chunk_size}")
+            print(f"  Voxel spacing (z,y,x): {voxel_spacing}")
+            print(f"  Volume size (voxels): {volume_size}")
+            print(f"  Volume size (world): {volume_size_world}")
+            print(f"  Chunk size (voxels): {chunk_size}")
+            print(f"  Chunk size (world): {chunk_size_world}")
             print(f"  Grid will be: {grid_z}z × {grid_y}y × {grid_x}x chunks")
 
             # Warn about highly anisotropic chunks
@@ -759,17 +800,18 @@ class MainWindow(QMainWindow):
                 print(f"  This may appear as a thin strip in the viewer")
                 print(f"  Try using a lower resolution level for better visualization")
 
-            tiled_image = bv.PyTiledImageVisual.from_loader(
-                viewer, volume_size, chunk_size, load_chunk, max_loaded_chunks=150
+            # Create TiledImage with voxel_size for proper world-space scaling
+            # This ensures different LODs appear at the same size and location
+            tiled_image = bv.TiledImage.from_loader(
+                viewer, volume_size, chunk_size, load_chunk,
+                voxel_size=tuple(voxel_spacing),  # Physical size of each voxel
+                max_loaded_chunks=150
             )
 
             # Set initial slice plane to show XY plane (looking down Z axis)
-            # Center is (x, y, z) in world space
-            center = [volume_size[2] / 2, volume_size[1] / 2, volume_size[0] / 2]
-            self.bovista_widget.volume_center = center
-
             # Slice plane normal pointing up in Z (shows XY slice)
             # Position at middle Z to show a cross-section
+            # (center was already calculated in world coordinates above)
             tiled_image.set_slice_plane(
                 center[0],  # x position
                 center[1],  # y position
@@ -779,71 +821,62 @@ class MainWindow(QMainWindow):
                 1.0,  # normal z (pointing up, shows XY plane)
             )
 
-            # Set initial contrast to use percentiles for better initial display
-            # Chunks are normalized using full data range, but we window to percentiles
-            data_min, data_max = self.data_range
-
-            # Map percentiles to [0,1] range for shader (R8Unorm textures are normalized)
-            if data_max > data_min:
-                contrast_min_normalized = (global_min - data_min) / (data_max - data_min)
-                contrast_max_normalized = (global_max - data_min) / (data_max - data_min)
-
-                # Set slider positions to match the percentiles
-                min_slider_pos = int((global_min - data_min) / (data_max - data_min) * 1000)
-                max_slider_pos = int((global_max - data_min) / (data_max - data_min) * 1000)
-            else:
-                # Fallback if data is constant
-                contrast_min_normalized = 0.0
-                contrast_max_normalized = 1.0
-                min_slider_pos = 0
-                max_slider_pos = 1000
-
-            tiled_image.set_contrast(contrast_min_normalized, contrast_max_normalized)
+            # Set initial contrast to full range (0-255) like web version
+            # Chunks are normalized per-chunk, so full range shows everything
+            tiled_image.set_contrast(0.0, 1.0)
 
             self.contrast_min_slider.blockSignals(True)
             self.contrast_max_slider.blockSignals(True)
-            self.contrast_min_slider.setValue(min_slider_pos)
-            self.contrast_max_slider.setValue(max_slider_pos)
+            self.contrast_min_slider.setValue(0)
+            self.contrast_max_slider.setValue(255)
             self.contrast_min_slider.blockSignals(False)
             self.contrast_max_slider.blockSignals(False)
 
-            self.contrast_min_label.setText(f"{global_min:.1f}")
-            self.contrast_max_label.setText(f"{global_max:.1f}")
+            self.contrast_min_label.setText("0")
+            self.contrast_max_label.setText("255")
 
             # Debug mode off by default (press 'D' to toggle)
             tiled_image.set_debug_mode(False)
 
             print(f"Initial setup:")
-            print(f"  Center: {center}")
+            print(f"  World center: {center}")
             print(f"  Slice plane position: ({center[0]}, {center[1]}, {center[2]})")
             print(f"  Slice plane normal: (0, 0, 1)")
-            print(f"  Expected chunk index: Z={int(center[2])} (for 1-voxel chunks)")
             print(f"  Contrast: 0-255")
             print(f"  Debug mode: ENABLED (shows chunk boundaries)")
             print(f"  Press 'D' to toggle debug mode off/on")
             print(f"\nWaiting for chunks to load...")
 
-            # Setup camera to look down at XY plane from above
-            # Use XY dimensions for distance calculation (not Z since it's thin)
-            xy_max = max(volume_size[1], volume_size[2])  # max of Y and X
-            distance = xy_max * 1.0  # Position camera far enough to see whole slice
+            # Update volume center for slice plane calculations (in world space)
+            self.bovista_widget.volume_center = center
 
-            # Camera above the center, looking down
-            viewer.set_camera_position(center[0], center[1], center[2] + distance)
-            viewer.set_camera_target(center[0], center[1], center[2])
+            # Setup camera only on first load, not on LOD changes
+            if not self.camera_initialized:
+                # Setup camera to look down at XY plane from above
+                # Use XY dimensions for distance calculation (not Z since it's thin)
+                xy_max = max(volume_size_world[1], volume_size_world[2])  # max of Y and X in world space
+                distance = xy_max * 1.0  # Position camera far enough to see whole slice
 
-            print(f"Camera setup (top-down view):")
-            print(f"  Position: ({center[0]}, {center[1]}, {center[2] + distance})")
-            print(f"  Target: ({center[0]}, {center[1]}, {center[2]})")
-            print(f"  Distance: {distance}")
-            print(f"  View: Looking down Z axis at XY slice")
+                # Camera above the center, looking down (in world coordinates)
+                viewer.set_camera_position(center[0], center[1], center[2] + distance)
+                viewer.set_camera_target(center[0], center[1], center[2])
+
+                self.camera_initialized = True
+
+                print(f"Camera setup (top-down view):")
+                print(f"  Position: ({center[0]}, {center[1]}, {center[2] + distance})")
+                print(f"  Target: ({center[0]}, {center[1]}, {center[2]})")
+                print(f"  Distance: {distance}")
+                print(f"  View: Looking down Z axis at XY slice")
+            else:
+                print("Camera position preserved from previous LOD")
 
             # Add to scene (new unified API)
             viewer.add(tiled_image)
             self.bovista_widget.tiled_image = tiled_image
 
             # Add axes (new unified API)
-            axes = bv.PyLinesVisual.axis_helper(viewer, max(volume_size) * 0.3)
+            axes = bv.Lines.axis_helper(viewer, max(volume_size) * 0.3)
             viewer.add(axes)
 
             print("Scene loaded successfully!")
@@ -867,24 +900,18 @@ class MainWindow(QMainWindow):
         print(f"\nChanging to resolution level {resolution_level}")
 
         # Clean up old visual if it exists
-        if self.bovista_widget.tiled_image is not None:
+        if self.bovista_widget._tiled_image is not None:
             print("Clearing old tiled image visual...")
-            # Note: Currently we don't have a remove method, so we just
-            # release our reference. The old visual will remain in the scene
-            # but won't be updated. TODO: Add scene.remove() or scene.clear()
             self.bovista_widget.tiled_image = None
             self.stats_label.setText("Loading new resolution...")
 
         self.current_resolution = resolution_level
 
-        # Setup scene with new resolution (ensure viewer is ready)
-        def setup_with_resolution(viewer):
-            self.setup_scene(viewer, self.dataset_info)
-
+        # Setup scene directly
         if self.bovista_widget._initialized:
-            setup_with_resolution(self.bovista_widget.viewer)
+            self.setup_scene(self.bovista_widget.viewer, self.dataset_info)
         else:
-            self.bovista_widget.on_ready(setup_with_resolution)
+            self.bovista_widget.on_ready(lambda viewer: self.setup_scene(viewer, self.dataset_info))
 
     def change_channel(self, index):
         """Change the displayed channel"""
@@ -897,36 +924,23 @@ class MainWindow(QMainWindow):
 
         print(f"\nChanging to channel {channel}")
 
-        # Clean up old visual and reload with new channel
-        if self.bovista_widget.tiled_image is not None:
-            print("Clearing old tiled image visual for channel change...")
-            self.bovista_widget.tiled_image = None
-            self.stats_label.setText("Loading new channel...")
-
         self.current_channel = channel
 
-        # Reload scene with new channel
-        def setup_with_channel(viewer):
-            self.setup_scene(viewer, self.dataset_info)
-
+        # Setup scene directly
         if self.bovista_widget._initialized:
-            setup_with_channel(self.bovista_widget.viewer)
+            self.setup_scene(self.bovista_widget.viewer, self.dataset_info)
         else:
-            self.bovista_widget.on_ready(setup_with_channel)
+            self.bovista_widget.on_ready(lambda viewer: self.setup_scene(viewer, self.dataset_info))
 
     def update_contrast(self):
-        """Update contrast range based on slider values"""
+        """Update contrast range based on slider values (simple 0-255 like web version)"""
         try:
-            print(f"update_contrast called, tiled_image={self.bovista_widget.tiled_image is not None}")
-
-            if self.bovista_widget.tiled_image is None:
-                print("  -> tiled_image is None, returning early")
+            if self.bovista_widget._tiled_image is None:
                 return
 
-            # Get slider positions (0-1000)
+            # Get slider values (0-255)
             min_pos = self.contrast_min_slider.value()
             max_pos = self.contrast_max_slider.value()
-            print(f"  slider values: min={min_pos}, max={max_pos}")
 
             # Ensure min < max
             if min_pos >= max_pos:
@@ -943,41 +957,19 @@ class MainWindow(QMainWindow):
                     self.contrast_max_slider.setValue(max_pos)
                     self.contrast_max_slider.blockSignals(False)
 
-            # Sliders map directly to the data range
-            # Chunks are normalized to 0-255 using data_min to data_max
-            # So slider position maps to a value in the data range,
-            # which then maps to a position in the 0-255 uint8 range
-            data_min, data_max = self.data_range
-            print(f"  data_range: ({data_min}, {data_max})")
+            # Simple 0-255 mapping like web version
+            # Chunks are normalized per-chunk, so we map slider values directly
+            # Update labels
+            self.contrast_min_label.setText(str(min_pos))
+            self.contrast_max_label.setText(str(max_pos))
 
-            if data_max > data_min:
-                # Map slider to data values
-                contrast_min_data = data_min + (data_max - data_min) * (min_pos / 1000.0)
-                contrast_max_data = data_min + (data_max - data_min) * (max_pos / 1000.0)
-
-                # Update labels
-                self.contrast_min_label.setText(f"{contrast_min_data:.1f}")
-                self.contrast_max_label.setText(f"{contrast_max_data:.1f}")
-
-                # Map to 0-1 range for the shader (R8Unorm texture values are normalized to [0,1])
-                # Chunks are stored as uint8, but the texture format (R8Unorm) normalizes them to [0,1]
-                # So we need to pass contrast limits in [0,1] range
-                contrast_min_normalized = (contrast_min_data - data_min) / (data_max - data_min)
-                contrast_max_normalized = (contrast_max_data - data_min) / (data_max - data_min)
-
-                print(f"  Contrast: data=({contrast_min_data:.1f}, {contrast_max_data:.1f}), normalized=({contrast_min_normalized:.3f}, {contrast_max_normalized:.3f})")
-            else:
-                # Fallback if data is constant
-                self.contrast_min_label.setText(f"{data_min:.1f}")
-                self.contrast_max_label.setText(f"{data_max:.1f}")
-                contrast_min_normalized = 0.0
-                contrast_max_normalized = 1.0
-                print(f"  Using fallback contrast (data constant)")
+            # Map 0-255 to normalized 0-1 range for shader
+            # (R8Unorm textures are normalized to [0,1])
+            contrast_min_normalized = min_pos / 255.0
+            contrast_max_normalized = max_pos / 255.0
 
             # Apply to tiled image
-            print(f"  Calling set_contrast({contrast_min_normalized:.3f}, {contrast_max_normalized:.3f})")
-            self.bovista_widget.tiled_image.set_contrast(contrast_min_normalized, contrast_max_normalized)
-            print(f"  set_contrast completed")
+            self.bovista_widget._tiled_image.set_contrast(contrast_min_normalized, contrast_max_normalized)
         except Exception as e:
             print(f"ERROR in update_contrast: {e}")
             import traceback
@@ -985,9 +977,9 @@ class MainWindow(QMainWindow):
 
     def update_stats(self):
         """Update statistics display"""
-        if self.bovista_widget.tiled_image:
+        if self.bovista_widget._tiled_image:
             try:
-                loaded, visible = self.bovista_widget.tiled_image.get_stats()
+                loaded, visible = self.bovista_widget._tiled_image.get_stats()
                 res_level = self.current_resolution
                 self.stats_label.setText(
                     f"Resolution {res_level} | Chunks: {loaded} loaded, {visible} visible"

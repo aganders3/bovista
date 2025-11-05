@@ -51,7 +51,7 @@ macro_rules! with_visual {
 }
 
 /// Python wrapper for the Viewer (combines window, renderer, camera, scene)
-#[pyclass]
+#[pyclass(name = "Viewer")]
 pub struct PyViewer {
     renderer: Option<Renderer>,
     instance: Option<wgpu::Instance>,
@@ -275,7 +275,7 @@ impl PyViewer {
     ///
     /// # Arguments
     ///
-    /// * `visual` - Any visual object (PyPointsVisual, PyLinesVisual, PyImageVisual, PyTiledImageVisual)
+    /// * `visual` - Any visual object (Points, Lines, Image, TiledImage)
     ///
     /// # Returns
     ///
@@ -309,10 +309,14 @@ impl PyViewer {
         }
 
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "Expected a visual object (PyPointsVisual, PyLinesVisual, PyImageVisual, PyTiledImageVisual, or PyCustomVisual)"
+            "Expected a visual object (Points, Lines, Image, TiledImage, or Custom)"
         ))
     }
 
+    /// Remove all visuals from the scene
+    fn clear_visuals(&mut self) {
+        self.scene.clear();
+    }
 
     /// Set camera position
     fn set_camera_position(&mut self, x: f32, y: f32, z: f32) {
@@ -630,7 +634,7 @@ trait PyVisualWrapper {
 }
 
 /// Python wrapper for PointsVisual
-#[pyclass]
+#[pyclass(name = "Points")]
 pub struct PyPointsVisual {
     inner: VisualRef,
 }
@@ -710,7 +714,7 @@ impl PyPointsVisual {
 }
 
 /// Python wrapper for LinesVisual
-#[pyclass]
+#[pyclass(name = "Lines")]
 pub struct PyLinesVisual {
     inner: VisualRef,
 }
@@ -760,7 +764,7 @@ impl PyLinesVisual {
 }
 
 /// Python wrapper for ImageVisual
-#[pyclass]
+#[pyclass(name = "Image")]
 pub struct PyImageVisual {
     inner: VisualRef,
 }
@@ -849,7 +853,7 @@ impl PyImageVisual {
 }
 
 /// Python wrapper for TiledImageVisual
-#[pyclass]
+#[pyclass(name = "TiledImage")]
 pub struct PyTiledImageVisual {
     inner: VisualRef,
 }
@@ -868,21 +872,24 @@ impl PyTiledImageVisual {
     ///     viewer: The viewer instance
     ///     volume_size: Tuple of (depth, height, width) for full volume
     ///     chunk_size: Tuple of (depth, height, width) for each chunk
+    ///     voxel_size: Tuple of (z_size, y_size, x_size) for physical size of each voxel (default: (1.0, 1.0, 1.0))
     ///     loader: Python callable that takes (z, y, x) and returns numpy array or None
     ///     max_loaded_chunks: Maximum number of chunks to keep in memory (default: 100)
     #[staticmethod]
-    #[pyo3(signature = (viewer, volume_size, chunk_size, loader, max_loaded_chunks=None))]
+    #[pyo3(signature = (viewer, volume_size, chunk_size, loader, voxel_size=None, max_loaded_chunks=None))]
     fn from_loader(
         viewer: &PyViewer,
         volume_size: (u32, u32, u32),
         chunk_size: (u32, u32, u32),
         loader: PyObject,
+        voxel_size: Option<(f32, f32, f32)>,
         max_loaded_chunks: Option<usize>,
     ) -> PyResult<Self> {
         let _renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
         let max_chunks = max_loaded_chunks.unwrap_or(100);
+        let voxel_size = voxel_size.unwrap_or((1.0, 1.0, 1.0));
 
         // Create a Rust closure that calls the Python loader
         let loader_arc = Arc::new(loader);
@@ -924,10 +931,11 @@ impl PyTiledImageVisual {
             })
         });
 
-        // Create TiledImageVisual
+        // Create TiledImageVisual with voxel_size for world-space scaling
         let tiled_visual = TiledImageVisual::new(
             volume_size,
             chunk_size,
+            voxel_size,
             loader_fn,
             max_chunks,
         );
@@ -984,7 +992,7 @@ impl PyTiledImageVisual {
 }
 
 /// Python wrapper for CustomVisual
-#[pyclass]
+#[pyclass(name = "Custom")]
 pub struct PyCustomVisual {
     inner: VisualRef,
 }
@@ -1087,7 +1095,7 @@ impl PyCustomVisual {
 }
 
 /// Python wrapper for vertex buffer layout
-#[pyclass]
+#[pyclass(name = "VertexBufferLayout")]
 #[derive(Clone)]
 pub struct PyVertexBufferLayout {
     stride: u64,

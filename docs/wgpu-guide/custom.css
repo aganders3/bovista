@@ -1,0 +1,96 @@
+/* Custom styles for WGPU guide */
+
+/* Better code block styling */
+pre {
+    border-left: 3px solid var(--links);
+    padding-left: 1em !important;
+}
+
+/* Highlight important sections */
+.warning, .important {
+    padding: 1em;
+    margin: 1em 0;
+    border-left: 4px solid #f0ad4e;
+    background-color: rgba(240, 173, 78, 0.1);
+}
+
+/* Better table styling */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+}
+
+table th {
+    background-color: var(--table-header-bg);
+    padding: 0.75em;
+    text-align: left;
+    font-weight: bold;
+}
+
+table td {
+    padding: 0.75em;
+    border-top: 1px solid var(--table-border-color);
+}
+
+/* Comparison tables */
+table th:first-child {
+    width: 20%;
+}
+
+/* Better spacing for lists */
+ul, ol {
+    margin: 0.5em 0;
+    padding-left: 2em;
+}
+
+li {
+    margin: 0.25em 0;
+}
+
+/* Checkmarks for benefits */
+li:has(> .checkmark)::marker {
+    content: "✅ ";
+}
+
+li:has(> .crossmark)::marker {
+    content: "❌ ";
+}
+
+/* Code inline highlights */
+code {
+    background-color: var(--inline-code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+/* Better heading spacing */
+h2 {
+    margin-top: 2em;
+    margin-bottom: 0.5em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--border-color);
+}
+
+h3 {
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+}
+
+/* Info boxes */
+.info-box {
+    padding: 1em;
+    margin: 1em 0;
+    border-radius: 4px;
+    background-color: var(--quote-bg);
+    border-left: 4px solid var(--links);
+}
+
+/* Next chapter link styling */
+p:has(> strong:contains("Next")) {
+    margin-top: 2em;
+    padding-top: 1em;
+    border-top: 2px solid var(--border-color);
+    text-align: right;
+}

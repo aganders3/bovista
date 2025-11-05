@@ -30,6 +30,7 @@ static mut CHUNK_CACHE: Option<Rc<RefCell<HashMap<(u32, u32, u32), Vec<u8>>>>> =
 // Global volume and chunk dimensions set by init_dataset()
 static mut VOLUME_SIZE: Option<(u32, u32, u32)> = None;
 static mut CHUNK_SIZE: Option<(u32, u32, u32)> = None;
+static mut VOXEL_SIZE: Option<(f32, f32, f32)> = None;
 
 // Flag to signal when initial chunks are loaded and viewer should start
 static mut DATASET_READY: bool = false;
@@ -72,6 +73,7 @@ struct RendererState {
     volume_center: glam::Vec3,
     debug_mode: bool,
     tiled_image: Option<Rc<RefCell<TiledImageVisual>>>,
+    camera_initialized: bool,  // Track if camera has been positioned
 }
 
 struct App {
@@ -185,6 +187,7 @@ impl ApplicationHandler for App {
                     volume_center: glam::Vec3::ZERO,
                     debug_mode: false,
                     tiled_image: None,
+                    camera_initialized: false,
                 });
             });
         }
@@ -386,25 +389,36 @@ fn initialize_tiled_visual(state: &mut RendererState) {
                 }
             }
 
-            // Position camera to look at volume center (matching Python version)
+            // Position camera to look at volume center (only on first initialization)
             unsafe {
                 if let Some(volume_size) = VOLUME_SIZE {
+                    let voxel_size = VOXEL_SIZE.unwrap_or((1.0, 1.0, 1.0));
+
+                    // Calculate center in world coordinates
                     let center = glam::Vec3::new(
-                        volume_size.2 as f32 / 2.0,  // X
-                        volume_size.1 as f32 / 2.0,  // Y
-                        volume_size.0 as f32 / 2.0,  // Z
+                        (volume_size.2 as f32 / 2.0) * voxel_size.2,  // X
+                        (volume_size.1 as f32 / 2.0) * voxel_size.1,  // Y
+                        (volume_size.0 as f32 / 2.0) * voxel_size.0,  // Z
                     );
 
                     // Store volume center for slice plane rotation
                     state.volume_center = center;
 
-                    // Distance based on max of X and Y (not Z), matching Python
-                    let xy_max = volume_size.1.max(volume_size.2) as f32;
-                    let distance = xy_max * 1.0;
+                    // Only position camera if not already initialized
+                    if !state.camera_initialized {
+                        // Distance based on max of X and Y in world space (not Z), matching Python
+                        let xy_max_world = (volume_size.1 as f32 * voxel_size.1).max(volume_size.2 as f32 * voxel_size.2);
+                        let distance = xy_max_world * 1.0;
 
-                    state.camera.target = center;
-                    // Camera above the center, looking down (add to Z)
-                    state.camera.position = glam::Vec3::new(center.x, center.y, center.z + distance);
+                        state.camera.target = center;
+                        // Camera above the center, looking down (add to Z)
+                        state.camera.position = glam::Vec3::new(center.x, center.y, center.z + distance);
+                        state.camera_initialized = true;
+
+                        console_log!("Camera initialized: position = {:?}, target = {:?}", state.camera.position, state.camera.target);
+                    } else {
+                        console_log!("Camera position preserved from previous LOD/channel");
+                    }
                 }
             }
 
@@ -463,13 +477,17 @@ pub fn init_dataset(
     chunk_z: u32,
     chunk_y: u32,
     chunk_x: u32,
+    voxel_z: f32,
+    voxel_y: f32,
+    voxel_x: f32,
 ) {
-    console_log!("Dataset initialized: {}x{}x{}, chunks: {}x{}x{}",
-        volume_z, volume_y, volume_x, chunk_z, chunk_y, chunk_x);
+    console_log!("Dataset initialized: {}x{}x{} voxels, chunks: {}x{}x{}, voxel size: {}×{}×{}",
+        volume_z, volume_y, volume_x, chunk_z, chunk_y, chunk_x, voxel_z, voxel_y, voxel_x);
 
     unsafe {
         VOLUME_SIZE = Some((volume_z, volume_y, volume_x));
         CHUNK_SIZE = Some((chunk_z, chunk_y, chunk_x));
+        VOXEL_SIZE = Some((voxel_z, voxel_y, voxel_x));
     }
 }
 
@@ -579,10 +597,12 @@ fn create_tiled_visual() -> Option<TiledImageVisual> {
             }
         });
 
-        let mut tiled = TiledImageVisual::new(volume_size, chunk_size, loader, 300);
+        let voxel_size = VOXEL_SIZE.unwrap_or((1.0, 1.0, 1.0));
 
-        // Set initial slice plane at center of volume
-        let center_z = volume_size.0 as f32 / 2.0;
+        let mut tiled = TiledImageVisual::new(volume_size, chunk_size, voxel_size, loader, 300);
+
+        // Set initial slice plane at center of volume (in world coordinates)
+        let center_z = (volume_size.0 as f32 / 2.0) * voxel_size.0;
         tiled.set_slice_plane(SlicePlane {
             position: [0.0, 0.0, center_z],
             normal: [0.0, 0.0, 1.0],

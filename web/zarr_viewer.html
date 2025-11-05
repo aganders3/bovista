@@ -163,51 +163,34 @@
             border: 1px solid #f85149;
         }
 
-        /* Dual range slider styling */
-        #contrast-min, #contrast-max {
+        /* Range slider styling */
+        input[type="range"] {
             -webkit-appearance: none;
             appearance: none;
             height: 4px;
-            background: transparent;
+            background: #30363d;
             outline: none;
+            border-radius: 2px;
         }
 
-        #contrast-min::-webkit-slider-thumb,
-        #contrast-max::-webkit-slider-thumb {
+        input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
             appearance: none;
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
             background: #58a6ff;
             cursor: pointer;
             border-radius: 50%;
             border: 2px solid #0d1117;
         }
 
-        #contrast-min::-moz-range-thumb,
-        #contrast-max::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
+        input[type="range"]::-moz-range-thumb {
+            width: 14px;
+            height: 14px;
             background: #58a6ff;
             cursor: pointer;
             border-radius: 50%;
             border: 2px solid #0d1117;
-        }
-
-        #contrast-min::-webkit-slider-runnable-track,
-        #contrast-max::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 4px;
-            background: #30363d;
-            border-radius: 2px;
-        }
-
-        #contrast-min::-moz-range-track,
-        #contrast-max::-moz-range-track {
-            width: 100%;
-            height: 4px;
-            background: #30363d;
-            border-radius: 2px;
         }
     </style>
 </head>
@@ -227,13 +210,12 @@
                 <option value="">Channel</option>
             </select>
             <div style="margin-left: 1rem; display: inline-flex; align-items: center; gap: 0.5rem;">
-                <label>Contrast:</label>
-                <div style="position: relative; width: 200px; height: 20px;">
-                    <input type="range" id="contrast-min" min="0" max="255" value="0"
-                           style="position: absolute; width: 100%;">
-                    <input type="range" id="contrast-max" min="0" max="255" value="255"
-                           style="position: absolute; width: 100%;">
-                </div>
+                <label>Min:</label>
+                <input type="range" id="contrast-min" min="0" max="255" value="0"
+                       style="width: 100px;">
+                <label>Max:</label>
+                <input type="range" id="contrast-max" min="0" max="255" value="255"
+                       style="width: 100px;">
                 <span id="contrast-values" style="font-size: 0.75rem; color: #8b949e; min-width: 60px;">0-255</span>
             </div>
         </div>
@@ -438,11 +420,31 @@
             console.log('Volume:', volumeShape);
             console.log('Chunks:', chunkShape);
 
-            // Initialize Rust side
+            // Extract voxel spacing from coordinateTransformations
+            const datasetMeta = currentMultiscales.datasets[lodIdx];
+            const transforms = datasetMeta.coordinateTransformations || [];
+            let voxelSize = { z: 1.0, y: 1.0, x: 1.0 };
+
+            for (const transform of transforms) {
+                if (transform.type === 'scale' && transform.scale) {
+                    const scale = transform.scale;
+                    if (scale.length >= 3) {
+                        // Last 3 elements are z, y, x
+                        voxelSize.z = scale[scale.length - 3];
+                        voxelSize.y = scale[scale.length - 2];
+                        voxelSize.x = scale[scale.length - 1];
+                    }
+                }
+            }
+
+            console.log('Voxel size:', voxelSize);
+
+            // Initialize Rust side with voxel_size for world-space scaling
             showLoading('Initializing viewer...');
             init_dataset(
                 volumeShape.z, volumeShape.y, volumeShape.x,
-                chunkShape.z, chunkShape.y, chunkShape.x
+                chunkShape.z, chunkShape.y, chunkShape.x,
+                voxelSize.z, voxelSize.y, voxelSize.x
             );
 
             // Pre-load center slice chunks (and adjacent ones for boundary intersection)

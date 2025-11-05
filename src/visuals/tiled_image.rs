@@ -116,6 +116,9 @@ pub struct TiledImageVisual {
     /// Total volume size in voxels
     volume_size: (u32, u32, u32),
 
+    /// Physical size of each voxel in world space (Z, Y, X)
+    voxel_size: (f32, f32, f32),
+
     /// Currently loaded chunks
     chunks: HashMap<(u32, u32, u32), ImageChunk>,
 
@@ -151,6 +154,7 @@ impl TiledImageVisual {
     pub fn new(
         volume_size: (u32, u32, u32),
         chunk_size: (u32, u32, u32),
+        voxel_size: (f32, f32, f32),
         loader: ChunkLoaderFn,
         max_loaded_chunks: usize,
     ) -> Self {
@@ -165,6 +169,7 @@ impl TiledImageVisual {
             grid_size,
             chunk_size,
             volume_size,
+            voxel_size,
             chunks: HashMap::new(),
             loader,
             slice_plane: SlicePlane::default(),
@@ -229,17 +234,18 @@ impl TiledImageVisual {
 
         // Calculate world-space AABB for this chunk
         // chunk_size and volume_size are (z, y, x) dimensions
+        // voxel_size is also (z, y, x)
         // World space needs (x, y, z) for Vec3
         let min = Vec3::new(
-            (x_chunk * self.chunk_size.2) as f32,  // X from dimension 2
-            (y_chunk * self.chunk_size.1) as f32,  // Y from dimension 1
-            (z_chunk * self.chunk_size.0) as f32,  // Z from dimension 0
+            (x_chunk * self.chunk_size.2) as f32 * self.voxel_size.2,  // X from dimension 2
+            (y_chunk * self.chunk_size.1) as f32 * self.voxel_size.1,  // Y from dimension 1
+            (z_chunk * self.chunk_size.0) as f32 * self.voxel_size.0,  // Z from dimension 0
         );
 
         let max = Vec3::new(
-            ((x_chunk + 1) * self.chunk_size.2).min(self.volume_size.2) as f32,  // X
-            ((y_chunk + 1) * self.chunk_size.1).min(self.volume_size.1) as f32,  // Y
-            ((z_chunk + 1) * self.chunk_size.0).min(self.volume_size.0) as f32,  // Z
+            ((x_chunk + 1) * self.chunk_size.2).min(self.volume_size.2) as f32 * self.voxel_size.2,  // X
+            ((y_chunk + 1) * self.chunk_size.1).min(self.volume_size.1) as f32 * self.voxel_size.1,  // Y
+            ((z_chunk + 1) * self.chunk_size.0).min(self.volume_size.0) as f32 * self.voxel_size.0,  // Z
         );
 
         // Test if AABB intersects with slice plane
@@ -258,6 +264,16 @@ impl TiledImageVisual {
         // chunk_idx is (z_chunk, y_chunk, x_chunk)
         let (z_chunk, y_chunk, x_chunk) = chunk_idx;
 
+        // Validate chunk indices are within grid bounds
+        if z_chunk >= self.grid_size.0 || y_chunk >= self.grid_size.1 || x_chunk >= self.grid_size.2 {
+            eprintln!(
+                "WARNING: Attempted to load out-of-bounds chunk ({}, {}, {}) but grid size is ({}, {}, {})",
+                z_chunk, y_chunk, x_chunk,
+                self.grid_size.0, self.grid_size.1, self.grid_size.2
+            );
+            return false;
+        }
+
         // Create ChunkRequest - this will be passed to Python as (z, y, x)
         let request = ChunkRequest {
             chunk_x: x_chunk,
@@ -266,21 +282,22 @@ impl TiledImageVisual {
         };
 
         if let Some(chunk_data) = (self.loader)(request) {
-            // Calculate world-space position
+            // Calculate world-space position scaled by voxel_size
             // chunk indices are (z_chunk, y_chunk, x_chunk)
             // chunk_size is (z, y, x) dimensions
+            // voxel_size is also (z, y, x)
             // World space needs (x, y, z) for Vec3
             let world_min = Vec3::new(
-                (x_chunk * self.chunk_size.2) as f32,  // X from dimension 2
-                (y_chunk * self.chunk_size.1) as f32,  // Y from dimension 1
-                (z_chunk * self.chunk_size.0) as f32,  // Z from dimension 0
+                (x_chunk * self.chunk_size.2) as f32 * self.voxel_size.2,  // X from dimension 2
+                (y_chunk * self.chunk_size.1) as f32 * self.voxel_size.1,  // Y from dimension 1
+                (z_chunk * self.chunk_size.0) as f32 * self.voxel_size.0,  // Z from dimension 0
             );
 
             let world_max = world_min
                 + Vec3::new(
-                    chunk_data.width as f32,   // X extent
-                    chunk_data.height as f32,  // Y extent
-                    chunk_data.depth as f32,   // Z extent
+                    chunk_data.width as f32 * self.voxel_size.2,   // X extent
+                    chunk_data.height as f32 * self.voxel_size.1,  // Y extent
+                    chunk_data.depth as f32 * self.voxel_size.0,   // Z extent
                 );
 
             // Create ChunkVisual for this chunk with 3D positioning
@@ -293,6 +310,7 @@ impl TiledImageVisual {
                 chunk_data.width,
                 chunk_data.height,
                 chunk_data.depth,
+                self.voxel_size,
                 world_min,
             );
 

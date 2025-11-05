@@ -468,17 +468,6 @@ impl Visual for ImageVisual {
             _padding5: 0.0,
         };
 
-        // Debug output (only print occasionally to avoid spam)
-        static mut FRAME_COUNT: u32 = 0;
-        unsafe {
-            if FRAME_COUNT % 60 == 0 {
-                println!("ImageVisual uniforms: pos={:?}, normal={:?}, size={:?}, contrast=[{}, {}]",
-                         uniforms.plane_position, uniforms.plane_normal, uniforms.volume_size,
-                         uniforms.contrast_min, uniforms.contrast_max);
-            }
-            FRAME_COUNT += 1;
-        }
-
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     }
 

@@ -60,6 +60,7 @@ pub struct ChunkVisual {
     render_pipeline: wgpu::RenderPipeline,
 
     chunk_size: (u32, u32, u32),
+    voxel_size: (f32, f32, f32),
     world_position: Vec3,
     slice_plane: SlicePlane,
     contrast_limits: (f32, f32),
@@ -84,6 +85,7 @@ impl ChunkVisual {
         width: u32,
         height: u32,
         depth: u32,
+        voxel_size: (f32, f32, f32),
         world_position: Vec3,
     ) -> Self {
         // Create 3D texture
@@ -308,6 +310,7 @@ impl ChunkVisual {
             bind_group,
             render_pipeline,
             chunk_size: (width, height, depth),
+            voxel_size,
             world_position,
             slice_plane: SlicePlane::default(),
             contrast_limits: (0.0, 1.0),
@@ -341,12 +344,14 @@ impl Visual for ChunkVisual {
         // Update slice geometry if needed
         if self.needs_vertex_update {
             let min = self.world_position;
-            // Use chunk_size (actual voxel dimensions) for world space sizing
-            // This correctly handles anisotropic data where chunks might be 1x275x271
+            // Scale chunk_size by voxel_size to get world-space extent
+            // NOTE: chunk_size is (width, height, depth) = (X, Y, Z)
+            //       but voxel_size is (z_size, y_size, x_size) = (Z, Y, X)
+            //       so we need to reorder indices when multiplying
             let max = self.world_position + Vec3::new(
-                self.chunk_size.0 as f32,
-                self.chunk_size.1 as f32,
-                self.chunk_size.2 as f32,
+                self.chunk_size.0 as f32 * self.voxel_size.2,  // X: width * x_voxel_size
+                self.chunk_size.1 as f32 * self.voxel_size.1,  // Y: height * y_voxel_size
+                self.chunk_size.2 as f32 * self.voxel_size.0,  // Z: depth * z_voxel_size
             );
 
             // Catch panics in geometry generation to avoid poisoning the mutex
