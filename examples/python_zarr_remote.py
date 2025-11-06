@@ -283,6 +283,7 @@ class MainWindow(QMainWindow):
         self.data_range = (0.0, 255.0)  # Will be updated when data loads
         self.dataset_info = None  # Currently loaded dataset info
         self.camera_initialized = False  # Track if camera has been positioned
+        self.chunk_executor = None  # ThreadPoolExecutor for chunk loading
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -386,6 +387,17 @@ class MainWindow(QMainWindow):
 
         # Initial camera setup
         self.bovista_widget.viewer.set_camera_clip_planes(0.1, 10000.0)
+
+    def closeEvent(self, event):
+        """Clean up resources when window closes"""
+        if self.chunk_executor is not None:
+            print("Shutting down chunk loader...")
+            # Cancel all pending futures
+            self.chunk_executor.shutdown(wait=False, cancel_futures=True)
+        if hasattr(self, "_metadata_executor") and self._metadata_executor is not None:
+            self._metadata_executor.shutdown(wait=False, cancel_futures=True)
+
+        super().closeEvent(event)
 
     def load_selected_dataset(self):
         """Load the selected remote dataset"""
@@ -626,10 +638,16 @@ class MainWindow(QMainWindow):
             pending_loads = set()  # (z,y,x) tuples currently being loaded
             cache_lock = Lock()
 
+            # Clean up old executor if it exists
+            if self.chunk_executor is not None:
+                print("Shutting down previous chunk loader...")
+                self.chunk_executor.shutdown(wait=False)  # Don't wait for pending tasks
+
             # Thread pool for async loading
-            executor = ThreadPoolExecutor(
+            self.chunk_executor = ThreadPoolExecutor(
                 max_workers=4, thread_name_prefix="zarr_loader"
             )
+            executor = self.chunk_executor  # Local alias for closure
 
             def load_chunk_blocking(z, y, x):
                 """Actually load a chunk from remote Zarr (blocking I/O)"""
@@ -701,18 +719,29 @@ class MainWindow(QMainWindow):
             def on_chunk_loaded(z, y, x, future):
                 """Callback when chunk loading completes"""
                 try:
+                    # Check if the future was cancelled
+                    if future.cancelled():
+                        with cache_lock:
+                            pending_loads.discard((z, y, x))
+                        return
+
                     result = future.result()
                     with cache_lock:
                         pending_loads.discard((z, y, x))
                         if result is not None:
                             chunk_cache[(z, y, x)] = result
                             loaded_count[0] += 1
-                            if loaded_count[0] <= 5 or loaded_count[0] % 50 == 0:
+                            # Print first 5 chunks, then every 50th chunk
+                            count = loaded_count[0]
+                            if count <= 5 or (count > 5 and (count - 5) % 50 == 0):
                                 print(
-                                    f"  Chunk ({z},{y},{x}) loaded in background (total: {loaded_count[0]})"
+                                    f"  Chunk ({z},{y},{x}) loaded in background (total: {count})"
                                 )
                 except Exception as e:
-                    print(f"  ERROR in chunk callback ({z},{y},{x}): {e}")
+                    # Silently ignore errors from cancelled futures
+                    from concurrent.futures import CancelledError
+                    if not isinstance(e, CancelledError):
+                        print(f"  ERROR in chunk callback ({z},{y},{x}): {e}")
                     with cache_lock:
                         pending_loads.discard((z, y, x))
 
