@@ -4,8 +4,9 @@
 //! - Orbit: rotate around a target point
 //! - Zoom: move closer/farther from target
 //! - Pan: translate the view target
+//! - Frustum culling: test visibility of objects
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 
 /// A perspective camera for 3D visualization with orbit controls.
 ///
@@ -108,5 +109,126 @@ impl Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self::new(1.0)
+    }
+}
+
+/// Six planes that define the camera's view frustum
+///
+/// Each plane is represented as Vec4(a, b, c, d) where the plane equation is:
+/// ax + by + cz + d = 0
+///
+/// Points are inside the frustum if they're on the positive side of all planes.
+#[derive(Clone, Debug)]
+pub struct FrustumPlanes {
+    /// Left plane (points to the right are inside)
+    pub left: Vec4,
+    /// Right plane (points to the left are inside)
+    pub right: Vec4,
+    /// Top plane (points below are inside)
+    pub top: Vec4,
+    /// Bottom plane (points above are inside)
+    pub bottom: Vec4,
+    /// Near plane (points farther are inside)
+    pub near: Vec4,
+    /// Far plane (points closer are inside)
+    pub far: Vec4,
+}
+
+impl FrustumPlanes {
+    /// Extract frustum planes from a view-projection matrix
+    ///
+    /// Uses the Gribb-Hartmann method: planes can be extracted directly from
+    /// the rows of the VP matrix.
+    pub fn from_view_projection_matrix(vp: &Mat4) -> Self {
+        // Extract rows of the matrix
+        let row0 = vp.row(0);
+        let row1 = vp.row(1);
+        let row2 = vp.row(2);
+        let row3 = vp.row(3);
+
+        // Extract and normalize planes
+        let left = normalize_plane(row3 + row0);
+        let right = normalize_plane(row3 - row0);
+        let bottom = normalize_plane(row3 + row1);
+        let top = normalize_plane(row3 - row1);
+        let near = normalize_plane(row3 + row2);
+        let far = normalize_plane(row3 - row2);
+
+        Self {
+            left,
+            right,
+            top,
+            bottom,
+            near,
+            far,
+        }
+    }
+
+    /// Test if an axis-aligned bounding box intersects this frustum
+    ///
+    /// Returns true if the AABB is fully or partially inside the frustum.
+    /// Uses the "p-vertex" method for efficiency.
+    pub fn contains_aabb(&self, min: Vec3, max: Vec3) -> bool {
+        // Test against each plane
+        for plane in [&self.left, &self.right, &self.top, &self.bottom, &self.near, &self.far] {
+            // Find the "positive vertex" - the corner of the AABB most in the direction of the plane normal
+            let p_vertex = Vec3::new(
+                if plane.x >= 0.0 { max.x } else { min.x },
+                if plane.y >= 0.0 { max.y } else { min.y },
+                if plane.z >= 0.0 { max.z } else { min.z },
+            );
+
+            // If the p-vertex is outside (negative side) of this plane, the whole AABB is outside
+            if plane.x * p_vertex.x + plane.y * p_vertex.y + plane.z * p_vertex.z + plane.w < 0.0 {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Test if an AABB is visible within the frustum, ignoring near/far planes
+    ///
+    /// This is useful for slice plane visualizations where you want to show
+    /// chunks at any depth, and the slice plane intersection handles depth culling.
+    /// Only tests against the side planes (left, right, top, bottom).
+    pub fn contains_aabb_xy(&self, min: Vec3, max: Vec3) -> bool {
+        // Only test against side planes, skip near/far
+        for plane in [&self.left, &self.right, &self.top, &self.bottom] {
+            let p_vertex = Vec3::new(
+                if plane.x >= 0.0 { max.x } else { min.x },
+                if plane.y >= 0.0 { max.y } else { min.y },
+                if plane.z >= 0.0 { max.z } else { min.z },
+            );
+
+            if plane.x * p_vertex.x + plane.y * p_vertex.y + plane.z * p_vertex.z + plane.w < 0.0 {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl Camera {
+    /// Get the frustum planes for this camera
+    ///
+    /// The frustum defines the visible region in world space. Objects outside
+    /// the frustum can be culled (not rendered).
+    pub fn frustum_planes(&self) -> FrustumPlanes {
+        FrustumPlanes::from_view_projection_matrix(&self.view_projection_matrix())
+    }
+}
+
+/// Normalize a plane equation to unit normal length
+///
+/// Plane equation: ax + by + cz + d = 0
+/// After normalization, (a, b, c) has length 1
+fn normalize_plane(plane: Vec4) -> Vec4 {
+    let length = (plane.x * plane.x + plane.y * plane.y + plane.z * plane.z).sqrt();
+    if length > 0.0 {
+        plane / length
+    } else {
+        plane
     }
 }

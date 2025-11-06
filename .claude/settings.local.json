@@ -16,7 +16,8 @@
       "Bash(chmod:*)",
       "Bash(./build_wasm.sh:*)",
       "Bash(cargo update:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(~/.asdf/installs/rust/1.86.0/bin/cargo check:*)"
     ],
     "deny": [],
     "ask": []

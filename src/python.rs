@@ -852,6 +852,38 @@ impl PyImageVisual {
     }
 }
 
+/// Python wrapper for LevelMetadata
+#[pyclass(name = "LevelMetadata")]
+#[derive(Clone)]
+pub struct PyLevelMetadata {
+    #[pyo3(get, set)]
+    pub volume_size: (u32, u32, u32),
+    #[pyo3(get, set)]
+    pub chunk_size: (u32, u32, u32),
+    #[pyo3(get, set)]
+    pub voxel_size: (f32, f32, f32),
+    #[pyo3(get, set)]
+    pub scale_factor: f32,
+}
+
+#[pymethods]
+impl PyLevelMetadata {
+    #[new]
+    fn new(
+        volume_size: (u32, u32, u32),
+        chunk_size: (u32, u32, u32),
+        voxel_size: (f32, f32, f32),
+        scale_factor: f32,
+    ) -> Self {
+        Self {
+            volume_size,
+            chunk_size,
+            voxel_size,
+            scale_factor,
+        }
+    }
+}
+
 /// Python wrapper for TiledImageVisual
 #[pyclass(name = "TiledImage")]
 pub struct PyTiledImageVisual {
@@ -895,10 +927,11 @@ impl PyTiledImageVisual {
         let loader_arc = Arc::new(loader);
         let loader_fn = Arc::new(move |request: TiledChunkRequest| -> Option<TiledChunkData> {
             Python::with_gil(|py| {
-                // Call Python loader with (z, y, x) indices
+                // For single-LOD mode, lod_level is always 0, so we just pass (z, y, x) for backward compatibility
+                // For multi-LOD mode, we need to pass lod_level as well, but that will be a different constructor
                 let result = loader_arc.call1(
                     py,
-                    (request.chunk_z, request.chunk_y, request.chunk_x)  // Already in (z, y, x) order
+                    (request.chunk_z, request.chunk_y, request.chunk_x)  // Single-LOD: (z, y, x)
                 );
 
                 match result {
@@ -945,6 +978,106 @@ impl PyTiledImageVisual {
         })
     }
 
+    /// Create a multi-LOD tiled image visual with spatial LOD selection
+    ///
+    /// Args:
+    ///     viewer: The viewer instance
+    ///     levels: List of LevelMetadata objects (LOD 0 = highest resolution)
+    ///     loader: Python callable that takes (lod_level, z, y, x) and returns numpy array or None
+    ///     max_loaded_chunks: Maximum number of chunks to keep in memory across all LODs (default: 500)
+    ///     lod_bias: LOD selection bias (-2.0 = prefer high-res, +2.0 = prefer low-res, default: 0.0)
+    ///     target_pixels_per_voxel: Target screen-space density (default: 1.0)
+    #[staticmethod]
+    #[pyo3(signature = (viewer, levels, loader, max_loaded_chunks=None, lod_bias=None, target_pixels_per_voxel=None))]
+    fn from_levels(
+        viewer: &PyViewer,
+        levels: Vec<PyLevelMetadata>,
+        loader: PyObject,
+        max_loaded_chunks: Option<usize>,
+        lod_bias: Option<f32>,
+        target_pixels_per_voxel: Option<f32>,
+    ) -> PyResult<Self> {
+        let _renderer = viewer.renderer.as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+
+        if levels.is_empty() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Must provide at least one LOD level"
+            ));
+        }
+
+        let max_chunks = max_loaded_chunks.unwrap_or(500);
+        let lod_bias = lod_bias.unwrap_or(0.0);
+        let target_ppv = target_pixels_per_voxel.unwrap_or(1.0);
+
+        // Convert Python LevelMetadata to Rust LevelMetadata
+        use crate::visuals::tiled_image::LevelMetadata;
+        let rust_levels: Vec<LevelMetadata> = levels
+            .iter()
+            .map(|py_level| {
+                LevelMetadata::new(
+                    py_level.volume_size,
+                    py_level.chunk_size,
+                    py_level.voxel_size,
+                    py_level.scale_factor,
+                )
+            })
+            .collect();
+
+        // Create a Rust closure that calls the Python loader with (lod_level, z, y, x)
+        let loader_arc = Arc::new(loader);
+        let loader_fn = Arc::new(move |request: TiledChunkRequest| -> Option<TiledChunkData> {
+            Python::with_gil(|py| {
+                // Call Python loader with (lod_level, z, y, x)
+                let result = loader_arc.call1(
+                    py,
+                    (request.lod_level, request.chunk_z, request.chunk_y, request.chunk_x)
+                );
+
+                match result {
+                    Ok(obj) => {
+                        // Check if it's None
+                        if obj.is_none(py) {
+                            return None;
+                        }
+
+                        // Try to extract as numpy array
+                        let array: PyReadonlyArray3<u8> = obj.extract(py).ok()?;
+                        let arr = array.as_array();
+                        let shape = arr.shape();
+
+                        // Convert to contiguous Vec<u8>
+                        let data: Vec<u8> = arr.iter().copied().collect();
+
+                        Some(TiledChunkData {
+                            data,
+                            width: shape[2] as u32,
+                            height: shape[1] as u32,
+                            depth: shape[0] as u32,
+                        })
+                    }
+                    Err(_) => {
+                        // Chunk loader failed - this is expected for out-of-bounds chunks
+                        None
+                    }
+                }
+            })
+        });
+
+        // Create multi-LOD TiledImageVisual
+        let tiled_visual = TiledImageVisual::from_levels(
+            rust_levels,
+            loader_fn,
+            max_chunks,
+            lod_bias,
+            target_ppv,
+        );
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(tiled_visual)),
+        })
+    }
+
     /// Set the slice plane
     fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
         with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
@@ -974,18 +1107,37 @@ impl PyTiledImageVisual {
         })
     }
 
+    /// Set LOD bias for spatial LOD selection (multi-LOD only)
+    ///
+    /// Negative values prefer higher resolution, positive prefer lower resolution.
+    /// Only affects multi-LOD visuals created with from_levels().
+    fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
+        with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
+            v.set_lod_bias(bias);
+        })
+    }
+
     /// Prepare chunks (load visible ones, evict old ones)
     /// This should be called before rendering
     fn prepare_chunks(&self, viewer: &PyViewer) -> PyResult<()> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
+        let camera = &viewer.camera;
+
         with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
+            // Get frustum planes for culling
+            let frustum = camera.frustum_planes();
+
             v.prepare_chunks(
                 renderer.device(),
                 renderer.queue(),
                 renderer.surface_format(),
                 renderer.camera_bind_group_layout(),
+                Some(&frustum),
+                camera.position,
+                camera.fov_y,
+                viewer.height,
             );
         })
     }
@@ -1143,6 +1295,7 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPointsVisual>()?;
     m.add_class::<PyLinesVisual>()?;
     m.add_class::<PyImageVisual>()?;
+    m.add_class::<PyLevelMetadata>()?;
     m.add_class::<PyTiledImageVisual>()?;
     m.add_class::<PyCustomVisual>()?;
     m.add_class::<PyVertexBufferLayout>()?;
