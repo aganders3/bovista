@@ -363,7 +363,18 @@ impl PyViewer {
 
         // Update camera and prepare scene
         renderer.update_camera(&self.camera);
-        self.scene.prepare(renderer.device(), renderer.queue());
+
+        // Build CameraInfo for visuals that need LOD selection / culling
+        let camera_info = crate::visual::CameraInfo {
+            position: self.camera.position,
+            target: self.camera.target,
+            fov_y: self.camera.fov_y,
+            viewport_width: self.width,
+            viewport_height: self.height,
+            frustum: self.camera.frustum_planes(),
+        };
+
+        self.scene.prepare(renderer.device(), renderer.queue(), &camera_info);
 
         // Get current frame
         let output = surface.get_current_texture()
@@ -534,7 +545,26 @@ impl PyViewer {
 
                             // Update camera and prepare scene
                             renderer.update_camera(&self.camera);
-                            self.scene.prepare(renderer.device(), renderer.queue());
+
+                            // Get viewport dimensions from window
+                            let (viewport_width, viewport_height) = if let Some(window) = &self.window {
+                                let size = window.inner_size();
+                                (size.width, size.height)
+                            } else {
+                                (800, 600) // Default fallback
+                            };
+
+                            // Build CameraInfo for visuals that need LOD selection / culling
+                            let camera_info = crate::visual::CameraInfo {
+                                position: self.camera.position,
+                                target: self.camera.target,
+                                fov_y: self.camera.fov_y,
+                                viewport_width,
+                                viewport_height,
+                                frustum: self.camera.frustum_planes(),
+                            };
+
+                            self.scene.prepare(renderer.device(), renderer.queue(), &camera_info);
 
                             // Render
                             match surface.get_current_texture() {
@@ -815,6 +845,138 @@ impl PyImageVisual {
         })
     }
 
+    /// Create an ImageVisual with multi-resolution chunked loading
+    ///
+    /// Similar to TiledImage.from_levels, but uses the new unified ImageVisual.
+    ///
+    /// Args:
+    ///     viewer: The viewer instance
+    ///     levels: List of LevelMetadata describing each LOD level
+    ///     loader: Python function that takes (lod_level, z, y, x) and returns numpy array or None
+    ///     max_chunks: Maximum number of chunks to keep in memory (default: 500)
+    ///     capacity_check: Optional callback that returns available load capacity (default: None)
+    #[staticmethod]
+    #[pyo3(signature = (viewer, levels, loader, max_chunks=None, capacity_check=None))]
+    fn from_chunked(
+        viewer: &PyViewer,
+        levels: Vec<PyLevelMetadata>,
+        loader: PyObject,
+        max_chunks: Option<usize>,
+        capacity_check: Option<PyObject>,
+    ) -> PyResult<Self> {
+        let renderer = viewer.renderer.as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+
+        if levels.is_empty() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Must provide at least one LOD level"
+            ));
+        }
+
+        let max_chunks = max_chunks.unwrap_or(500);
+
+        // Convert Python LevelMetadata to Rust LodLevelConfig
+        use crate::visuals::image_strategy_v2::LodLevelConfig;
+        let rust_levels: Vec<LodLevelConfig> = levels
+            .iter()
+            .map(|py_level| {
+                LodLevelConfig {
+                    volume_size: py_level.volume_size,
+                    tile_size: py_level.chunk_size,  // chunk_size becomes tile_size
+                    voxel_size: py_level.voxel_size,
+                    scale_factor: py_level.scale_factor,
+                }
+            })
+            .collect();
+
+        // Create a Rust closure that calls the Python loader with (lod_level, z, y, x)
+        use crate::visuals::tile::{TileData, TileRequest, TileLoaderFn, CapacityCheckFn};
+        let loader_arc = Arc::new(loader);
+        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> Option<TileData> {
+            Python::with_gil(|py| {
+                // Extract LOD level and coordinates
+                let lod_level = request.lod_level.unwrap_or(0);
+                let z = request.z;
+                let y = request.y;
+                let x = request.x;
+
+                // Call Python loader with (lod_level, z, y, x)
+                let result = loader_arc.call1(
+                    py,
+                    (lod_level, z, y, x)
+                );
+
+                match result {
+                    Ok(obj) => {
+                        // Check if it's None
+                        if obj.is_none(py) {
+                            return None;
+                        }
+
+                        // Try to extract as numpy array
+                        let array: PyReadonlyArray3<u8> = obj.extract(py).ok()?;
+                        let arr = array.as_array();
+                        let shape = arr.shape();
+
+                        // Convert to contiguous Vec<u8>
+                        let data: Vec<u8> = arr.iter().copied().collect();
+
+                        Some(TileData {
+                            data,
+                            width: shape[2] as u32,
+                            height: shape[1] as u32,
+                            depth: shape[0] as u32,
+                        })
+                    }
+                    Err(_) => {
+                        // Chunk loader failed - this is expected for out-of-bounds chunks
+                        None
+                    }
+                }
+            })
+        });
+
+        // Create capacity check closure if provided
+        let capacity_fn: Option<CapacityCheckFn> = capacity_check.map(|callback| {
+            let closure: Arc<dyn Fn() -> usize + Send + Sync> = Arc::new(move || -> usize {
+                Python::with_gil(|py| {
+                    match callback.call0(py) {
+                        Ok(result) => {
+                            match result.extract::<usize>(py) {
+                                Ok(capacity) => capacity,
+                                Err(_) => {
+                                    eprintln!("[ImageVisual] Capacity check callback must return int");
+                                    usize::MAX  // No limit on error
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[ImageVisual] Error calling capacity check: {}", e);
+                            usize::MAX  // No limit on error
+                        }
+                    }
+                })
+            });
+            closure
+        });
+
+        // Create ImageVisual with chunked loading
+        let visual = ImageVisual::from_chunked(
+            renderer.device(),
+            renderer.queue(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            rust_levels,
+            max_chunks,
+            loader_fn,
+            capacity_fn,
+        );
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(visual)),
+        })
+    }
+
     /// Set the slice plane position along Z axis
     fn set_slice_z(&self, z: f32) -> PyResult<()> {
         with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
@@ -848,6 +1010,32 @@ impl PyImageVisual {
         with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
             let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
             v.set_slice_plane(plane);
+        })
+    }
+
+    /// Set LOD bias for automatic LOD selection
+    ///
+    /// Negative values prefer higher resolution, positive prefer lower resolution.
+    /// Only has effect when using from_chunked (no-op for from_numpy).
+    fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
+        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
+            v.set_lod_bias(bias);
+        })
+    }
+
+    /// Enable or disable debug visualization
+    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
+        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
+            v.set_debug_mode(enabled);
+        })
+    }
+
+    /// Get statistics (loaded chunks, visible chunks)
+    ///
+    /// Returns a tuple (loaded, visible)
+    fn get_stats(&self) -> PyResult<(usize, usize)> {
+        with_visual!(ref self.inner, ImageVisual, |v: &ImageVisual| {
+            v.get_stats()
         })
     }
 }

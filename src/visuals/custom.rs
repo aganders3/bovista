@@ -180,7 +180,7 @@ impl CustomVisual {
 }
 
 impl Visual for CustomVisual {
-    fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {
+    fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {
         // Custom visuals don't need any per-frame preparation currently
         // In the future, this could handle dynamic uniform updates
     }

@@ -46,7 +46,7 @@ use crate::camera::FrustumPlanes;
 use crate::visual::{Transform, Visual};
 use crate::visuals::image::SlicePlane;
 use crate::visuals::chunk_visual::ChunkVisual;
-use glam::Vec3;
+use glam::{Vec3, Vec4};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use wgpu::RenderPass;
@@ -1055,10 +1055,30 @@ impl TiledImageVisual {
         // Evict excess chunks
         self.evict_chunks();
 
+        // Build CameraInfo from parameters
+        let camera_info = crate::visual::CameraInfo {
+            position: camera_position,
+            target: Vec3::ZERO, // Not provided in old API, use origin as default
+            fov_y,
+            viewport_width: 800, // Not provided in old API, use reasonable default
+            viewport_height,
+            frustum: frustum.cloned().unwrap_or_else(|| {
+                // If no frustum provided, create a dummy one
+                crate::camera::FrustumPlanes {
+                    left: Vec4::ZERO,
+                    right: Vec4::ZERO,
+                    top: Vec4::ZERO,
+                    bottom: Vec4::ZERO,
+                    near: Vec4::ZERO,
+                    far: Vec4::ZERO,
+                }
+            }),
+        };
+
         // Prepare all loaded chunks
         for chunk in self.chunks.values() {
             if let Ok(mut visual) = chunk.visual.lock() {
-                visual.prepare(device, queue);
+                visual.prepare(device, queue, &camera_info);
             }
         }
     }
@@ -1093,13 +1113,13 @@ impl TiledImageVisual {
 }
 
 impl Visual for TiledImageVisual {
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &crate::visual::CameraInfo) {
         // Note: This doesn't have access to surface_format or camera_bind_group_layout
         // Those need to be provided separately via prepare_chunks()
         // For now, just prepare existing chunks
         for chunk in self.chunks.values() {
             if let Ok(mut visual) = chunk.visual.lock() {
-                visual.prepare(device, queue);
+                visual.prepare(device, queue, camera_info);
             }
         }
     }

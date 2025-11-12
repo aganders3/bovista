@@ -355,7 +355,7 @@ impl ChunkVisual {
 }
 
 impl Visual for ChunkVisual {
-    fn prepare(&mut self, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn prepare(&mut self, _device: &wgpu::Device, queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {
         // Update slice geometry if needed
         if self.needs_vertex_update {
             let min = self.world_position;

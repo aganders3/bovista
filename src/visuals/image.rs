@@ -1,7 +1,10 @@
 use crate::visual::{Transform, Visual};
-use crate::visuals::image_strategy::{ChunkLoaderFn, ChunkedImageStrategy, ImageStrategy, SimpleImageStrategy};
+use crate::visuals::image_strategy::ChunkLoaderFn;
+use crate::visuals::image_strategy_v2::{ImageStrategy, SimpleStrategy};
+use crate::visuals::tile::{Tile, TileUniforms, TileVertex};
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
+use std::collections::HashMap;
+use std::sync::Arc;
 use wgpu::RenderPass;
 
 /// Slice plane defined by position and normal vector
@@ -102,15 +105,21 @@ struct ImageUniforms {
 pub struct ImageVisual {
     strategy: Box<dyn ImageStrategy>,
 
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    // Shared resources for tile rendering
+    bind_group_layout: wgpu::BindGroupLayout,
     render_pipeline: wgpu::RenderPipeline,
-    _sampler: wgpu::Sampler,
+    sampler: wgpu::Sampler,
+
+    // Cache for per-tile bind groups (keyed by texture pointer)
+    bind_group_cache: HashMap<usize, Arc<wgpu::BindGroup>>,
+
+    // Uniform buffers (one per tile, created on demand)
+    uniform_buffer_cache: HashMap<usize, wgpu::Buffer>,
 
     slice_plane: SlicePlane,
     contrast_limits: (f32, f32),
+    debug_mode: bool,
+    frame_number: u64,
 
     transform: Transform,
     visible: bool,
@@ -142,7 +151,7 @@ impl ImageVisual {
         height: u32,
         depth: u32,
     ) -> Self {
-        let strategy = Box::new(SimpleImageStrategy::new(
+        let strategy = Box::new(SimpleStrategy::new(
             device,
             queue,
             data,
@@ -164,27 +173,44 @@ impl ImageVisual {
         )
     }
 
-    /// Create an ImageVisual with a chunked/remote data loader
-    pub fn with_loader(
+    /// Create an ImageVisual with multi-resolution chunked loading
+    ///
+    /// This creates an image visual that loads chunks on-demand with automatic LOD selection.
+    ///
+    /// # Arguments
+    /// * `device` - GPU device
+    /// * `queue` - GPU queue
+    /// * `surface_format` - Surface format for rendering
+    /// * `camera_bind_group_layout` - Camera bind group layout
+    /// * `lod_levels` - Configuration for each LOD level (high-res to low-res)
+    /// * `max_tiles` - Maximum number of chunks to keep in memory
+    /// * `loader` - Callback function to load chunk data on-demand
+    pub fn from_chunked(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
-        width: u32,
-        height: u32,
-        depth: u32,
-        chunk_size: (u32, u32, u32),
-        loader: ChunkLoaderFn,
+        lod_levels: Vec<crate::visuals::image_strategy_v2::LodLevelConfig>,
+        max_tiles: usize,
+        loader: crate::visuals::tile::TileLoaderFn,
+        capacity_check: Option<crate::visuals::tile::CapacityCheckFn>,
     ) -> Self {
-        let strategy = Box::new(ChunkedImageStrategy::new(
+        use crate::visuals::image_strategy_v2::TiledStrategy;
+
+        let strategy = Box::new(TiledStrategy::new(
             device,
-            width,
-            height,
-            depth,
-            chunk_size,
-            wgpu::TextureFormat::R8Unorm,
+            lod_levels.clone(),
+            max_tiles,
             loader,
+            capacity_check,
         ));
+
+        // Get dimensions from first LOD level
+        let (depth, height, width) = if !lod_levels.is_empty() {
+            lod_levels[0].volume_size
+        } else {
+            (1, 1, 1)
+        };
 
         Self::from_strategy(
             device,
@@ -198,48 +224,39 @@ impl ImageVisual {
         )
     }
 
+    /// Create an ImageVisual with a chunked/remote data loader
+    ///
+    /// NOTE: Temporarily disabled during refactoring. Use TiledImageVisual for chunked loading.
+    /// This will be re-enabled once ChunkedImageStrategy is migrated to the new tile system.
+    #[allow(dead_code)]
+    fn with_loader(
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _surface_format: wgpu::TextureFormat,
+        _camera_bind_group_layout: &wgpu::BindGroupLayout,
+        _width: u32,
+        _height: u32,
+        _depth: u32,
+        _chunk_size: (u32, u32, u32),
+        _loader: ChunkLoaderFn,
+    ) -> Self {
+        unimplemented!("with_loader temporarily disabled during refactoring - use TiledImageVisual instead")
+    }
+
     /// Internal constructor from a strategy
     fn from_strategy(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         strategy: Box<dyn ImageStrategy>,
-        width: u32,
-        height: u32,
+        _width: u32,
+        _height: u32,
         depth: u32,
     ) -> Self {
-        // Create a unit quad
-        let vertices = [
-            ImageVertex { position: [0.0, 0.0], texcoord: [0.0, 1.0] },
-            ImageVertex { position: [1.0, 0.0], texcoord: [1.0, 1.0] },
-            ImageVertex { position: [1.0, 1.0], texcoord: [1.0, 0.0] },
-            ImageVertex { position: [0.0, 1.0], texcoord: [0.0, 0.0] },
-        ];
-
-        let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Image Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Image Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Image Uniform Buffer"),
-            size: std::mem::size_of::<ImageUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
+        // Create shared sampler
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Image Sampler"),
+            label: Some("Tile Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -249,18 +266,32 @@ impl ImageVisual {
             ..Default::default()
         });
 
-        // Determine texture view dimension based on depth
-        let view_dimension = if depth > 1 {
-            wgpu::TextureViewDimension::D3
-        } else {
-            wgpu::TextureViewDimension::D2
-        };
-
+        // Create bind group layout for tiles
+        // Layout matches tile.wgsl:
+        //   @group(1) @binding(0) var tile_texture: texture_3d<f32>;
+        //   @group(1) @binding(1) var tile_sampler: sampler;
+        //   @group(1) @binding(2) var<uniform> tile: TileUniforms;
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Image Bind Group Layout"),
+            label: Some("Tile Bind Group Layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -269,62 +300,28 @@ impl ImageVisual {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Image Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(strategy.texture_view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-
+        // Load tile shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Image Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/image.wgsl").into()),
+            label: Some("Tile Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/tile.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Image Pipeline Layout"),
+            label: Some("Tile Pipeline Layout"),
             bind_group_layouts: &[camera_bind_group_layout, &bind_group_layout],
             push_constant_ranges: &[],
         });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Image Render Pipeline"),
+            label: Some("Tile Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[ImageVertex::desc()],
+                buffers: &[TileVertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -348,9 +345,24 @@ impl ImageVisual {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
+                depth_write_enabled: true,  // Write depth for proper occlusion
+                depth_compare: wgpu::CompareFunction::LessEqual,  // Allow coplanar tiles, stencil handles priority
+                stencil: wgpu::StencilState {
+                    front: wgpu::StencilFaceState {
+                        compare: wgpu::CompareFunction::NotEqual,  // Only draw where unpainted
+                        fail_op: wgpu::StencilOperation::Keep,
+                        depth_fail_op: wgpu::StencilOperation::Keep,
+                        pass_op: wgpu::StencilOperation::Replace,  // Mark as painted
+                    },
+                    back: wgpu::StencilFaceState {
+                        compare: wgpu::CompareFunction::NotEqual,
+                        fail_op: wgpu::StencilOperation::Keep,
+                        depth_fail_op: wgpu::StencilOperation::Keep,
+                        pass_op: wgpu::StencilOperation::Replace,
+                    },
+                    read_mask: 0xff,
+                    write_mask: 0xff,
+                },
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
@@ -368,31 +380,17 @@ impl ImageVisual {
         // Auto-detect reasonable contrast limits (for now, use full range)
         let contrast_limits = (0.0, 1.0);
 
-        // Initial uniform update
-        let uniforms = ImageUniforms {
-            contrast_min: contrast_limits.0,
-            contrast_max: contrast_limits.1,
-            _padding1: 0.0,
-            _padding2: 0.0,
-            plane_position: slice_plane.position,
-            _padding3: 0.0,
-            plane_normal: slice_plane.normal,
-            _padding4: 0.0,
-            volume_size: [width as f32, height as f32, depth as f32],
-            _padding5: 0.0,
-        };
-        queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-
         Self {
             strategy,
-            vertex_buffer,
-            index_buffer,
-            uniform_buffer,
-            bind_group,
+            bind_group_layout,
             render_pipeline,
-            _sampler: sampler,
+            sampler,
+            bind_group_cache: HashMap::new(),
+            uniform_buffer_cache: HashMap::new(),
             slice_plane,
             contrast_limits,
+            debug_mode: false,
+            frame_number: 0,
             transform: Transform::identity(),
             visible: true,
             name: "Image".to_string(),
@@ -446,29 +444,165 @@ impl ImageVisual {
     pub fn set_name(&mut self, name: String) {
         self.name = name;
     }
+
+    /// Enable or disable debug visualization mode
+    pub fn set_debug_mode(&mut self, debug: bool) {
+        self.debug_mode = debug;
+        self.strategy.set_debug_mode(debug);
+    }
+
+    /// Set LOD bias for automatic LOD selection
+    ///
+    /// Negative values prefer higher resolution, positive prefer lower resolution.
+    /// Only has effect when using TiledStrategy (no-op for SimpleStrategy).
+    pub fn set_lod_bias(&mut self, bias: f32) {
+        self.strategy.set_lod_bias(bias);
+    }
+
+    /// Get statistics (loaded tiles, visible tiles)
+    pub fn get_stats(&self) -> (usize, usize) {
+        self.strategy.get_stats()
+    }
+
+    /// Get or create a uniform buffer for a tile
+    fn get_or_create_uniform_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        tile_id: usize,
+    ) -> &wgpu::Buffer {
+        self.uniform_buffer_cache.entry(tile_id).or_insert_with(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Tile Uniform Buffer"),
+                size: std::mem::size_of::<TileUniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })
+    }
+
+    /// Get or create a bind group for a tile
+    fn get_or_create_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        tile: &Tile,
+        uniform_buffer: &wgpu::Buffer,
+    ) -> Arc<wgpu::BindGroup> {
+        // Use texture pointer as cache key
+        let texture_ptr = Arc::as_ptr(&tile.texture) as usize;
+
+        self.bind_group_cache
+            .entry(texture_ptr)
+            .or_insert_with(|| {
+                Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Tile Bind Group"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&tile.texture_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: uniform_buffer.as_entire_binding(),
+                        },
+                    ],
+                }))
+            })
+            .clone()
+    }
 }
 
 impl Visual for ImageVisual {
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        // Update strategy (load chunks if needed)
-        self.strategy.prepare(device, queue, None);
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &crate::visual::CameraInfo) {
+        // Update frame counter
+        self.frame_number += 1;
 
-        // Update uniforms
+        // Update strategy (determine visible tiles, load data if needed)
+        self.strategy.prepare(
+            device,
+            queue,
+            &self.slice_plane,
+            self.frame_number,
+            camera_info,
+        );
+
+        // Get dimensions and extract values to avoid borrow issues
         let dims = self.strategy.dimensions();
-        let uniforms = ImageUniforms {
-            contrast_min: self.contrast_limits.0,
-            contrast_max: self.contrast_limits.1,
-            _padding1: 0.0,
-            _padding2: 0.0,
-            plane_position: self.slice_plane.position,
-            _padding3: 0.0,
-            plane_normal: self.slice_plane.normal,
-            _padding4: 0.0,
-            volume_size: [dims.0 as f32, dims.1 as f32, dims.2 as f32],
-            _padding5: 0.0,
-        };
+        let contrast_min = self.contrast_limits.0;
+        let contrast_max = self.contrast_limits.1;
+        let debug_mode = if self.debug_mode { 1.0 } else { 0.0 };
+        let plane_position = self.slice_plane.position;
+        let plane_normal = self.slice_plane.normal;
 
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+        // Collect tile information (to avoid holding immutable borrow of self.strategy)
+        let tile_info: Vec<_> = self.strategy.tiles().iter()
+            .map(|tile| (tile.debug_color.unwrap_or([1.0, 1.0, 1.0]), Arc::clone(&tile.texture), Arc::clone(&tile.texture_view)))
+            .collect();
+
+        // First pass: ensure all uniform buffers exist
+        for idx in 0..tile_info.len() {
+            if !self.uniform_buffer_cache.contains_key(&idx) {
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Tile Uniform Buffer"),
+                    size: std::mem::size_of::<TileUniforms>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.uniform_buffer_cache.insert(idx, buffer);
+            }
+        }
+
+        // Second pass: update uniforms and create bind groups
+        for (idx, (debug_color, texture, texture_view)) in tile_info.iter().enumerate() {
+            // Get uniform buffer (we know it exists from first pass)
+            let uniform_buffer = self.uniform_buffer_cache.get(&idx).unwrap();
+
+            // Create uniforms for this tile
+            let uniforms = TileUniforms {
+                contrast_min,
+                contrast_max,
+                debug_mode,
+                _padding1: 0.0,
+                plane_position,
+                _padding2: 0.0,
+                plane_normal,
+                _padding3: 0.0,
+                volume_size: [dims.2 as f32, dims.1 as f32, dims.0 as f32], // ZYX order
+                _padding4: 0.0,
+                debug_color: *debug_color,
+                _padding5: 0.0,
+            };
+
+            queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+
+            // Create bind group if it doesn't exist
+            let texture_ptr = Arc::as_ptr(texture) as usize;
+            if !self.bind_group_cache.contains_key(&texture_ptr) {
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Tile Bind Group"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(texture_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: uniform_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+                self.bind_group_cache.insert(texture_ptr, Arc::new(bind_group));
+            }
+        }
     }
 
     fn render(&self, render_pass: &mut RenderPass) {
@@ -477,10 +611,70 @@ impl Visual for ImageVisual {
         }
 
         render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.set_bind_group(1, &self.bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        render_pass.draw_indexed(0..6, 0, 0..1);
+
+        // Get ideal LOD for sorting
+        let ideal_lod = self.strategy.get_ideal_lod();
+
+        // Collect and sort tiles by distance from ideal LOD
+        // Stencil uses NotEqual with ref=1: first tile painted wins
+        let mut tiles_with_distance: Vec<_> = self.strategy.tiles().iter()
+            .filter(|tile| tile.vertex_count > 0)
+            .map(|tile| {
+                let distance = (tile.lod_level as i32 - ideal_lod as i32).abs();
+                let prefer_higher_res = if tile.lod_level < ideal_lod { 0 } else { 1 };
+                (tile, distance, prefer_higher_res)
+            })
+            .collect();
+
+        // Sort by: distance first, then prefer higher-res (lower LOD) for ties
+        tiles_with_distance.sort_by_key(|(_, dist, pref)| (*dist, *pref));
+
+        // Stencil reference = 1 (buffer cleared to 0, NotEqual ensures first painted wins)
+        render_pass.set_stencil_reference(1);
+
+        let mut rendered_count = 0;
+        for (tile, _, _) in tiles_with_distance {
+            // Note: uniform buffer is already bound in the bind group created during prepare()
+
+            // Get or create bind group (uses cache)
+            let texture_ptr = Arc::as_ptr(&tile.texture) as usize;
+
+            // Check if we have a cached bind group
+            if !self.bind_group_cache.contains_key(&texture_ptr) {
+                // This shouldn't happen if prepare() was called, but handle gracefully
+                continue;
+            }
+
+            let bind_group = self.bind_group_cache.get(&texture_ptr).unwrap();
+
+            render_pass.set_bind_group(1, bind_group.as_ref(), &[]);
+
+            // Set vertex buffer if present
+            if let Some(ref vertex_buffer) = tile.vertex_buffer {
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+
+                // Draw the tile geometry
+                if let Some(ref index_buffer) = tile.index_buffer {
+                    // Use indexed rendering if available
+                    render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.draw_indexed(0..tile.vertex_count, 0, 0..1);
+                } else {
+                    // Use non-indexed rendering
+                    render_pass.draw(0..tile.vertex_count, 0..1);
+                }
+                rendered_count += 1;
+            }
+        }
+
+        // Debug: print render stats occasionally
+        static mut FRAME_COUNTER: u64 = 0;
+        unsafe {
+            FRAME_COUNTER += 1;
+            if FRAME_COUNTER % 60 == 0 {
+                eprintln!("[ImageVisual] Frame {}: rendered {} tiles out of {} loaded",
+                    FRAME_COUNTER, rendered_count, self.strategy.tiles().len());
+            }
+        }
     }
 
     fn set_transform(&mut self, transform: Transform) {

@@ -379,7 +379,7 @@ impl PointsVisual {
 }
 
 impl Visual for PointsVisual {
-    fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {
+    fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {
         // Points don't need any per-frame preparation currently
         // In the future, this could handle dynamic updates to vertex data
     }

@@ -221,7 +221,7 @@ impl LinesVisual {
 }
 
 impl Visual for LinesVisual {
-    fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {
+    fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {
         // Lines don't need any per-frame preparation currently
     }
 

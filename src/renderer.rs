@@ -168,7 +168,7 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),  // Clear to 0 (unpainted)
+                        load: wgpu::LoadOp::Clear(0),  // Clear to 0 (lowest priority)
                         store: wgpu::StoreOp::Store,   // Save stencil state
                     }),
                 }),

@@ -105,11 +105,11 @@ impl Scene {
 
     /// Prepare all visuals in the scene for rendering
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &crate::visual::CameraInfo) {
         for visual in &self.visuals {
             if let Ok(mut v) = visual.lock() {
                 if v.is_visible() {
-                    v.prepare(device, queue);
+                    v.prepare(device, queue, camera_info);
                 }
             }
         }
@@ -117,11 +117,11 @@ impl Scene {
 
     /// Prepare all visuals in the scene for rendering (WASM version)
     #[cfg(target_arch = "wasm32")]
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &crate::visual::CameraInfo) {
         for visual in &self.visuals {
             if let Ok(mut v) = visual.try_borrow_mut() {
                 if v.is_visible() {
-                    v.prepare(device, queue);
+                    v.prepare(device, queue, camera_info);
                 }
             }
         }

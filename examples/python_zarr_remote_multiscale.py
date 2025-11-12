@@ -612,10 +612,25 @@ class MainWindow(QMainWindow):
                 # Calculate scale factor relative to LOD 0
                 if lod_idx == 0:
                     lod0_voxel_spacing = voxel_spacing
+                    lod0_volume_shape_ref = volume_shape
                     scale_factor = 1.0
                 else:
-                    # Scale factor is the ratio of voxel sizes
-                    scale_factor = voxel_spacing[0] / lod0_voxel_spacing[0]
+                    # Calculate scale factor using the dimension that changes between LODs
+                    # (Z might be isotropic across LODs in anisotropic datasets)
+                    # Try X/Y first (usually these change), fall back to Z
+                    if voxel_spacing[2] != lod0_voxel_spacing[2]:
+                        scale_factor = voxel_spacing[2] / lod0_voxel_spacing[2]
+                    elif voxel_spacing[1] != lod0_voxel_spacing[1]:
+                        scale_factor = voxel_spacing[1] / lod0_voxel_spacing[1]
+                    elif voxel_spacing[0] != lod0_voxel_spacing[0]:
+                        scale_factor = voxel_spacing[0] / lod0_voxel_spacing[0]
+                    else:
+                        # If voxel spacing is the same, calculate from volume dimensions
+                        scale_factor = max(
+                            lod0_volume_shape_ref[0] / volume_shape[0],
+                            lod0_volume_shape_ref[1] / volume_shape[1],
+                            lod0_volume_shape_ref[2] / volume_shape[2]
+                        )
 
                 # Create LevelMetadata
                 level_metadata = bv.LevelMetadata(

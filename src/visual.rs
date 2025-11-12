@@ -125,10 +125,28 @@ impl Default for Transform {
 
 /// Base trait for all visual objects that can be rendered in a scene
 #[cfg(not(target_arch = "wasm32"))]
+/// Information about the current camera and viewport for LOD selection and culling
+#[derive(Debug, Clone)]
+pub struct CameraInfo {
+    /// Camera position in world space
+    pub position: glam::Vec3,
+    /// Camera target/look-at point in world space
+    pub target: glam::Vec3,
+    /// Field of view in radians (vertical)
+    pub fov_y: f32,
+    /// Viewport width in pixels
+    pub viewport_width: u32,
+    /// Viewport height in pixels
+    pub viewport_height: u32,
+    /// View frustum planes for culling
+    pub frustum: crate::camera::FrustumPlanes,
+}
+
 pub trait Visual: Send + Sync + Any {
     /// Prepare the visual for rendering (called once per frame before render)
     /// This is where uniform buffers should be updated, etc.
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue);
+    /// Camera info is provided for visuals that need LOD selection or culling
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &CameraInfo);
 
     /// Render the visual to the given render pass
     /// Note: This method cannot take 'self by reference with a lifetime
@@ -159,7 +177,8 @@ pub trait Visual: Send + Sync + Any {
 pub trait Visual: Any {
     /// Prepare the visual for rendering (called once per frame before render)
     /// This is where uniform buffers should be updated, etc.
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue);
+    /// Camera info is provided for visuals that need LOD selection or culling
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &CameraInfo);
 
     /// Render the visual to the given render pass
     /// Note: This method cannot take 'self by reference with a lifetime
