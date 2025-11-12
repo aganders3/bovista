@@ -287,7 +287,6 @@ class MainWindow(QMainWindow):
         self.dataset_info = None  # Currently loaded dataset info
         self.camera_initialized = False  # Track if camera has been positioned
         self.chunk_executor = None  # ThreadPoolExecutor for chunk loading
-        self.cancel_invisible_chunks = None  # Function to cancel old chunk requests
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -669,7 +668,7 @@ class MainWindow(QMainWindow):
 
             # Thread pool for async loading
             self.chunk_executor = ThreadPoolExecutor(
-                max_workers=4, thread_name_prefix="zarr_loader"
+                max_workers=8, thread_name_prefix="zarr_loader"
             )
             executor = self.chunk_executor  # Local alias for closure
 
@@ -784,10 +783,6 @@ class MainWindow(QMainWindow):
                     with cache_lock:
                         pending_futures.pop(chunk_key, None)
 
-            # Track visible chunks from previous frame for cancellation
-            previous_visible = set()
-            last_cancel_frame = [0]
-
             def load_chunk(lod_level, z, y, x):
                 """Load a chunk (non-blocking - returns cached or None and starts background load)"""
                 chunk_key = (lod_level, z, y, x)
@@ -806,41 +801,10 @@ class MainWindow(QMainWindow):
                 # Return None for now - chunk will appear when ready
                 return None
 
-            def cancel_invisible_chunks():
-                """Cancel loading of chunks that are no longer visible"""
-                # Get currently visible chunks from TiledImageVisual
-                try:
-                    if not hasattr(self.bovista_widget, '_tiled_image') or self.bovista_widget._tiled_image is None:
-                        return
-
-                    # Get visible chunk keys from stats (we'll need to add this to Python bindings)
-                    # For now, we'll cancel based on time - cancel requests older than 2 seconds
-                    nonlocal previous_visible, last_cancel_frame
-
-                    # Only cancel every 30 frames to avoid overhead
-                    last_cancel_frame[0] += 1
-                    if last_cancel_frame[0] < 30:
-                        return
-                    last_cancel_frame[0] = 0
-
-                    with cache_lock:
-                        if len(pending_futures) > 50:  # Only cancel if queue is getting large
-                            # Cancel the oldest half of pending requests
-                            # This is a simple heuristic - they're likely no longer visible
-                            futures_list = list(pending_futures.items())
-                            num_to_cancel = len(futures_list) // 2
-
-                            cancelled_count = 0
-                            for chunk_key, future in futures_list[:num_to_cancel]:
-                                if future.cancel():  # cancel() returns True if cancellation succeeded
-                                    pending_futures.pop(chunk_key, None)
-                                    cancelled_count += 1
-
-                            if cancelled_count > 0:
-                                print(f"  [LOADER] Cancelled {cancelled_count} old chunk requests (queue was {len(futures_list)})")
-
-                except Exception as e:
-                    print(f"  [LOADER] Error cancelling chunks: {e}")
+            def get_pending_count():
+                """Return the number of pending chunk load requests (for backpressure control)"""
+                with cache_lock:
+                    return len(pending_futures)
 
             # Kick off loading of initial visible chunks in background (LOD 0)
             print("\nStarting background loading of initial chunks...")
@@ -887,6 +851,21 @@ class MainWindow(QMainWindow):
                 lod_bias=0.0,  # Neutral bias (can adjust with slider)
                 target_pixels_per_voxel=1.0  # Target ~1 pixel per voxel
             )
+
+            # Set up backpressure control - limit requests based on queue size
+            # Keep queue size equal to worker count so there's no backlog
+            # This makes the system responsive: old requests complete quickly (8 chunks max),
+            # and new requests for correct LOD can start immediately
+            NUM_WORKERS = 8
+            MAX_QUEUE_SIZE = NUM_WORKERS
+            def check_capacity():
+                """Return how many more chunk requests can be accepted"""
+                pending = get_pending_count()
+                capacity = max(0, MAX_QUEUE_SIZE - pending)
+                return capacity
+
+            tiled_image.set_capacity_check(check_capacity)
+            print(f"  Backpressure control enabled (queue size: {MAX_QUEUE_SIZE}, workers: {NUM_WORKERS})")
 
             # Set initial slice plane to show XY plane (looking down Z axis)
             # Slice plane normal pointing up in Z (shows XY slice)
@@ -954,9 +933,6 @@ class MainWindow(QMainWindow):
             # Add to scene (new unified API)
             viewer.add(tiled_image)
             self.bovista_widget.tiled_image = tiled_image
-
-            # Store cancel function for periodic cleanup
-            self.cancel_invisible_chunks = cancel_invisible_chunks
 
             # Add axes (new unified API)
             axes = bv.Lines.axis_helper(viewer, max(lod0_volume_shape) * 0.3)
@@ -1055,13 +1031,6 @@ class MainWindow(QMainWindow):
                 self.stats_label.setText(
                     f"Multi-LOD ({num_lods} levels) | Chunks: {loaded} loaded, {visible} visible"
                 )
-            except Exception:
-                pass
-
-        # Periodically cancel old chunk requests
-        if self.cancel_invisible_chunks is not None:
-            try:
-                self.cancel_invisible_chunks()
             except Exception:
                 pass
 

@@ -106,6 +106,7 @@
 pub mod camera;
 pub mod renderer;
 pub mod scene;
+pub mod spatial;
 pub mod visual;
 pub mod visuals;
 
@@ -115,8 +116,10 @@ pub mod python;
 pub use camera::{Camera, FrustumPlanes};
 pub use renderer::{CameraUniforms, Renderer};
 pub use scene::Scene;
+pub use spatial::VolumeGrid;
 pub use visual::{Transform, VertexAttribute, VertexBufferLayout, VertexFormat, Visual};
 pub use visuals::{
-    ChunkData, ChunkLoaderFn, ChunkRequest, CustomVisual, ImageVisual, LevelMetadata, LinesVisual,
-    PointsVisual, SliceOrientation, SlicePlane, TiledImageVisual,
+    CapacityCheckFn, ChunkData, ChunkLoaderFn, ChunkRequest, CustomVisual,
+    ImageVisual, LevelMetadata, LinesVisual, PointsVisual, SliceOrientation, SlicePlane,
+    TiledImageVisual,
 };

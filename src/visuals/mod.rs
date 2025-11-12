@@ -13,4 +13,6 @@ pub use image::{ImageVisual, SliceOrientation, SlicePlane};
 pub use lines::LinesVisual;
 pub use points::PointsVisual;
 pub use tiled_image::TiledImageVisual;
-pub use tiled_image::{ChunkData, ChunkLoaderFn, ChunkRequest, LevelMetadata};
+pub use tiled_image::{
+    CapacityCheckFn, ChunkData, ChunkLoaderFn, ChunkRequest, LevelMetadata,
+};

@@ -1100,6 +1100,16 @@ impl PyTiledImageVisual {
         })
     }
 
+    /// Get currently visible chunk keys
+    ///
+    /// Returns a list of (lod_level, z, y, x) tuples for chunks that are
+    /// currently visible. Useful for canceling stale load requests.
+    fn get_visible_chunks(&self) -> PyResult<Vec<(usize, u32, u32, u32)>> {
+        with_visual!(ref self.inner, TiledImageVisual, |v: &TiledImageVisual| {
+            v.get_visible_chunks()
+        })
+    }
+
     /// Enable/disable debug visualization (wireframes and color-coded Z-layers)
     fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
         with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
@@ -1114,6 +1124,49 @@ impl PyTiledImageVisual {
     fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
         with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
             v.set_lod_bias(bias);
+        })
+    }
+
+    /// Set capacity check callback for backpressure control
+    ///
+    /// The capacity check function should return the number of chunk load requests
+    /// that can currently be accepted. This prevents overwhelming the loader's queue.
+    ///
+    /// Example:
+    /// ```python
+    /// def check_capacity():
+    ///     return max(0, MAX_QUEUE_SIZE - len(pending_loads))
+    ///
+    /// tiled_image.set_capacity_check(check_capacity)
+    /// ```
+    fn set_capacity_check(&self, callback: PyObject) -> PyResult<()> {
+        use crate::CapacityCheckFn;
+        use std::sync::Arc;
+
+        // Create a Rust closure that calls the Python callback
+        let capacity_fn: CapacityCheckFn = Arc::new(move || -> usize {
+            Python::with_gil(|py| {
+                match callback.call0(py) {
+                    Ok(result) => {
+                        // Try to extract as usize
+                        match result.extract::<usize>(py) {
+                            Ok(capacity) => capacity,
+                            Err(_) => {
+                                eprintln!("[TILED] Capacity check callback must return int");
+                                usize::MAX  // No limit on error
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[TILED] Error calling capacity check: {}", e);
+                        usize::MAX  // No limit on error
+                    }
+                }
+            })
+        });
+
+        with_visual!(self.inner, TiledImageVisual, |v: &mut TiledImageVisual| {
+            v.set_capacity_check(capacity_fn);
         })
     }
 

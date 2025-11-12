@@ -9,11 +9,22 @@ src = "src"
 [build]
 build-dir = "book"
 
+[preprocessor.toc]
+command = "mdbook-toc"
+renderer = ["html"]
+
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/yourusername/bovista"
 additional-css = ["custom.css"]
+
+[output.html.fold]
+enable = true
+level = 0
+
+[output.html.search]
+enable = true
 
 [output.html.playground]
 editable = false

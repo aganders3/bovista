@@ -145,6 +145,14 @@ pub struct ChunkData {
 /// in the Python layer and returning None until data is ready.
 pub type ChunkLoaderFn = Arc<dyn Fn(ChunkRequest) -> Option<ChunkData> + Send + Sync>;
 
+/// Callback function to check how many chunk load requests can currently be accepted.
+///
+/// This enables backpressure control - the loader can signal when its queue is full,
+/// preventing the caller from overwhelming it with requests.
+///
+/// Returns the number of additional requests that can be accepted this frame.
+pub type CapacityCheckFn = Arc<dyn Fn() -> usize + Send + Sync>;
+
 /// Internal representation of a loaded chunk with metadata.
 struct ImageChunk {
     visual: Arc<Mutex<ChunkVisual>>,
@@ -182,6 +190,9 @@ pub struct TiledImageVisual {
     /// Chunk loader callback
     loader: ChunkLoaderFn,
 
+    /// Optional capacity check callback for backpressure control
+    capacity_check: Option<CapacityCheckFn>,
+
     /// Slice plane for rendering
     slice_plane: SlicePlane,
 
@@ -203,6 +214,9 @@ pub struct TiledImageVisual {
     /// LOD selection parameters (only used when fixed_lod is None)
     lod_bias: f32,                  // User adjustment: negative = prefer high-res
     target_pixels_per_voxel: f32,   // Target screen-space density
+
+    /// Cached ideal LOD from last visibility update (for render ordering)
+    cached_ideal_lod: usize,
 
     /// Visual properties
     transform: Transform,
@@ -230,6 +244,7 @@ impl TiledImageVisual {
             fixed_lod: Some(0),  // Fixed to LOD 0 (single-LOD mode)
             chunks: HashMap::new(),
             loader,
+            capacity_check: None,  // Optional, for backward compatibility
             slice_plane: SlicePlane::default(),
             contrast_limits: (0.0, 1.0),
             max_loaded_chunks,
@@ -238,6 +253,7 @@ impl TiledImageVisual {
             debug_mode: false,
             lod_bias: 0.0,
             target_pixels_per_voxel: 1.0,
+            cached_ideal_lod: 0,
             transform: Transform::default(),
             visible: true,
             name: "TiledImage".to_string(),
@@ -271,6 +287,7 @@ impl TiledImageVisual {
             fixed_lod: None,  // Use spatial LOD selection
             chunks: HashMap::new(),
             loader,
+            capacity_check: None,  // Optional, for backward compatibility
             slice_plane: SlicePlane::default(),
             contrast_limits: (0.0, 1.0),
             max_loaded_chunks,
@@ -279,10 +296,19 @@ impl TiledImageVisual {
             debug_mode: false,
             lod_bias,
             target_pixels_per_voxel,
+            cached_ideal_lod: 0,
             transform: Transform::default(),
             visible: true,
             name: "TiledImage (Multi-LOD)".to_string(),
         }
+    }
+
+    /// Set the capacity check callback for backpressure control
+    ///
+    /// The capacity check function should return the number of chunk load requests
+    /// that can currently be accepted. This prevents overwhelming the loader's queue.
+    pub fn set_capacity_check(&mut self, capacity_check: CapacityCheckFn) {
+        self.capacity_check = Some(capacity_check);
     }
 
     /// Set the slice plane
@@ -448,46 +474,43 @@ impl TiledImageVisual {
         let plane_point = Vec3::from_array(self.slice_plane.position);
 
         // Distance from camera to plane
-        let distance_to_plane = (camera_position - plane_point).dot(plane_normal).abs();
+        let distance_to_plane = (camera_position - plane_point).dot(plane_normal).abs().max(1.0);
 
-        // Estimate the extent of the visible region on the slice
-        // Use the volume diagonal as a conservative estimate
-        let lod0 = &self.levels[0];
-        let volume_diagonal = Vec3::new(
-            lod0.volume_size.2 as f32 * lod0.voxel_size.2,
-            lod0.volume_size.1 as f32 * lod0.voxel_size.1,
-            lod0.volume_size.0 as f32 * lod0.voxel_size.0,
-        ).length();
-
-        // Closest point: on the plane near camera
-        let min_distance = distance_to_plane.max(1.0);
-
-        // Farthest point: diagonal distance across volume
-        let max_distance = (distance_to_plane + volume_diagonal).max(min_distance + 1.0);
+        // Estimate the extent of the visible region on the slice using frustum
+        // Half-height of frustum at slice plane distance
+        let frustum_half_height = distance_to_plane * (fov_y / 2.0).tan();
+        let frustum_half_width = frustum_half_height * (viewport_height as f32 / viewport_height as f32); // Approximate
+        let visible_extent = (frustum_half_height * frustum_half_height + frustum_half_width * frustum_half_width).sqrt();
 
         // Use typical chunk size for LOD selection
+        let lod0 = &self.levels[0];
         let typical_chunk_size = lod0.chunk_size.2 as f32 * lod0.voxel_size.2;
 
-        // Select LOD for closest and farthest points
-        let min_lod = self.select_lod_for_chunk(
+        // Select LOD for center of visible region
+        let center_point = camera_position + plane_normal * distance_to_plane;
+        let center_lod = self.select_lod_for_chunk(
             camera_position,
             typical_chunk_size,
-            camera_position + plane_normal * min_distance,
+            center_point,
             fov_y,
             viewport_height,
         );
 
-        let max_lod = self.select_lod_for_chunk(
+        // Select LOD for edge of visible region (farther from camera on the plane)
+        // This approximates the worst case within the frustum
+        let edge_distance = (distance_to_plane * distance_to_plane + visible_extent * visible_extent).sqrt();
+        let edge_point = camera_position + plane_normal * edge_distance;
+        let edge_lod = self.select_lod_for_chunk(
             camera_position,
             typical_chunk_size,
-            camera_position + plane_normal * max_distance,
+            edge_point,
             fov_y,
             viewport_height,
         );
 
-        // Add a buffer of ±1 LOD to be conservative
-        let min_lod = min_lod.saturating_sub(1);
-        let max_lod = (max_lod + 1).min(self.levels.len() - 1);
+        // Use narrower range: just center ± 1, bounded by edge
+        let min_lod = center_lod.saturating_sub(1);
+        let max_lod = (edge_lod + 1).min(self.levels.len() - 1).min(center_lod + 3);
 
         (min_lod, max_lod)
     }
@@ -510,8 +533,8 @@ impl TiledImageVisual {
                         // Frustum culling (skip near/far planes for slice visualization)
                         // Add a safety margin to avoid incorrectly culling visible chunks
                         if let Some(f) = frustum {
-                            // Expand AABB by 20% to be more conservative
-                            let margin = (max - min) * 0.2;
+                            // Expand AABB by 5% to be conservative
+                            let margin = (max - min) * 0.05;
                             let expanded_min = min - margin;
                             let expanded_max = max + margin;
 
@@ -552,6 +575,9 @@ impl TiledImageVisual {
         // This ensures smooth transitions - we show "wrong" LOD data until "right" LOD loads
         let ideal_lod = min_lod;
 
+        // Cache the ideal LOD for render ordering
+        self.cached_ideal_lod = ideal_lod;
+
         // Print selected LOD
         if self.frame_counter % 60 == 0 {
             eprintln!("[TILED] Relevant LOD range: LOD{} to LOD{}, ideal is LOD{}",
@@ -565,13 +591,14 @@ impl TiledImageVisual {
         // First pass: Mark already-loaded chunks from ANY LOD as visible if they intersect
         // This prevents data from disappearing during LOD transitions
         // Depth test will naturally hide low-res chunks behind high-res ones
+        let total_loaded_chunks = self.chunks.len();
         for (chunk_key, _chunk) in &self.chunks {
             let (lod_level, cz, cy, cx) = *chunk_key;
             let (min, max) = self.compute_chunk_aabb(lod_level, (cz, cy, cx));
 
             // Basic visibility test
             if let Some(f) = frustum {
-                let margin = (max - min) * 0.2;
+                let margin = (max - min) * 0.05;
                 if !f.contains_aabb_xy(min - margin, max + margin) {
                     continue;
                 }
@@ -583,24 +610,96 @@ impl TiledImageVisual {
             }
         }
 
-        // Second pass: Test the ideal LOD to identify what SHOULD be loaded
-        // This determines load priority but doesn't hide already-loaded chunks
-        let test_level = &self.levels[ideal_lod];
-        let grid_size = test_level.grid_size.0 as usize * test_level.grid_size.1 as usize * test_level.grid_size.2 as usize;
+        // Second pass: Hierarchical traversal to find ideal-LOD chunks
+        // Start at a coarse LOD, find visible chunks, then recursively refine
+        let first_pass_elapsed = start_time.elapsed();
 
-        if self.frame_counter % 60 == 0 {
-            eprintln!("[TILED] Testing ideal LOD{} ({} total chunks, will be culled)", ideal_lod, grid_size);
+        // Pick a coarse starting LOD (aim for ~100-1000 chunks)
+        let mut start_lod = ideal_lod;
+        let mut found_suitable_start = false;
+        for lod in ideal_lod..self.levels.len() {
+            let level = &self.levels[lod];
+            let grid_size = level.grid_size.0 as usize * level.grid_size.1 as usize * level.grid_size.2 as usize;
+            if grid_size <= 1000 {
+                start_lod = lod;
+                found_suitable_start = true;
+                break;
+            }
         }
 
-        for cz in 0..test_level.grid_size.0 {
-            for cy in 0..test_level.grid_size.1 {
-                for cx in 0..test_level.grid_size.2 {
+        // Fallback: if no level has ≤1000 chunks, use the coarsest available
+        if !found_suitable_start && ideal_lod < self.levels.len() - 1 {
+            start_lod = self.levels.len() - 1;
+            if self.frame_counter % 60 == 0 {
+                let coarsest_level = &self.levels[start_lod];
+                let coarsest_grid_size = coarsest_level.grid_size.0 as usize * coarsest_level.grid_size.1 as usize * coarsest_level.grid_size.2 as usize;
+                eprintln!("[TILED] WARNING: No LOD with ≤1000 chunks found, using coarsest LOD{} ({} chunks)",
+                    start_lod, coarsest_grid_size);
+            }
+        }
+
+        if self.frame_counter % 60 == 0 {
+            let ideal_level = &self.levels[ideal_lod];
+            let ideal_grid_size = ideal_level.grid_size.0 as usize * ideal_level.grid_size.1 as usize * ideal_level.grid_size.2 as usize;
+            eprintln!("[TILED] First pass: tested {} loaded chunks in {}ms",
+                total_loaded_chunks, first_pass_elapsed.as_millis());
+            eprintln!("[TILED] Hierarchical traversal: LOD{} → LOD{} (ideal has {} chunks)",
+                start_lod, ideal_lod, ideal_grid_size);
+        }
+
+        // Start with all chunks at coarse LOD
+        let start_level = &self.levels[start_lod];
+        let mut active_regions: Vec<(Vec3, Vec3)> = Vec::new();
+
+        for cz in 0..start_level.grid_size.0 {
+            for cy in 0..start_level.grid_size.1 {
+                for cx in 0..start_level.grid_size.2 {
                     tested_total += 1;
-                    let (min, max) = self.compute_chunk_aabb(ideal_lod, (cz, cy, cx));
+                    let (min, max) = self.compute_chunk_aabb(start_lod, (cz, cy, cx));
 
                     // Frustum culling
                     if let Some(f) = frustum {
-                        let margin = (max - min) * 0.2;
+                        let margin = (max - min) * 0.05;
+                        if !f.contains_aabb_xy(min - margin, max + margin) {
+                            continue;
+                        }
+                    }
+
+                    // Slice plane intersection
+                    if plane_aabb_intersection(&self.slice_plane, min, max) {
+                        active_regions.push((min, max));
+
+                        // If this is the target LOD, mark as visible
+                        if start_lod == ideal_lod {
+                            let chunk_key = (start_lod, cz, cy, cx);
+                            if !self.visible_chunks.contains(&chunk_key) {
+                                self.visible_chunks.insert(chunk_key);
+                                found_total += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Refine level by level down to ideal LOD
+        for current_lod in (ideal_lod..start_lod).rev() {
+            let mut next_active_regions = Vec::new();
+            let mut chunks_tested_this_level = 0;
+            let parent_region_count = active_regions.len();
+
+            // For each visible coarse region, test overlapping fine chunks
+            for coarse_aabb in &active_regions {
+                let overlapping = self.get_overlapping_chunks(current_lod, *coarse_aabb);
+                chunks_tested_this_level += overlapping.len();
+
+                for (cz, cy, cx) in overlapping {
+                    tested_total += 1;
+                    let (min, max) = self.compute_chunk_aabb(current_lod, (cz, cy, cx));
+
+                    // Frustum culling
+                    if let Some(f) = frustum {
+                        let margin = (max - min) * 0.05;
                         if !f.contains_aabb_xy(min - margin, max + margin) {
                             continue;
                         }
@@ -611,26 +710,43 @@ impl TiledImageVisual {
                         continue;
                     }
 
-                    // Mark this ideal-LOD chunk as visible
-                    let chunk_key = (ideal_lod, cz, cy, cx);
-                    if !self.visible_chunks.contains(&chunk_key) {
-                        self.visible_chunks.insert(chunk_key);
-                        found_total += 1;
+                    next_active_regions.push((min, max));
+
+                    // If this is the target LOD, mark as visible
+                    if current_lod == ideal_lod {
+                        let chunk_key = (current_lod, cz, cy, cx);
+                        if !self.visible_chunks.contains(&chunk_key) {
+                            self.visible_chunks.insert(chunk_key);
+                            found_total += 1;
+                        }
                     }
                 }
+            }
+
+            active_regions = next_active_regions;
+
+            // Debug: show per-level refinement stats
+            if self.frame_counter % 60 == 0 {
+                eprintln!("[TILED]   Level {} refinement: tested {} chunks from {} parent regions → {} active regions",
+                    current_lod, chunks_tested_this_level, parent_region_count, active_regions.len());
             }
         }
 
         let elapsed = start_time.elapsed();
+        let hierarchical_elapsed = elapsed.saturating_sub(first_pass_elapsed);
+
         if self.frame_counter % 60 == 0 {
-            eprintln!("[TILED] Visibility testing took {}ms, found {} total visible chunks",
-                elapsed.as_millis(), found_total);
+            let ideal_level = &self.levels[ideal_lod];
+            let total_at_ideal = ideal_level.grid_size.0 as usize * ideal_level.grid_size.1 as usize * ideal_level.grid_size.2 as usize;
+            eprintln!("[TILED] Visibility testing took {}ms (first pass: {}ms, hierarchical: {}ms), tested {} chunks (vs {} total at LOD{}), found {} visible",
+                elapsed.as_millis(), first_pass_elapsed.as_millis(), hierarchical_elapsed.as_millis(),
+                tested_total, total_at_ideal, ideal_lod, found_total);
         }
 
         // Emergency brake: if testing took too long, warn user
         if elapsed.as_millis() > 16 {
-            eprintln!("[TILED] WARNING: Visibility testing took {}ms (>16ms frame budget)! Consider implementing hierarchical traversal.",
-                elapsed.as_millis());
+            eprintln!("[TILED] WARNING: Visibility testing took {}ms (first pass: {}ms, hierarchical: {}ms, >16ms frame budget)!",
+                elapsed.as_millis(), first_pass_elapsed.as_millis(), hierarchical_elapsed.as_millis());
         }
     }
 
@@ -872,8 +988,20 @@ impl TiledImageVisual {
         }
 
         // Load visible chunks that aren't loaded yet
-        // IMPORTANT: Limit how many we load per frame to avoid blocking main thread
-        const MAX_LOADS_PER_FRAME: usize = 4;
+        // Check capacity if callback is available (backpressure control)
+        let capacity = if let Some(ref check_fn) = self.capacity_check {
+            check_fn()
+        } else {
+            // Fallback: limit to 4 per frame if no capacity check available
+            // (prevents overwhelming synchronous loaders)
+            4
+        };
+
+        let max_loads_this_frame = capacity;
+
+        if self.frame_counter % 60 == 0 && capacity < usize::MAX {
+            eprintln!("[TILED] Loader capacity: {} requests available", capacity);
+        }
 
         // Sort visible chunks by LOD (high-res first) for load prioritization
         let mut visible: Vec<_> = self.visible_chunks.iter().copied().collect();
@@ -892,8 +1020,8 @@ impl TiledImageVisual {
             };
 
             if needs_load {
-                // Limit concurrent loads to avoid blocking
-                if loads_this_frame < MAX_LOADS_PER_FRAME {
+                // Limit concurrent loads to avoid blocking and respect loader capacity
+                if loads_this_frame < max_loads_this_frame {
                     self.load_chunk(device, queue, surface_format, camera_bind_group_layout, chunk_key);
                     loads_this_frame += 1;
                 } else {
@@ -945,6 +1073,14 @@ impl TiledImageVisual {
         self.visible_chunks.len()
     }
 
+    /// Get the currently visible chunk keys
+    ///
+    /// Returns a vector of (lod_level, z, y, x) tuples representing chunks
+    /// that are currently visible based on the last visibility update.
+    pub fn get_visible_chunks(&self) -> Vec<(usize, u32, u32, u32)> {
+        self.visible_chunks.iter().copied().collect()
+    }
+
     /// Set debug mode for all chunks
     pub fn set_debug_mode(&mut self, enabled: bool) {
         self.debug_mode = enabled;
@@ -973,11 +1109,9 @@ impl Visual for TiledImageVisual {
             return;
         }
 
-        // Collect visible chunks and sort by LOD (low-res first, then high-res)
-        // With LessEqual depth test, last-drawn wins at equal depth
-        // For coplanar slices, we want high-res to overwrite low-res, so:
-        // 1. Draw LOD 9 (lowest res) first
-        // 2. Draw LOD 0 (highest res) last - overwrites everything
+        // Collect visible chunks and sort by LOD relative to ideal LOD
+        // Using stencil buffer to prevent z-fighting:
+        // Draw LODs in order of "correctness" - ideal LOD first, then neighbors
         let mut chunks_by_lod: Vec<Vec<_>> = vec![Vec::new(); self.levels.len()];
         for (chunk_key, chunk) in &self.chunks {
             if self.visible_chunks.contains(chunk_key) {
@@ -985,8 +1119,30 @@ impl Visual for TiledImageVisual {
             }
         }
 
-        // Render low-res to high-res (reverse LOD order)
-        for lod in (0..self.levels.len()).rev() {
+        // Debug: print what we're about to render
+        if self.frame_counter % 60 == 0 {
+            let render_counts: Vec<usize> = chunks_by_lod.iter().map(|v| v.len()).collect();
+            eprintln!("[TILED] Rendering by LOD: {:?}", render_counts);
+        }
+
+        // Use the ideal LOD from visibility testing (NOT from what's currently loaded)
+        // This prevents high-res chunks loaded earlier from claiming pixels when zoomed out
+        let ideal_lod = self.cached_ideal_lod;
+
+        // Render LODs sorted by distance from ideal LOD
+        // Example: ideal=6 → render order: 6, 5, 7, 4, 8, 3, 9, 2, 1, 0
+        let mut lod_order: Vec<usize> = (0..self.levels.len()).collect();
+        lod_order.sort_by_key(|&lod| (lod as i32 - ideal_lod as i32).abs());
+
+        // Stencil starts at 0 (unpainted), reference = 1
+        // Compare NotEqual(1): buffer=0 passes (unpainted), writes 1 to mark as drawn
+        render_pass.set_stencil_reference(1);
+
+        for lod in lod_order {
+            if chunks_by_lod[lod].is_empty() {
+                continue;
+            }
+
             for (_, chunk) in &chunks_by_lod[lod] {
                 if let Ok(visual) = chunk.visual.lock() {
                     visual.render(render_pass);

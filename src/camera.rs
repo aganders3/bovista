@@ -98,10 +98,17 @@ impl Camera {
     }
 
     /// Zoom by moving camera closer/farther from target
+    /// Uses exponential scaling for smooth, consistent zoom at all distances
     pub fn zoom(&mut self, delta: f32) {
         let direction = (self.position - self.target).normalize();
         let distance = (self.position - self.target).length();
-        let new_distance = (distance + delta).max(0.1);
+
+        // Exponential zoom: each delta unit multiplies distance by a factor
+        // Very small factor for smooth, fine control
+        let zoom_sensitivity = 0.01_f32; // 1% change per unit
+        let scale = (1.0_f32 + zoom_sensitivity).powf(delta);
+        let new_distance = (distance * scale).max(0.1);
+
         self.position = self.target + direction * new_distance;
     }
 }
