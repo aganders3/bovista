@@ -7,3 +7,4 @@ __pycache__/
 web/pkg/
 TODO.txt
 *.md
+.claude/
