@@ -4,12 +4,18 @@
 //! - SimpleStrategy: For small images that fit in memory
 //! - TiledStrategy: For large images with on-demand loading and LOD support
 
+use crate::visuals::tile::{
+    ChunkStatus, Tile, TileData, TileKey, TileLoaderFn, TileRequest, AABB,
+    compute_plane_aabb_intersection,
+};
 use crate::visuals::image::SlicePlane;
-use crate::visuals::tile::{Tile, TileKey, TileLoaderFn, TileRequest, AABB, compute_plane_aabb_intersection};
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wgpu::{Device, Queue};
+
+/// Type alias for pending chunks queue (can be shared across threads)
+pub type PendingChunks = Arc<Mutex<HashMap<TileKey, TileData>>>;
 
 /// Trait for different image loading/rendering strategies
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,10 +55,24 @@ pub trait ImageStrategy: Send + Sync {
         (0, 0)
     }
 
+    /// Provide chunk data for a requested tile (optional, only for multi-LOD strategies)
+    ///
+    /// This should be called when chunk data is ready for a tile that was requested.
+    fn set_chunk_data(&mut self, _lod_level: usize, _z: u32, _y: u32, _x: u32, _data: crate::visuals::tile::TileData) {
+        // Default: no-op for strategies that don't support async loading
+    }
+
     /// Get the ideal/target LOD level for the current view
     /// Used for stencil-based LOD prioritization
     fn get_ideal_lod(&self) -> usize {
         0 // Default: use highest resolution for single-LOD strategies
+    }
+
+    /// Get the pending chunks queue (optional, only for multi-LOD strategies)
+    ///
+    /// Returns None for strategies that don't support async chunk loading.
+    fn pending_chunks(&self) -> Option<PendingChunks> {
+        None // Default: no pending chunks queue
     }
 }
 
@@ -327,6 +347,14 @@ pub struct TiledStrategy {
     /// Map from TileKey to index in tiles vec
     tile_cache: HashMap<TileKey, usize>,
 
+    /// Pending chunks waiting to have textures created
+    /// Map from TileKey -> TileData (raw data, not yet uploaded to GPU)
+    /// Uses separate mutex so background threads can submit without blocking on visual lock
+    pending_chunks: PendingChunks,
+
+    /// Tracks which chunks we've requested (to return AlreadyPending)
+    requested_keys: HashSet<TileKey>,
+
     /// Tile loader callback
     loader: TileLoaderFn,
 
@@ -375,6 +403,8 @@ impl TiledStrategy {
             levels: lod_levels,
             tiles: Vec::new(),
             tile_cache: HashMap::new(),
+            pending_chunks: Arc::new(Mutex::new(HashMap::new())),
+            requested_keys: HashSet::new(),
             loader,
             max_tiles,
             frame_counter: 0,
@@ -385,6 +415,11 @@ impl TiledStrategy {
             capacity_check,
             debug_mode: false,
         }
+    }
+
+    /// Get a reference to the pending chunks queue (for PyChunkedImageStrategy)
+    pub fn pending_chunks(&self) -> PendingChunks {
+        self.pending_chunks.clone()
     }
 
     /// Set LOD bias (negative = prefer high-res, positive = prefer low-res)
@@ -649,23 +684,38 @@ impl TiledStrategy {
         }
     }
 
-    /// Load a tile
-    fn load_tile(&mut self, device: &Device, queue: &Queue, key: TileKey) -> bool {
+    /// Request a tile to be loaded
+    ///
+    /// Calls the loader callback which returns ChunkStatus.
+    /// If accepted, marks the tile as requested. The actual data will arrive
+    /// later via set_chunk_data().
+    fn request_tile(&mut self, key: TileKey) -> ChunkStatus {
         let TileKey { lod_level, z, y, x } = key;
+
+        // Check if already requested or pending
+        if self.requested_keys.contains(&key) || self.pending_chunks.lock().unwrap().contains_key(&key) {
+            return ChunkStatus::AlreadyPending;
+        }
 
         // Create tile request
         let request = TileRequest::from_grid(lod_level, x, y, z);
 
         // Call loader
-        let data = match (self.loader)(request) {
-            Some(d) => d,
-            None => {
-                // Loader returned None - data not ready yet
-                return false;
-            }
-        };
+        let status = (self.loader)(request);
 
-        // Get level config
+        // Track if accepted
+        if status == ChunkStatus::Accepted {
+            self.requested_keys.insert(key);
+        }
+
+        status
+    }
+
+    /// Create a tile from loaded data
+    ///
+    /// This is called when processing pending chunks to create GPU textures.
+    fn create_tile_from_data(&mut self, device: &Device, queue: &Queue, key: TileKey, data: TileData) {
+        let TileKey { lod_level, z, y, x } = key;
         let level = &self.levels[lod_level];
 
         // Create texture
@@ -739,8 +789,6 @@ impl TiledStrategy {
         let index = self.tiles.len();
         self.tiles.push(tile);
         self.tile_cache.insert(key, index);
-
-        true
     }
 
     /// Evict tiles using LRU policy
@@ -832,8 +880,23 @@ impl TiledStrategy {
                 } else if let (Some(ref vertex_buffer), Some(ref index_buffer)) =
                     (&tile.vertex_buffer, &tile.index_buffer) {
                     // Reuse existing buffers - just update the data
-                    queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-                    queue.write_buffer(index_buffer, 0, bytemuck::cast_slice(&indices));
+                    // Note: WebGPU requires 4-byte alignment for write_buffer
+                    let vertex_bytes = bytemuck::cast_slice(&vertices);
+                    let index_bytes = bytemuck::cast_slice(&indices);
+
+                    // Pad index data to 4-byte alignment if needed
+                    if index_bytes.len() % 4 == 0 {
+                        queue.write_buffer(vertex_buffer, 0, vertex_bytes);
+                        queue.write_buffer(index_buffer, 0, index_bytes);
+                    } else {
+                        // Need to pad indices to 4-byte boundary
+                        let padded_len = (index_bytes.len() + 3) & !3;  // Round up to multiple of 4
+                        let mut padded_indices = vec![0u8; padded_len];
+                        padded_indices[..index_bytes.len()].copy_from_slice(index_bytes);
+
+                        queue.write_buffer(vertex_buffer, 0, vertex_bytes);
+                        queue.write_buffer(index_buffer, 0, &padded_indices);
+                    }
                 }
             } else {
                 // No intersection - tile doesn't intersect the slice plane
@@ -856,16 +919,26 @@ impl ImageStrategy for TiledStrategy {
     ) {
         self.frame_counter = frame_number;
 
+        // Process any pending chunks first (create textures for arrived data)
+        // Lock once, drain all chunks, then release
+        let pending_chunks: Vec<(TileKey, TileData)> = {
+            let mut chunks = self.pending_chunks.lock().unwrap();
+            chunks.drain().collect()
+        };
+        for (key, data) in pending_chunks {
+            self.create_tile_from_data(device, queue, key, data);
+        }
+
         // Update visible tiles based on slice plane and camera
         self.update_visible_tiles(slice_plane, camera_info);
 
-        // Load visible tiles that aren't loaded yet
+        // Request visible tiles that aren't loaded yet
         let capacity = self.capacity_check
             .as_ref()
             .map(|f| f())
-            .unwrap_or(4);  // Default: load max 4 per frame
+            .unwrap_or(8);  // Default: assume 8 capacity
 
-        let mut loads_this_frame = 0;
+        let mut accepted = 0;
         let mut visible: Vec<_> = self.visible_tile_keys.iter().copied().collect();
         visible.sort_by_key(|k| k.lod_level);  // High-res first
 
@@ -874,14 +947,22 @@ impl ImageStrategy for TiledStrategy {
                 // Tile already loaded - just update access time
                 self.tiles[index].last_used_frame = frame_number;
             } else {
-                // Tile not loaded - try to load it
-                // Python will handle deduplication (won't double-submit if already pending)
-                self.load_tile(device, queue, key);
-                loads_this_frame += 1;
-
-                // Stop once we've attempted 'capacity' loads
-                if loads_this_frame >= capacity {
-                    break;
+                // Tile not loaded - request it
+                match self.request_tile(key) {
+                    ChunkStatus::Accepted => {
+                        accepted += 1;
+                        if accepted >= capacity {
+                            break;
+                        }
+                    }
+                    ChunkStatus::AlreadyPending => {
+                        // Don't count against capacity
+                        continue;
+                    }
+                    ChunkStatus::Rejected => {
+                        // Hit capacity, stop requesting
+                        break;
+                    }
                 }
             }
         }
@@ -917,7 +998,17 @@ impl ImageStrategy for TiledStrategy {
         (self.tiles.len(), self.visible_tile_keys.len())
     }
 
+    fn set_chunk_data(&mut self, lod_level: usize, z: u32, y: u32, x: u32, data: crate::visuals::tile::TileData) {
+        let key = TileKey { lod_level, z, y, x };
+        self.requested_keys.remove(&key);
+        self.pending_chunks.lock().unwrap().insert(key, data);
+    }
+
     fn get_ideal_lod(&self) -> usize {
         self.cached_ideal_lod
+    }
+
+    fn pending_chunks(&self) -> Option<PendingChunks> {
+        Some(self.pending_chunks.clone())
     }
 }

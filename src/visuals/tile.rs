@@ -287,11 +287,23 @@ impl Default for TileUniforms {
     }
 }
 
+/// Status returned by tile loader callback
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkStatus {
+    /// The chunk request was accepted and will be loaded asynchronously
+    Accepted,
+    /// The chunk is already being loaded (request is pending)
+    AlreadyPending,
+    /// The chunk request was rejected (e.g., at capacity)
+    Rejected,
+}
+
 /// Type alias for tile loader callback
 ///
-/// The callback receives a TileRequest and should return TileData if successful,
-/// or None if the tile doesn't exist or can't be loaded.
-pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> Option<TileData> + Send + Sync>;
+/// The callback receives a TileRequest and should return ChunkStatus indicating
+/// whether the request was accepted, is already pending, or was rejected.
+/// When the chunk is ready, the loader should call set_chunk_data() on the strategy.
+pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus + Send + Sync>;
 
 /// Type alias for capacity check callback
 ///

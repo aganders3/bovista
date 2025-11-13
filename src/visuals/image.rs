@@ -430,6 +430,21 @@ impl ImageVisual {
     pub fn get_stats(&self) -> (usize, usize) {
         self.strategy.get_stats()
     }
+
+    /// Provide chunk data for a requested tile (used with from_chunked)
+    ///
+    /// This method should be called when chunk data is ready for a tile that was requested.
+    /// Only has effect when using TiledStrategy (no-op for SimpleStrategy).
+    pub fn set_chunk_data(&mut self, lod_level: usize, z: u32, y: u32, x: u32, data: crate::visuals::tile::TileData) {
+        self.strategy.set_chunk_data(lod_level, z, y, x, data);
+    }
+
+    /// Get the pending chunks queue (for PyChunkedImageStrategy)
+    ///
+    /// Returns None if not using TiledStrategy.
+    pub fn pending_chunks(&self) -> Option<crate::visuals::image_strategy::PendingChunks> {
+        self.strategy.pending_chunks()
+    }
 }
 
 impl Visual for ImageVisual {

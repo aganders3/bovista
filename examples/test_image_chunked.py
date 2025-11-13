@@ -1,11 +1,13 @@
 """
 Test new unified ImageVisual with chunked multi-resolution loading
 
-This tests Image.from_chunked() which uses the new tile-based architecture
+This tests Image.from_chunked() which uses the new ChunkStatus-based API
 with automatic LOD selection, loading chunks on-demand from remote OME-Zarr.
 
-This is the SAME functionality as TiledImage.from_levels(), but using the new
-unified ImageVisual codebase.
+New API features:
+- Loader callback returns ChunkStatus (Accepted/AlreadyPending/Rejected)
+- Call image.set_chunk_data() when data is ready
+- Backpressure control through ChunkStatus instead of capacity_check callback
 
 Requirements:
     pip install PySide6 zarr fsspec requests aiohttp bovista numpy
@@ -444,101 +446,118 @@ class MainWindow(QMainWindow):
                 max_workers=8, thread_name_prefix="zarr_loader"
             )
 
-            chunk_cache = {}
-            pending_futures = {}
-            cache_lock = Lock()
-            loaded_count = [0]
+            # Create a class-based loader that will have strategy automatically set
+            class ChunkLoader:
+                """Loader with strategy attribute that will be set by from_chunked"""
+                strategy = None  # Will be set by Rust during from_chunked
 
-            def load_chunk_blocking(lod_level, z, y, x):
-                try:
-                    path = datasets[lod_level]["path"]
-                    array = store[path]
-                    level = lod_levels[lod_level]
+                def __init__(self, executor):
+                    self.executor = executor
+                    self.pending_futures = {}
+                    self.cache_lock = Lock()
+                    self.loaded_count = 0
+                    self.MAX_PENDING = 16
 
-                    cz, cy, cx = level.chunk_size
-                    z_start = z * cz
-                    y_start = y * cy
-                    x_start = x * cx
-                    z_end = min((z + 1) * cz, level.volume_size[0])
-                    y_end = min((y + 1) * cy, level.volume_size[1])
-                    x_end = min((x + 1) * cx, level.volume_size[2])
+                def load_chunk_blocking(self, lod_level, z, y, x):
+                    print(f"[Loader] Loading LOD{lod_level} ({z},{y},{x})...")  # DEBUG
+                    try:
+                        path = datasets[lod_level]["path"]
+                        array = store[path]
+                        level = lod_levels[lod_level]
 
-                    if z_start >= level.volume_size[0] or y_start >= level.volume_size[1] or x_start >= level.volume_size[2]:
-                        return None
+                        cz, cy, cx = level.chunk_size
+                        z_start = z * cz
+                        y_start = y * cy
+                        x_start = x * cx
+                        z_end = min((z + 1) * cz, level.volume_size[0])
+                        y_end = min((y + 1) * cy, level.volume_size[1])
+                        x_end = min((x + 1) * cx, level.volume_size[2])
 
-                    # Build slicing tuple
-                    slices = [slice(None)] * len(array.shape)
-                    # For non-spatial dimensions, select appropriate index
-                    for i in range(len(array.shape)):
-                        if i not in spatial_indices:
-                            # Check if this is the channel dimension
-                            if "c" in axis_names and i == axis_names.index("c"):
-                                slices[i] = self.current_channel  # Use selected channel
+                        if z_start >= level.volume_size[0] or y_start >= level.volume_size[1] or x_start >= level.volume_size[2]:
+                            return None
+
+                        # Build slicing tuple
+                        slices = [slice(None)] * len(array.shape)
+                        # For non-spatial dimensions, select appropriate index
+                        for i in range(len(array.shape)):
+                            if i not in spatial_indices:
+                                # Check if this is the channel dimension
+                                if "c" in axis_names and i == axis_names.index("c"):
+                                    slices[i] = current_channel  # Use selected channel
+                                else:
+                                    slices[i] = 0  # Take first element for other dimensions (e.g., time)
+
+                        slices[z_idx] = slice(z_start, z_end)
+                        slices[y_idx] = slice(y_start, y_end)
+                        slices[x_idx] = slice(x_start, x_end)
+
+                        chunk_data = array[tuple(slices)]
+
+                        if chunk_data.size == 0:
+                            return None
+
+                        # Convert to uint8 with per-chunk normalization
+                        if chunk_data.dtype != np.uint8:
+                            chunk_min = float(chunk_data.min())
+                            chunk_max = float(chunk_data.max())
+                            if chunk_max > chunk_min:
+                                chunk_data = ((chunk_data - chunk_min) / (chunk_max - chunk_min) * 255).astype(np.uint8)
                             else:
-                                slices[i] = 0  # Take first element for other dimensions (e.g., time)
+                                chunk_data = np.zeros_like(chunk_data, dtype=np.uint8)
 
-                    slices[z_idx] = slice(z_start, z_end)
-                    slices[y_idx] = slice(y_start, y_end)
-                    slices[x_idx] = slice(x_start, x_end)
-
-                    chunk_data = array[tuple(slices)]
-
-                    if chunk_data.size == 0:
+                        return np.array(chunk_data)
+                    except Exception as e:
+                        print(f"ERROR loading chunk LOD{lod_level} ({z},{y},{x}): {e}")
                         return None
 
-                    # Convert to uint8 with per-chunk normalization
-                    if chunk_data.dtype != np.uint8:
-                        chunk_min = float(chunk_data.min())
-                        chunk_max = float(chunk_data.max())
-                        if chunk_max > chunk_min:
-                            chunk_data = ((chunk_data - chunk_min) / (chunk_max - chunk_min) * 255).astype(np.uint8)
-                        else:
-                            chunk_data = np.zeros_like(chunk_data, dtype=np.uint8)
+                def on_chunk_loaded(self, lod, z, y, x, future):
+                    key = (lod, z, y, x)
+                    try:
+                        if future.cancelled():
+                            with self.cache_lock:
+                                self.pending_futures.pop(key, None)
+                            return
 
-                    return np.array(chunk_data)
-                except Exception as e:
-                    print(f"ERROR loading chunk LOD{lod_level} ({z},{y},{x}): {e}")
-                    return None
+                        result = future.result()
+                        with self.cache_lock:
+                            self.pending_futures.pop(key, None)
 
-            def on_chunk_loaded(lod, z, y, x, future):
-                key = (lod, z, y, x)
-                try:
-                    if future.cancelled():
-                        with cache_lock:
-                            pending_futures.pop(key, None)
-                        return
+                        if result is not None and self.strategy is not None:
+                            # Provide the loaded data via the strategy
+                            # No retry needed - Rust handles queueing internally
+                            self.strategy.set_chunk_data(lod, z, y, x, result)
+                            self.loaded_count += 1
+                            if self.loaded_count <= 5 or self.loaded_count % 50 == 0:
+                                print(f"  Loaded LOD{lod} ({z},{y},{x}) - total: {self.loaded_count}")
+                    except Exception as e:
+                        print(f"ERROR in on_chunk_loaded: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        with self.cache_lock:
+                            self.pending_futures.pop(key, None)
 
-                    result = future.result()
-                    with cache_lock:
-                        pending_futures.pop(key, None)
-                        if result is not None:
-                            chunk_cache[key] = result
-                            loaded_count[0] += 1
-                            if loaded_count[0] <= 5 or loaded_count[0] % 50 == 0:
-                                print(f"  Loaded LOD{lod} ({z},{y},{x}) - total: {loaded_count[0]}")
-                except Exception:
-                    with cache_lock:
-                        pending_futures.pop(key, None)
+                def request(self, lod, z, y, x):
+                    """Loader callback that returns ChunkStatus"""
+                    key = (lod, z, y, x)
+                    with self.cache_lock:
+                        # Check if already loading
+                        if key in self.pending_futures:
+                            return bv.ChunkStatus.AlreadyPending
 
-            def load_chunk(lod, z, y, x):
-                key = (lod, z, y, x)
-                with cache_lock:
-                    if key in chunk_cache:
-                        return chunk_cache[key]
-                    if key not in pending_futures:
-                        future = self.chunk_executor.submit(load_chunk_blocking, lod, z, y, x)
-                        future.add_done_callback(lambda f: on_chunk_loaded(lod, z, y, x, f))
-                        pending_futures[key] = future
-                return None
+                        # Check capacity
+                        if len(self.pending_futures) >= self.MAX_PENDING:
+                            return bv.ChunkStatus.Rejected
 
-            def check_capacity():
-                """Return how many more chunk requests can be accepted"""
-                with cache_lock:
-                    pending = len(pending_futures)
-                NUM_WORKERS = 8
-                MAX_QUEUE_SIZE = NUM_WORKERS
-                capacity = max(0, MAX_QUEUE_SIZE - pending)
-                return capacity
+                        # Start loading
+                        future = self.executor.submit(self.load_chunk_blocking, lod, z, y, x)
+                        future.add_done_callback(lambda f: self.on_chunk_loaded(lod, z, y, x, f))
+                        self.pending_futures[key] = future
+
+                    return bv.ChunkStatus.Accepted
+
+            # Create the loader instance
+            current_channel = self.current_channel  # Capture current channel for closure
+            self.loader = ChunkLoader(self.chunk_executor)
 
             # Setup scene when viewer is ready
             def setup_scene(viewer):
@@ -546,16 +565,17 @@ class MainWindow(QMainWindow):
                 print("Creating Image.from_chunked()...")
                 print("=" * 60)
 
-                # Create image with chunked loading
+                # Create image with chunked loading (strategy will be auto-set on loader)
+                # Pass the loader object, not the method, so Rust can set strategy attribute
                 image = bv.Image.from_chunked(
                     viewer,
                     lod_levels,
-                    load_chunk,
-                    max_chunks=500,
-                    capacity_check=check_capacity
+                    self.loader,  # Pass object, Rust will call .request() method
+                    max_chunks=500
                 )
 
                 print("✓ Image created!")
+                print(f"  Loader.strategy = {self.loader.strategy}")
 
                 # Calculate world dimensions
                 lod0 = lod_levels[0]
@@ -617,15 +637,17 @@ class MainWindow(QMainWindow):
             self.load_button.setEnabled(True)
 
     def update_lod_bias(self):
-        if self.viewer_widget._image:
+        # Use strategy directly since set_lod_bias is strategy-specific
+        if hasattr(self, 'loader') and self.loader and self.loader.strategy:
             bias = self.lod_slider.value() / 10.0
             self.lod_label.setText(f"{bias:.1f}")
-            self.viewer_widget._image.set_lod_bias(bias)
+            self.loader.strategy.set_lod_bias(bias)
 
     def update_stats(self):
-        if self.viewer_widget._image:
+        # Use strategy for stats since it's strategy-specific
+        if hasattr(self, 'loader') and self.loader and self.loader.strategy:
             try:
-                loaded, visible = self.viewer_widget._image.get_stats()
+                loaded, visible = self.loader.strategy.get_stats()
                 num_lods = len(self.level_info) if self.level_info else 0
                 self.status_label.setText(
                     f"Multi-LOD ({num_lods} levels) | Chunks: {loaded} loaded, {visible} visible"
