@@ -1,7 +1,6 @@
 use crate::visual::{Transform, Visual};
-use crate::visuals::image_strategy::ChunkLoaderFn;
-use crate::visuals::image_strategy_v2::{ImageStrategy, SimpleStrategy};
-use crate::visuals::tile::{Tile, TileUniforms, TileVertex};
+use crate::visuals::image_strategy::{ImageStrategy, SimpleStrategy};
+use crate::visuals::tile::{TileUniforms, TileVertex};
 use bytemuck::{Pod, Zeroable};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -70,19 +69,6 @@ pub enum SliceOrientation {
 struct ImageVertex {
     position: [f32; 2],
     texcoord: [f32; 2],
-}
-
-impl ImageVertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
-
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<ImageVertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBS,
-        }
-    }
 }
 
 /// Uniforms for image rendering parameters
@@ -190,12 +176,12 @@ impl ImageVisual {
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
-        lod_levels: Vec<crate::visuals::image_strategy_v2::LodLevelConfig>,
+        lod_levels: Vec<crate::visuals::image_strategy::LodLevelConfig>,
         max_tiles: usize,
         loader: crate::visuals::tile::TileLoaderFn,
         capacity_check: Option<crate::visuals::tile::CapacityCheckFn>,
     ) -> Self {
-        use crate::visuals::image_strategy_v2::TiledStrategy;
+        use crate::visuals::image_strategy::TiledStrategy;
 
         let strategy = Box::new(TiledStrategy::new(
             device,
@@ -222,25 +208,6 @@ impl ImageVisual {
             height,
             depth,
         )
-    }
-
-    /// Create an ImageVisual with a chunked/remote data loader
-    ///
-    /// NOTE: Temporarily disabled during refactoring. Use TiledImageVisual for chunked loading.
-    /// This will be re-enabled once ChunkedImageStrategy is migrated to the new tile system.
-    #[allow(dead_code)]
-    fn with_loader(
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _surface_format: wgpu::TextureFormat,
-        _camera_bind_group_layout: &wgpu::BindGroupLayout,
-        _width: u32,
-        _height: u32,
-        _depth: u32,
-        _chunk_size: (u32, u32, u32),
-        _loader: ChunkLoaderFn,
-    ) -> Self {
-        unimplemented!("with_loader temporarily disabled during refactoring - use TiledImageVisual instead")
     }
 
     /// Internal constructor from a strategy
@@ -463,57 +430,6 @@ impl ImageVisual {
     pub fn get_stats(&self) -> (usize, usize) {
         self.strategy.get_stats()
     }
-
-    /// Get or create a uniform buffer for a tile
-    fn get_or_create_uniform_buffer(
-        &mut self,
-        device: &wgpu::Device,
-        tile_id: usize,
-    ) -> &wgpu::Buffer {
-        self.uniform_buffer_cache.entry(tile_id).or_insert_with(|| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Tile Uniform Buffer"),
-                size: std::mem::size_of::<TileUniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        })
-    }
-
-    /// Get or create a bind group for a tile
-    fn get_or_create_bind_group(
-        &mut self,
-        device: &wgpu::Device,
-        tile: &Tile,
-        uniform_buffer: &wgpu::Buffer,
-    ) -> Arc<wgpu::BindGroup> {
-        // Use texture pointer as cache key
-        let texture_ptr = Arc::as_ptr(&tile.texture) as usize;
-
-        self.bind_group_cache
-            .entry(texture_ptr)
-            .or_insert_with(|| {
-                Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Tile Bind Group"),
-                    layout: &self.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&tile.texture_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: uniform_buffer.as_entire_binding(),
-                        },
-                    ],
-                }))
-            })
-            .clone()
-    }
 }
 
 impl Visual for ImageVisual {
@@ -667,13 +583,9 @@ impl Visual for ImageVisual {
         }
 
         // Debug: print render stats occasionally
-        static mut FRAME_COUNTER: u64 = 0;
-        unsafe {
-            FRAME_COUNTER += 1;
-            if FRAME_COUNTER % 60 == 0 {
-                eprintln!("[ImageVisual] Frame {}: rendered {} tiles out of {} loaded",
-                    FRAME_COUNTER, rendered_count, self.strategy.tiles().len());
-            }
+        if self.frame_number % 60 == 0 {
+            eprintln!("[ImageVisual] Frame {}: rendered {} tiles out of {} loaded",
+                self.frame_number, rendered_count, self.strategy.tiles().len());
         }
     }
 

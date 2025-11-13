@@ -20,19 +20,18 @@
 //!
 //! - **[`PointsVisual`]**: Render point clouds with per-point colors
 //! - **[`LinesVisual`]**: Render line segments and wireframes
-//! - **[`ImageVisual`]**: Render 3D volumes with slice plane visualization
-//! - **[`TiledImageVisual`]**: Render massive volumes with on-demand chunk loading and LRU caching
+//! - **[`ImageVisual`]**: Render 3D volumes with slice plane visualization and on-demand chunk loading
 //! - **[`CustomVisual`]**: Base for creating custom visualization types
 //!
 //! ### Chunked Loading System
 //!
-//! The [`TiledImageVisual`] implements a sophisticated chunked loading system for handling
+//! [`ImageVisual`] supports chunked loading with multi-resolution LOD (Level of Detail) for handling
 //! datasets that are too large to fit in memory:
 //!
-//! 1. **Spatial Partitioning**: Volume is divided into a 3D grid of chunks
-//! 2. **Visibility Culling**: Only chunks intersecting the current slice plane are loaded
-//! 3. **LRU Cache**: Least recently used chunks are evicted when memory limit is reached
-//! 4. **Async Loading**: Chunks are loaded asynchronously via callbacks (typically from Python)
+//! 1. **Spatial Partitioning**: Volume is divided into tiles at multiple LOD levels
+//! 2. **Visibility Culling**: Only visible tiles are loaded based on frustum and LOD selection
+//! 3. **LRU Cache**: Least recently used tiles are evicted when memory limit is reached
+//! 4. **Async Loading**: Tiles are loaded asynchronously via callbacks (typically from Python)
 //!
 //! ## Usage Example
 //!
@@ -88,18 +87,17 @@
 //! store = zarr.open("https://s3.../dataset.zarr", mode="r")
 //! array = store["0"]  # Resolution level 0
 //!
-//! # Define chunk loader callback
-//! def load_chunk(z, y, x):
-//!     chunk_data = array[z:z+cz, y:y+cy, x:x+cx]
-//!     return np.array(chunk_data, dtype=np.uint8)
+//! # Define tile loader callback
+//! def load_chunk(lod_level, tile_z, tile_y, tile_x):
+//!     tile_data = array[tile_z:tile_z+tz, tile_y:tile_y+ty, tile_x:tile_x+tx]
+//!     return np.array(tile_data, dtype=np.uint8)
 //!
-//! # Create tiled image with on-demand loading
-//! tiled = bv.PyTiledImageVisual.from_loader(
+//! # Create image with chunked loading and multiple LOD levels
+//! image = bv.Image.from_chunked(
 //!     viewer,
-//!     volume_size=(depth, height, width),
-//!     chunk_size=(cz, cy, cx),
+//!     lod_levels=[...],  # List of LevelMetadata for each LOD
 //!     loader=load_chunk,
-//!     max_loaded_chunks=150
+//!     max_chunks=500
 //! )
 //! ```
 
@@ -119,7 +117,6 @@ pub use scene::Scene;
 pub use spatial::VolumeGrid;
 pub use visual::{Transform, VertexAttribute, VertexBufferLayout, VertexFormat, Visual};
 pub use visuals::{
-    CapacityCheckFn, ChunkData, ChunkLoaderFn, ChunkRequest, CustomVisual,
-    ImageVisual, LevelMetadata, LinesVisual, PointsVisual, SliceOrientation, SlicePlane,
-    TiledImageVisual,
+    CustomVisual, ImageVisual, LinesVisual, PointsVisual,
+    LodLevelConfig, SliceOrientation, SlicePlane,
 };

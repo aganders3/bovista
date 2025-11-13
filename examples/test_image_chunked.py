@@ -16,7 +16,7 @@ import numpy as np
 import zarr
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QPushButton,
-    QHBoxLayout, QSlider,
+    QHBoxLayout, QSlider, QComboBox,
 )
 from PySide6.QtCore import QTimer, Qt
 import bovista as bv
@@ -24,10 +24,18 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
 
-# Simplified dataset (just one for testing)
-TEST_DATASET = {
-    "url": "https://s3.embl.de/i2k-2020/platy-raw.ome.zarr",
-    "description": "Platynereis embryo, 10 resolution levels",
+# Public IDR OME-Zarr datasets on S3
+DATASETS = {
+    "Human Mitotic Cell (small)": {
+        "url": "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr",
+        "description": "HeLa cells, 3 resolution levels",
+        "camera_distance": 200.0,
+    },
+    "Platybrowser (medium)": {
+        "url": "https://s3.embl.de/i2k-2020/platy-raw.ome.zarr",
+        "description": "Platynereis embryo, 10 resolution levels",
+        "camera_distance": 400.0,
+    },
 }
 
 
@@ -182,10 +190,13 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Test Image.from_chunked() - New Unified System")
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 900, 750)
 
         self.zarr_data = None
         self.chunk_executor = None
+        self.current_channel = 0
+        self.dataset_info = None
+        self.level_info = None
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -196,17 +207,22 @@ class MainWindow(QMainWindow):
         info_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(info_label)
 
-        # Load button
-        load_layout = QHBoxLayout()
-        self.load_button = QPushButton("Load Test Dataset")
+        # Dataset selector
+        selector_layout = QHBoxLayout()
+        selector_layout.addWidget(QLabel("Dataset:"))
+        self.dataset_combo = QComboBox()
+        for name, info in DATASETS.items():
+            self.dataset_combo.addItem(f"{name} - {info['description']}", name)
+        selector_layout.addWidget(self.dataset_combo)
+        self.load_button = QPushButton("Load Dataset")
         self.load_button.clicked.connect(self.load_dataset)
-        load_layout.addWidget(self.load_button)
-        self.status_label = QLabel("Click 'Load Test Dataset' to begin")
-        load_layout.addWidget(self.status_label)
-        load_layout.addStretch()
-        layout.addLayout(load_layout)
+        selector_layout.addWidget(self.load_button)
+        self.status_label = QLabel("Select a dataset and click 'Load Dataset'")
+        selector_layout.addWidget(self.status_label)
+        selector_layout.addStretch()
+        layout.addLayout(selector_layout)
 
-        # LOD bias slider
+        # LOD bias and channel selectors
         lod_layout = QHBoxLayout()
         lod_layout.addWidget(QLabel("LOD Bias:"))
         self.lod_slider = QSlider(Qt.Horizontal)
@@ -217,9 +233,42 @@ class MainWindow(QMainWindow):
         self.lod_slider.valueChanged.connect(self.update_lod_bias)
         lod_layout.addWidget(self.lod_slider)
         self.lod_label = QLabel("0.0")
+        self.lod_label.setMinimumWidth(40)
         lod_layout.addWidget(self.lod_label)
+        lod_layout.addWidget(QLabel("Channel:"))
+        self.channel_combo = QComboBox()
+        self.channel_combo.currentIndexChanged.connect(self.change_channel)
+        self.channel_combo.setEnabled(False)
+        lod_layout.addWidget(self.channel_combo)
         lod_layout.addStretch()
         layout.addLayout(lod_layout)
+
+        # Contrast controls
+        contrast_layout = QHBoxLayout()
+        contrast_layout.addWidget(QLabel("Contrast Min:"))
+        self.contrast_min_slider = QSlider(Qt.Horizontal)
+        self.contrast_min_slider.setMinimum(0)
+        self.contrast_min_slider.setMaximum(255)
+        self.contrast_min_slider.setValue(0)
+        self.contrast_min_slider.setEnabled(False)
+        self.contrast_min_slider.valueChanged.connect(self.update_contrast)
+        contrast_layout.addWidget(self.contrast_min_slider)
+        self.contrast_min_label = QLabel("0")
+        self.contrast_min_label.setMinimumWidth(50)
+        contrast_layout.addWidget(self.contrast_min_label)
+        contrast_layout.addWidget(QLabel("Max:"))
+        self.contrast_max_slider = QSlider(Qt.Horizontal)
+        self.contrast_max_slider.setMinimum(0)
+        self.contrast_max_slider.setMaximum(255)
+        self.contrast_max_slider.setValue(255)
+        self.contrast_max_slider.setEnabled(False)
+        self.contrast_max_slider.valueChanged.connect(self.update_contrast)
+        contrast_layout.addWidget(self.contrast_max_slider)
+        self.contrast_max_label = QLabel("255")
+        self.contrast_max_label.setMinimumWidth(50)
+        contrast_layout.addWidget(self.contrast_max_label)
+        contrast_layout.addStretch()
+        layout.addLayout(contrast_layout)
 
         # Viewer
         self.viewer_widget = SimpleViewer(width=900, height=550)
@@ -243,20 +292,25 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def load_dataset(self):
-        """Load the test dataset"""
+        """Load the selected dataset"""
         self.load_button.setEnabled(False)
         self.status_label.setText("Loading metadata...")
         QApplication.processEvents()
 
         try:
+            # Get selected dataset
+            dataset_name = self.dataset_combo.currentData()
+            dataset_info = DATASETS[dataset_name]
+
             print("\n" + "=" * 60)
-            print("Loading dataset...")
-            print(f"URL: {TEST_DATASET['url']}")
+            print(f"Loading dataset: {dataset_name}")
+            print(f"URL: {dataset_info['url']}")
             print("=" * 60)
 
             # Open zarr store
-            store = zarr.open(TEST_DATASET["url"], mode="r")
+            store = zarr.open(dataset_info["url"], mode="r")
             self.zarr_data = store
+            self.dataset_info = dataset_info
 
             # Get multiscales info
             multiscales = store.attrs["multiscales"][0]
@@ -286,6 +340,35 @@ class MainWindow(QMainWindow):
 
             spatial_indices = (z_idx, y_idx, x_idx)
             print(f"Spatial indices: z={z_idx}, y={y_idx}, x={x_idx}")
+
+            # Detect channels
+            if "c" in axis_names:
+                channel_idx = axis_names.index("c")
+                first_array = store[datasets[0]["path"]]
+                num_channels = first_array.shape[channel_idx]
+
+                # Populate channel combo
+                self.channel_combo.blockSignals(True)
+                self.channel_combo.clear()
+                for i in range(num_channels):
+                    self.channel_combo.addItem(f"Channel {i}", i)
+                # Default to last channel
+                last_channel = num_channels - 1
+                self.channel_combo.setCurrentIndex(last_channel)
+                self.channel_combo.blockSignals(False)
+                self.channel_combo.setEnabled(True)
+                self.current_channel = last_channel
+                print(f"Found {num_channels} channels, defaulting to channel {last_channel}")
+            else:
+                # Single channel dataset
+                self.channel_combo.blockSignals(True)
+                self.channel_combo.clear()
+                self.channel_combo.addItem("Channel 0", 0)
+                self.channel_combo.setCurrentIndex(0)
+                self.channel_combo.blockSignals(False)
+                self.channel_combo.setEnabled(False)
+                self.current_channel = 0
+                print("Single channel dataset")
 
             # Create LevelMetadata for each LOD
             lod_levels = []
@@ -345,6 +428,14 @@ class MainWindow(QMainWindow):
                 print(f"  Voxel spacing: {voxel_spacing}")
                 print(f"  Scale: {scale_factor:.2f}x")
 
+            # Store level info for later use
+            self.level_info = lod_levels
+
+            # Enable LOD slider and contrast sliders
+            self.lod_slider.setEnabled(True)
+            self.contrast_min_slider.setEnabled(True)
+            self.contrast_max_slider.setEnabled(True)
+
             # Setup loader in background thread
             if self.chunk_executor:
                 self.chunk_executor.shutdown(wait=False)
@@ -377,10 +468,14 @@ class MainWindow(QMainWindow):
 
                     # Build slicing tuple
                     slices = [slice(None)] * len(array.shape)
-                    # Take first channel/timepoint if present
+                    # For non-spatial dimensions, select appropriate index
                     for i in range(len(array.shape)):
                         if i not in spatial_indices:
-                            slices[i] = 0
+                            # Check if this is the channel dimension
+                            if "c" in axis_names and i == axis_names.index("c"):
+                                slices[i] = self.current_channel  # Use selected channel
+                            else:
+                                slices[i] = 0  # Take first element for other dimensions (e.g., time)
 
                     slices[z_idx] = slice(z_start, z_end)
                     slices[y_idx] = slice(y_start, y_end)
@@ -531,11 +626,65 @@ class MainWindow(QMainWindow):
         if self.viewer_widget._image:
             try:
                 loaded, visible = self.viewer_widget._image.get_stats()
+                num_lods = len(self.level_info) if self.level_info else 0
                 self.status_label.setText(
-                    f"Chunks: {loaded} loaded, {visible} visible"
+                    f"Multi-LOD ({num_lods} levels) | Chunks: {loaded} loaded, {visible} visible"
                 )
             except Exception:
                 pass
+
+    def update_contrast(self):
+        """Update contrast range based on slider values"""
+        try:
+            if self.viewer_widget._image is None:
+                return
+
+            # Get slider values (0-255)
+            min_pos = self.contrast_min_slider.value()
+            max_pos = self.contrast_max_slider.value()
+
+            # Ensure min < max
+            if min_pos >= max_pos:
+                sender = self.sender()
+                if sender == self.contrast_min_slider:
+                    min_pos = max_pos - 1
+                    self.contrast_min_slider.blockSignals(True)
+                    self.contrast_min_slider.setValue(min_pos)
+                    self.contrast_min_slider.blockSignals(False)
+                else:
+                    max_pos = min_pos + 1
+                    self.contrast_max_slider.blockSignals(True)
+                    self.contrast_max_slider.setValue(max_pos)
+                    self.contrast_max_slider.blockSignals(False)
+
+            # Update labels
+            self.contrast_min_label.setText(str(min_pos))
+            self.contrast_max_label.setText(str(max_pos))
+
+            # Map 0-255 to normalized 0-1 range for shader
+            contrast_min_normalized = min_pos / 255.0
+            contrast_max_normalized = max_pos / 255.0
+
+            # Apply to image
+            self.viewer_widget._image.set_contrast(contrast_min_normalized, contrast_max_normalized)
+        except Exception as e:
+            print(f"ERROR in update_contrast: {e}")
+
+    def change_channel(self, index):
+        """Change the displayed channel"""
+        if self.zarr_data is None or index < 0:
+            return
+
+        channel = self.channel_combo.itemData(index)
+        if channel is None:
+            return
+
+        print(f"\nChanging to channel {channel}")
+        self.current_channel = channel
+
+        # Reload the dataset with the new channel
+        # We need to trigger a reload of all chunks
+        self.load_button.click()
 
 
 def main():
