@@ -1,7 +1,6 @@
 use crate::visual::{Transform, Visual};
 use crate::visuals::image_strategy::{ImageStrategy, SimpleStrategy};
 use crate::visuals::tile::{TileUniforms, TileVertex};
-use bytemuck::{Pod, Zeroable};
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::RenderPass;
@@ -61,30 +60,6 @@ pub enum SliceOrientation {
     XY,
     XZ,
     YZ,
-}
-
-/// Vertex for image rendering (simple quad)
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Pod, Zeroable)]
-struct ImageVertex {
-    position: [f32; 2],
-    texcoord: [f32; 2],
-}
-
-/// Uniforms for image rendering parameters
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Pod, Zeroable)]
-struct ImageUniforms {
-    contrast_min: f32,
-    contrast_max: f32,
-    _padding1: f32,
-    _padding2: f32,
-    plane_position: [f32; 3],
-    _padding3: f32,
-    plane_normal: [f32; 3],
-    _padding4: f32,
-    volume_size: [f32; 3],
-    _padding5: f32,
 }
 
 /// Visual for rendering 2D images and 3D volume slices
@@ -179,7 +154,6 @@ impl ImageVisual {
         lod_levels: Vec<crate::visuals::image_strategy::LodLevelConfig>,
         max_tiles: usize,
         loader: crate::visuals::tile::TileLoaderFn,
-        capacity_check: Option<crate::visuals::tile::CapacityCheckFn>,
     ) -> Self {
         use crate::visuals::image_strategy::TiledStrategy;
 
@@ -188,7 +162,6 @@ impl ImageVisual {
             lod_levels.clone(),
             max_tiles,
             loader,
-            capacity_check,
         ));
 
         // Get dimensions from first LOD level

@@ -374,9 +374,6 @@ pub struct TiledStrategy {
     /// Cached ideal LOD from last update
     cached_ideal_lod: usize,
 
-    /// Optional capacity check callback for backpressure control
-    capacity_check: Option<crate::visuals::tile::CapacityCheckFn>,
-
     /// Debug mode
     debug_mode: bool,
 }
@@ -387,7 +384,6 @@ impl TiledStrategy {
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
         loader: TileLoaderFn,
-        capacity_check: Option<crate::visuals::tile::CapacityCheckFn>,
     ) -> Self {
         assert!(!lod_levels.is_empty(), "Must have at least one LOD level");
 
@@ -412,7 +408,6 @@ impl TiledStrategy {
             lod_bias: 0.0,  // Neutral - match TiledImageVisual default
             target_pixels_per_voxel: 1.0,
             cached_ideal_lod: 0,
-            capacity_check,
             debug_mode: false,
         }
     }
@@ -933,12 +928,7 @@ impl ImageStrategy for TiledStrategy {
         self.update_visible_tiles(slice_plane, camera_info);
 
         // Request visible tiles that aren't loaded yet
-        let capacity = self.capacity_check
-            .as_ref()
-            .map(|f| f())
-            .unwrap_or(8);  // Default: assume 8 capacity
-
-        let mut accepted = 0;
+        // We rely on the loader to return Rejected when at capacity
         let mut visible: Vec<_> = self.visible_tile_keys.iter().copied().collect();
         visible.sort_by_key(|k| k.lod_level);  // High-res first
 
@@ -950,17 +940,13 @@ impl ImageStrategy for TiledStrategy {
                 // Tile not loaded - request it
                 match self.request_tile(key) {
                     ChunkStatus::Accepted => {
-                        accepted += 1;
-                        if accepted >= capacity {
-                            break;
-                        }
+                        // Request accepted, continue with next tile
                     }
                     ChunkStatus::AlreadyPending => {
-                        // Don't count against capacity
-                        continue;
+                        // Already requested, continue
                     }
                     ChunkStatus::Rejected => {
-                        // Hit capacity, stop requesting
+                        // Loader at capacity, stop requesting
                         break;
                     }
                 }

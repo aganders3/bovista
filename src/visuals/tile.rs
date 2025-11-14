@@ -303,14 +303,10 @@ pub enum ChunkStatus {
 /// The callback receives a TileRequest and should return ChunkStatus indicating
 /// whether the request was accepted, is already pending, or was rejected.
 /// When the chunk is ready, the loader should call set_chunk_data() on the strategy.
-pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus + Send + Sync>;
-
-/// Type alias for capacity check callback
 ///
-/// The callback should return the number of tile load requests that can currently
-/// be accepted. This is used for backpressure control to prevent overwhelming the
-/// loader's queue.
-pub type CapacityCheckFn = std::sync::Arc<dyn Fn() -> usize + Send + Sync>;
+/// IMPORTANT: The loader is responsible for implementing backpressure control
+/// by returning ChunkStatus::Rejected when it cannot accept more requests.
+pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus + Send + Sync>;
 
 // ============================================================================
 // Geometry Utilities

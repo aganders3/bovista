@@ -942,7 +942,8 @@ impl PyImageVisual {
             })
         });
 
-        // Create ImageVisual with chunked loading (no capacity check needed anymore)
+        // Create ImageVisual with chunked loading
+        // Backpressure control is now handled by the loader returning ChunkStatus::Rejected
         let visual = ImageVisual::from_chunked(
             renderer.device(),
             renderer.queue(),
@@ -951,7 +952,6 @@ impl PyImageVisual {
             rust_levels,
             max_chunks,
             loader_fn,
-            None,  // capacity_check is deprecated with new API
         );
 
         // Get the pending_chunks queue before wrapping in Arc<Mutex<>>

@@ -456,7 +456,7 @@ class MainWindow(QMainWindow):
                     self.pending_futures = {}
                     self.cache_lock = Lock()
                     self.loaded_count = 0
-                    self.MAX_PENDING = 16
+                    self.MAX_PENDING = 8
 
                 def load_chunk_blocking(self, lod_level, z, y, x):
                     print(f"[Loader] Loading LOD{lod_level} ({z},{y},{x})...")  # DEBUG
