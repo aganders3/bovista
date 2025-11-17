@@ -306,7 +306,11 @@ pub enum ChunkStatus {
 ///
 /// IMPORTANT: The loader is responsible for implementing backpressure control
 /// by returning ChunkStatus::Rejected when it cannot accept more requests.
+#[cfg(not(target_arch = "wasm32"))]
 pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus + Send + Sync>;
+
+#[cfg(target_arch = "wasm32")]
+pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus>;
 
 // ============================================================================
 // Geometry Utilities
@@ -375,7 +379,9 @@ pub fn compute_plane_aabb_intersection(
     }
 
     // Remove ALL duplicate points (not just consecutive ones)
-    let epsilon = 0.01; // Slightly larger epsilon for robustness
+    // Use epsilon relative to AABB size for scale-independence
+    let aabb_diagonal = (max - min).length();
+    let epsilon = aabb_diagonal * 0.001; // 0.1% of AABB diagonal
     let mut unique_points = Vec::new();
     for point in intersection_points {
         let is_duplicate = unique_points.iter().any(|(p, _): &(Vec3, Vec3)| {

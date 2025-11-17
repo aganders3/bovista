@@ -200,8 +200,8 @@ impl ImageVisual {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,  // Avoid edge artifacts between chunks
+            min_filter: wgpu::FilterMode::Nearest,  // Avoid edge artifacts between chunks
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -483,29 +483,28 @@ impl Visual for ImageVisual {
 
             queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
-            // Create bind group if it doesn't exist
+            // Always recreate bind group to avoid stale cache entries when textures are reused
+            // (Arc may reuse same memory address after tile eviction)
             let texture_ptr = Arc::as_ptr(texture) as usize;
-            if !self.bind_group_cache.contains_key(&texture_ptr) {
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Tile Bind Group"),
-                    layout: &self.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(texture_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: uniform_buffer.as_entire_binding(),
-                        },
-                    ],
-                });
-                self.bind_group_cache.insert(texture_ptr, Arc::new(bind_group));
-            }
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Tile Bind Group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            self.bind_group_cache.insert(texture_ptr, Arc::new(bind_group));
         }
     }
 
@@ -536,7 +535,6 @@ impl Visual for ImageVisual {
         // Stencil reference = 1 (buffer cleared to 0, NotEqual ensures first painted wins)
         render_pass.set_stencil_reference(1);
 
-        let mut rendered_count = 0;
         for (tile, _, _) in tiles_with_distance {
             // Note: uniform buffer is already bound in the bind group created during prepare()
 
@@ -566,14 +564,7 @@ impl Visual for ImageVisual {
                     // Use non-indexed rendering
                     render_pass.draw(0..tile.vertex_count, 0..1);
                 }
-                rendered_count += 1;
             }
-        }
-
-        // Debug: print render stats occasionally
-        if self.frame_number % 60 == 0 {
-            eprintln!("[ImageVisual] Frame {}: rendered {} tiles out of {} loaded",
-                self.frame_number, rendered_count, self.strategy.tiles().len());
         }
     }
 

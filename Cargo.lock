@@ -224,6 +224,7 @@ dependencies = [
  "futures",
  "glam",
  "gloo-timers",
+ "js-sys",
  "log",
  "lru",
  "numpy",

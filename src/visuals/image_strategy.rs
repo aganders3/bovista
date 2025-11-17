@@ -118,6 +118,20 @@ pub trait ImageStrategy {
     fn get_ideal_lod(&self) -> usize {
         0
     }
+
+    /// Provide chunk data for a requested tile (optional, only for multi-LOD strategies)
+    ///
+    /// This should be called when chunk data is ready for a tile that was requested.
+    fn set_chunk_data(&mut self, _lod_level: usize, _z: u32, _y: u32, _x: u32, _data: crate::visuals::tile::TileData) {
+        // Default: no-op for strategies that don't support async loading
+    }
+
+    /// Get the pending chunks queue (optional, only for multi-LOD strategies)
+    ///
+    /// Returns None for strategies that don't support async chunk loading.
+    fn pending_chunks(&self) -> Option<PendingChunks> {
+        None // Default: no pending chunks queue
+    }
 }
 
 /// Simple strategy for small in-memory images
@@ -315,6 +329,8 @@ pub struct LodLevelConfig {
     pub voxel_size: (f32, f32, f32),
     /// Scale factor relative to LOD 0 (1.0, 2.0, 4.0, ...)
     pub scale_factor: f32,
+    /// Translation offset (Z, Y, X) in world units - for mapping data space to world space
+    pub translation: (f32, f32, f32),
 }
 
 impl LodLevelConfig {
@@ -387,14 +403,6 @@ impl TiledStrategy {
     ) -> Self {
         assert!(!lod_levels.is_empty(), "Must have at least one LOD level");
 
-        eprintln!("[TiledStrategy] Initialized with {} LOD levels", lod_levels.len());
-        for (i, level) in lod_levels.iter().enumerate() {
-            let grid = level.grid_size();
-            let total_tiles = grid.0 as usize * grid.1 as usize * grid.2 as usize;
-            eprintln!("  LOD{}: {}×{}×{} tiles = {} total (scale: {}x)",
-                i, grid.0, grid.1, grid.2, total_tiles, level.scale_factor);
-        }
-
         Self {
             levels: lod_levels,
             tiles: Vec::new(),
@@ -433,12 +441,13 @@ impl TiledStrategy {
         let (tz, ty, tx) = tile_pos;
         let (tile_size_z, tile_size_y, tile_size_x) = level.tile_size;
         let (voxel_z, voxel_y, voxel_x) = level.voxel_size;
+        let (trans_z, trans_y, trans_x) = level.translation;
 
-        // Calculate world-space position
+        // Calculate world-space position (data space -> world space via translation)
         let min = Vec3::new(
-            tx as f32 * tile_size_x as f32 * voxel_x,
-            ty as f32 * tile_size_y as f32 * voxel_y,
-            tz as f32 * tile_size_z as f32 * voxel_z,
+            tx as f32 * tile_size_x as f32 * voxel_x + trans_x,
+            ty as f32 * tile_size_y as f32 * voxel_y + trans_y,
+            tz as f32 * tile_size_z as f32 * voxel_z + trans_z,
         );
 
         // Calculate actual size of this tile (may be smaller at edges)
@@ -484,8 +493,10 @@ impl TiledStrategy {
         }
 
         // AABB intersects plane if min and max have opposite signs
-        // (or if one is very close to zero)
-        min_dist <= 0.01 && max_dist >= -0.01
+        // Use a small epsilon relative to AABB size for numerical tolerance
+        let aabb_size = (aabb.max - aabb.min).length();
+        let epsilon = aabb_size * 0.001;  // 0.1% of AABB diagonal
+        min_dist <= epsilon && max_dist >= -epsilon
     }
 
     /// Select LOD for a tile based on camera distance and screen-space size
@@ -496,7 +507,9 @@ impl TiledStrategy {
         camera_info: &crate::visual::CameraInfo,
     ) -> usize {
         let distance = (tile_center - camera_info.position).length();
-        if distance < 0.01 {
+        // Use adaptive threshold: very close relative to tile size
+        let min_distance = tile_world_size * 0.1;
+        if distance < min_distance {
             return 0; // Very close, use highest resolution
         }
 
@@ -528,14 +541,16 @@ impl TiledStrategy {
     fn update_visible_tiles(&mut self, slice_plane: &SlicePlane, camera_info: &crate::visual::CameraInfo) {
         self.visible_tile_keys.clear();
 
-        // Compute distance from camera to slice plane for LOD estimation
-        let plane_normal = Vec3::from_array(slice_plane.normal);
-        let plane_point = Vec3::from_array(slice_plane.position);
-        let distance_to_plane = (camera_info.position - plane_point).dot(plane_normal).abs().max(1.0);
-
         // Estimate typical tile size for LOD selection
         let lod0 = &self.levels[0];
         let typical_tile_size = lod0.tile_size.2 as f32 * lod0.voxel_size.2;
+
+        // Compute distance from camera to slice plane for LOD estimation
+        let plane_normal = Vec3::from_array(slice_plane.normal);
+        let plane_point = Vec3::from_array(slice_plane.position);
+        // Use adaptive minimum distance based on volume size instead of hardcoded 1.0
+        let min_distance = typical_tile_size * 0.5;
+        let distance_to_plane = (camera_info.position - plane_point).dot(plane_normal).abs().max(min_distance);
 
         // Select LOD for center of view
         let center_point = camera_info.position + plane_normal * distance_to_plane;
@@ -672,11 +687,6 @@ impl TiledStrategy {
             let key = TileKey::new(lod, tz, ty, tx);
             self.visible_tile_keys.insert(key);
         }
-
-        if self.frame_counter % 60 == 0 && !self.visible_tile_keys.is_empty() {
-            eprintln!("[TiledStrategy] Frame {}: {} visible tiles, {} loaded tiles at LOD{} (start=LOD{})",
-                self.frame_counter, self.visible_tile_keys.len(), self.tiles.len(), ideal_lod, start_lod);
-        }
     }
 
     /// Request a tile to be loaded
@@ -780,10 +790,16 @@ impl TiledStrategy {
             tile.debug_color = Some(colors[(color_index % 6) as usize]);
         }
 
-        // Add to cache
-        let index = self.tiles.len();
-        self.tiles.push(tile);
-        self.tile_cache.insert(key, index);
+        // Check if this tile already exists in cache (shouldn't happen, but defensive)
+        if let Some(&existing_index) = self.tile_cache.get(&key) {
+            // Replace the existing tile in-place rather than creating a duplicate
+            self.tiles[existing_index] = tile;
+        } else {
+            // Add new tile to cache
+            let index = self.tiles.len();
+            self.tiles.push(tile);
+            self.tile_cache.insert(key, index);
+        }
     }
 
     /// Evict tiles using LRU policy
@@ -801,37 +817,40 @@ impl TiledStrategy {
 
         tiles_by_access.sort_by_key(|(_, frame, _)| *frame);
 
-        // Remove oldest tiles
+        // Remove oldest tiles, but NEVER evict visible tiles
         let num_to_remove = self.tiles.len() - self.max_tiles;
         let mut to_remove: Vec<_> = tiles_by_access
             .iter()
+            .filter(|(_, _, key)| !self.visible_tile_keys.contains(key))  // Skip visible tiles
             .take(num_to_remove)
             .map(|(_, _, key)| *key)
             .collect();
 
         // Remove from back to front to maintain indices
+        // Filter out any keys that aren't actually in the cache (shouldn't happen)
+        to_remove.retain(|key| self.tile_cache.contains_key(key));
+
         to_remove.sort_by_key(|key| {
-            self.tile_cache.get(key).copied().unwrap_or(0)
+            self.tile_cache.get(key).copied().expect("tile should be in cache")
         });
         to_remove.reverse();
 
-        for key in to_remove {
-            if let Some(&index) = self.tile_cache.get(&key) {
-                self.tile_cache.remove(&key);
+        for key in &to_remove {
+            if let Some(&index) = self.tile_cache.get(key) {
+                self.tile_cache.remove(key);
                 self.tiles.remove(index);
 
-                // Update indices in cache
-                for (_, idx) in self.tile_cache.iter_mut() {
+                // Clean up requested_keys, but NOT pending_chunks
+                // pending_chunks contains incoming data that might have just arrived for re-requested tiles
+                self.requested_keys.remove(key);
+
+                // Update indices in cache for all tiles after the removed one
+                for (_other_key, idx) in self.tile_cache.iter_mut() {
                     if *idx > index {
                         *idx -= 1;
                     }
                 }
             }
-        }
-
-        if self.frame_counter % 60 == 0 {
-            eprintln!("[TiledStrategy] Evicted {} tiles (now {} loaded)",
-                num_to_remove, self.tiles.len());
         }
     }
 
@@ -935,7 +954,9 @@ impl ImageStrategy for TiledStrategy {
         for key in visible {
             if let Some(&index) = self.tile_cache.get(&key) {
                 // Tile already loaded - just update access time
-                self.tiles[index].last_used_frame = frame_number;
+                if index < self.tiles.len() && self.tiles[index].key == key {
+                    self.tiles[index].last_used_frame = frame_number;
+                }
             } else {
                 // Tile not loaded - request it
                 match self.request_tile(key) {

@@ -123,8 +123,6 @@ impl Default for Transform {
     }
 }
 
-/// Base trait for all visual objects that can be rendered in a scene
-#[cfg(not(target_arch = "wasm32"))]
 /// Information about the current camera and viewport for LOD selection and culling
 #[derive(Debug, Clone)]
 pub struct CameraInfo {
@@ -142,6 +140,8 @@ pub struct CameraInfo {
     pub frustum: crate::camera::FrustumPlanes,
 }
 
+/// Base trait for all visual objects that can be rendered in a scene
+#[cfg(not(target_arch = "wasm32"))]
 pub trait Visual: Send + Sync + Any {
     /// Prepare the visual for rendering (called once per frame before render)
     /// This is where uniform buffers should be updated, etc.

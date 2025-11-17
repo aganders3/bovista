@@ -32,12 +32,17 @@ DATASETS = {
         "url": "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr",
         "description": "HeLa cells, 3 resolution levels",
         "camera_distance": 200.0,
+        "zarr_version": 2,  # OME-Zarr 0.4 uses Zarr v2
     },
     "Platybrowser (medium)": {
         "url": "https://s3.embl.de/i2k-2020/platy-raw.ome.zarr",
         "description": "Platynereis embryo, 10 resolution levels",
         "camera_distance": 400.0,
+        "zarr_version": 2,  # OME-Zarr 0.4 uses Zarr v2
     },
+    # Note: Zarr v3 datasets (Marmoset, Pawpawsaurus, Beechnut) removed
+    # because zarr-python v2.x cannot read Zarr v3 format stores.
+    # To use Zarr v3 datasets, install zarr>=3.0.0a (but this breaks v2 compatibility).
 }
 
 
@@ -61,6 +66,7 @@ class SimpleViewer(QWidget):
         self.slice_angle_y = 0.0
         self.slice_offset = 0.0
         self.volume_center = [0, 0, 0]
+        self.volume_scale = 1.0  # For adaptive zoom
 
         self.setFocusPolicy(Qt.ClickFocus)
 
@@ -132,14 +138,18 @@ class SimpleViewer(QWidget):
             else:
                 self.slice_angle_y += dy * 0.01
 
-            self.slice_offset += dx * 0.5
+            # Scale offset by volume size for consistent control across different scales
+            offset_scale = self.volume_scale * 0.005  # 0.5% of volume per pixel
+            self.slice_offset += dx * offset_scale
             self._update_slice_plane()
             self.last_x = event.position().x()
             self.last_y = event.position().y()
 
     def wheelEvent(self, event):
         if self._initialized:
-            zoom_delta = -event.angleDelta().y() * 0.2
+            # Adaptive zoom: scale by volume size for smooth control at all scales
+            zoom_speed = self.volume_scale * 0.001  # 0.1% of volume per wheel tick
+            zoom_delta = -event.angleDelta().y() * zoom_speed
             self.viewer.zoom_camera(zoom_delta)
 
     def keyPressEvent(self, event):
@@ -314,8 +324,15 @@ class MainWindow(QMainWindow):
             self.zarr_data = store
             self.dataset_info = dataset_info
 
-            # Get multiscales info
-            multiscales = store.attrs["multiscales"][0]
+            # Get multiscales info (structure differs between v2 and v3)
+            zarr_version = dataset_info.get("zarr_version", 2)
+            if zarr_version == 3:
+                # OME-Zarr 0.5 (Zarr v3): metadata nested under 'ome'
+                multiscales = store.attrs["ome"]["multiscales"][0]
+            else:
+                # OME-Zarr 0.4 (Zarr v2): metadata directly in attrs
+                multiscales = store.attrs["multiscales"][0]
+
             datasets = multiscales["datasets"]
             axes = multiscales.get("axes", [])
             axis_names = [ax.get("name", "?").lower() for ax in axes]
@@ -385,14 +402,19 @@ class MainWindow(QMainWindow):
                 volume_shape = (shape[z_idx], shape[y_idx], shape[x_idx])
                 chunk_shape = (chunks[z_idx], chunks[y_idx], chunks[x_idx])
 
-                # Get voxel spacing
+                # Get voxel spacing and translation from coordinate transforms
                 transforms = dataset_info.get("coordinateTransformations", [])
                 voxel_spacing = [1.0, 1.0, 1.0]
+                translation = [0.0, 0.0, 0.0]
                 for transform in transforms:
                     if transform.get("type") == "scale":
                         scale = transform.get("scale", [])
                         if len(scale) > max(z_idx, y_idx, x_idx):
                             voxel_spacing = [scale[z_idx], scale[y_idx], scale[x_idx]]
+                    elif transform.get("type") == "translation":
+                        trans = transform.get("translation", [])
+                        if len(trans) > max(z_idx, y_idx, x_idx):
+                            translation = [trans[z_idx], trans[y_idx], trans[x_idx]]
 
                 if lod_idx == 0:
                     lod0_voxel_spacing = voxel_spacing
@@ -420,7 +442,8 @@ class MainWindow(QMainWindow):
                     volume_size=volume_shape,
                     chunk_size=chunk_shape,
                     voxel_size=tuple(voxel_spacing),
-                    scale_factor=scale_factor
+                    scale_factor=scale_factor,
+                    translation=tuple(translation)
                 )
                 lod_levels.append(level)
 
@@ -429,6 +452,8 @@ class MainWindow(QMainWindow):
                 print(f"  Chunks: {chunk_shape}")
                 print(f"  Voxel spacing: {voxel_spacing}")
                 print(f"  Scale: {scale_factor:.2f}x")
+                if lod_idx == 0 and any(t != 0.0 for t in translation):
+                    print(f"  Translation: {translation}")
 
             # Store level info for later use
             self.level_info = lod_levels
@@ -496,12 +521,26 @@ class MainWindow(QMainWindow):
                         if chunk_data.size == 0:
                             return None
 
-                        # Convert to uint8 with per-chunk normalization
+                        # Convert to uint8 using fixed range normalization
+                        # This avoids seam artifacts from per-chunk normalization
                         if chunk_data.dtype != np.uint8:
-                            chunk_min = float(chunk_data.min())
-                            chunk_max = float(chunk_data.max())
-                            if chunk_max > chunk_min:
-                                chunk_data = ((chunk_data - chunk_min) / (chunk_max - chunk_min) * 255).astype(np.uint8)
+                            # Use dtype range for consistent normalization
+                            if np.issubdtype(chunk_data.dtype, np.signedinteger):
+                                # Signed integers (e.g., int16: -32768 to 32767)
+                                dtype_min = np.iinfo(chunk_data.dtype).min
+                                dtype_max = np.iinfo(chunk_data.dtype).max
+                            elif np.issubdtype(chunk_data.dtype, np.unsignedinteger):
+                                # Unsigned integers (e.g., uint16: 0 to 65535)
+                                dtype_min = 0
+                                dtype_max = np.iinfo(chunk_data.dtype).max
+                            else:
+                                # Fallback to per-chunk for floats or unknown types
+                                dtype_min = float(chunk_data.min())
+                                dtype_max = float(chunk_data.max())
+
+                            # Normalize to 0-255
+                            if dtype_max > dtype_min:
+                                chunk_data = ((chunk_data.astype(np.float32) - dtype_min) / (dtype_max - dtype_min) * 255).astype(np.uint8)
                             else:
                                 chunk_data = np.zeros_like(chunk_data, dtype=np.uint8)
 
@@ -604,6 +643,7 @@ class MainWindow(QMainWindow):
                 viewer.add(image)
                 self.viewer_widget._image = image
                 self.viewer_widget.volume_center = center
+                self.viewer_widget.volume_scale = max(volume_size_world)  # For adaptive zoom
 
                 # Setup camera
                 xy_max = max(volume_size_world[1], volume_size_world[2])

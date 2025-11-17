@@ -899,6 +899,7 @@ impl PyImageVisual {
                     tile_size: py_level.chunk_size,  // chunk_size becomes tile_size
                     voxel_size: py_level.voxel_size,
                     scale_factor: py_level.scale_factor,
+                    translation: py_level.translation,
                 }
             })
             .collect();
@@ -1117,6 +1118,8 @@ pub struct PyLevelMetadata {
     pub voxel_size: (f32, f32, f32),
     #[pyo3(get, set)]
     pub scale_factor: f32,
+    #[pyo3(get, set)]
+    pub translation: (f32, f32, f32),
 }
 
 #[pymethods]
@@ -1127,12 +1130,14 @@ impl PyLevelMetadata {
         chunk_size: (u32, u32, u32),
         voxel_size: (f32, f32, f32),
         scale_factor: f32,
+        translation: Option<(f32, f32, f32)>,
     ) -> Self {
         Self {
             volume_size,
             chunk_size,
             voxel_size,
             scale_factor,
+            translation: translation.unwrap_or((0.0, 0.0, 0.0)),
         }
     }
 }

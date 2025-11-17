@@ -111,6 +111,9 @@ pub mod visuals;
 #[cfg(feature = "python")]
 pub mod python;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 pub use camera::{Camera, FrustumPlanes};
 pub use renderer::{CameraUniforms, Renderer};
 pub use scene::Scene;

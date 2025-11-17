@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-# Build WASM example for browser deployment
-# Usage: ./build_wasm.sh [example_name]
+# Build WASM library for browser deployment
+# Usage: ./build_wasm.sh
 
-EXAMPLE=${1:-wasm_zarr}
 OUTPUT_DIR="web/pkg"
+OUTPUT_NAME="bovista"
 
-echo "🔨 Building WASM example: $EXAMPLE"
+echo "🔨 Building WASM library: bovista"
 
 # Add the wasm32 target if not already added
 rustup target add wasm32-unknown-unknown 2>/dev/null || true
@@ -28,22 +28,23 @@ fi
 
 # Build for wasm32
 echo "📦 Compiling to WebAssembly..."
-cargo build --example $EXAMPLE --target wasm32-unknown-unknown --release
+cargo build --lib --target wasm32-unknown-unknown --release
 
 # Generate JS bindings
 echo "🔗 Generating JavaScript bindings..."
 $WASM_BINDGEN \
     --out-dir $OUTPUT_DIR \
-    --out-name $EXAMPLE \
+    --out-name $OUTPUT_NAME \
     --target web \
     --no-typescript \
-    target/wasm32-unknown-unknown/release/examples/${EXAMPLE}.wasm
+    target/wasm32-unknown-unknown/release/bovista.wasm
 
 echo ""
 echo "✅ Build complete!"
-echo "📦 Output: $OUTPUT_DIR/${EXAMPLE}.js"
+echo "📦 Output: $OUTPUT_DIR/${OUTPUT_NAME}.js"
+echo "📦 WASM: $OUTPUT_DIR/${OUTPUT_NAME}_bg.wasm"
 echo ""
 echo "To test locally:"
 echo "  python3 -m http.server 8000 --directory web"
-echo "  open http://localhost:8000"
+echo "  open http://localhost:8000/remote_ome_zarr.html"
 echo ""

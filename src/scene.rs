@@ -142,6 +142,33 @@ impl Scene {
     /// Render all visible visuals in the scene (WASM version)
     #[cfg(target_arch = "wasm32")]
     pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
+        use web_sys::console;
+        use wasm_bindgen::JsValue;
+
+        static mut RENDER_COUNT: u32 = 0;
+        static mut LAST_VISUAL_COUNT: usize = 0;
+
+        unsafe {
+            RENDER_COUNT += 1;
+            let visual_count = self.visuals.len();
+
+            // Log when visual count changes OR on first few frames after change
+            if visual_count != LAST_VISUAL_COUNT || (visual_count > 0 && RENDER_COUNT < LAST_VISUAL_COUNT as u32 + 5) {
+                if visual_count != LAST_VISUAL_COUNT {
+                    LAST_VISUAL_COUNT = visual_count;
+                    console::log_1(&JsValue::from_str(&format!("[Scene::render] Visual count changed: {} visuals", visual_count)));
+                }
+
+                for (i, visual) in self.visuals.iter().enumerate() {
+                    if let Ok(v) = visual.try_borrow() {
+                        let msg = format!("  Visual {}: visible={}, name={}",
+                            i, v.is_visible(), v.name());
+                        console::log_1(&JsValue::from_str(&msg));
+                    }
+                }
+            }
+        }
+
         for visual in &self.visuals {
             if let Ok(v) = visual.try_borrow() {
                 if v.is_visible() {
