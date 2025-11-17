@@ -241,6 +241,21 @@ impl JsViewer {
     pub fn clear_scene(&mut self) {
         self.scene.clear();
     }
+
+    /// Resize the viewer when canvas dimensions change
+    #[wasm_bindgen(js_name = resize)]
+    pub fn resize(&mut self, width: u32, height: u32) {
+        // Update surface configuration
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(self.renderer.device(), &self.config);
+
+        // Recreate depth texture with new dimensions
+        self.depth_texture = self.renderer.create_depth_texture(width, height);
+
+        // Update camera aspect ratio
+        self.camera.aspect_ratio = width as f32 / height as f32;
+    }
 }
 
 /// Level metadata for multi-resolution LOD images

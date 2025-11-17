@@ -490,8 +490,16 @@
         function resizeCanvas() {
             const rect = canvas.getBoundingClientRect();
             const dpr = window.devicePixelRatio || 1;
-            canvas.width = rect.width * dpr;
-            canvas.height = rect.height * dpr;
+            const newWidth = Math.floor(rect.width * dpr);
+            const newHeight = Math.floor(rect.height * dpr);
+
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+
+            // Notify the viewer of the resize
+            if (viewer) {
+                viewer.resize(newWidth, newHeight);
+            }
         }
 
         // ============================================================================
