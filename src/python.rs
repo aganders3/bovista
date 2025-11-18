@@ -7,6 +7,7 @@ use numpy::PyReadonlyArray3;
 use std::sync::{Arc, Mutex};
 
 use crate::{
+    bindings_common::{self, VisualRef},
     Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
     Visual, VertexBufferLayout,
 };
@@ -21,44 +22,6 @@ pub enum PyChunkStatus {
     AlreadyPending = 1,
     /// The chunk request was rejected (e.g., at capacity)
     Rejected = 2,
-}
-
-// Type alias for visual references
-type VisualRef = Arc<Mutex<dyn Visual>>;
-
-/// Helper macro to downcast a locked Visual to a specific type and execute code
-macro_rules! with_visual {
-    // Mutable access
-    ($visual_ref:expr, $type:ty, $body:expr) => {{
-        let mut visual = $visual_ref.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &mut dyn Any = &mut *visual;
-        if let Some(typed_visual) = visual_any.downcast_mut::<$type>() {
-            Ok($body(typed_visual))
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                format!("Not a {}", stringify!($type))
-            ))
-        }
-    }};
-
-    // Immutable access (read-only)
-    (ref $visual_ref:expr, $type:ty, $body:expr) => {{
-        let visual = $visual_ref.lock()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Mutex lock failed: {}", e)))?;
-
-        use std::any::Any;
-        let visual_any: &dyn Any = &*visual;
-        if let Some(typed_visual) = visual_any.downcast_ref::<$type>() {
-            Ok($body(typed_visual))
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                format!("Not a {}", stringify!($type))
-            ))
-        }
-    }};
 }
 
 /// Python wrapper for the Viewer (combines window, renderer, camera, scene)
@@ -983,45 +946,53 @@ impl PyImageVisual {
 
     /// Set the slice plane position along Z axis
     fn set_slice_z(&self, z: f32) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            v.set_slice_z(z);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_slice_z(z)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
     /// Set the slice plane position along Y axis
     fn set_slice_y(&self, y: f32) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            v.set_slice_y(y);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_slice_y(y)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
     /// Set the slice plane position along X axis
     fn set_slice_x(&self, x: f32) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            v.set_slice_x(x);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_slice_x(x)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
     /// Set contrast limits
     fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            v.set_contrast_limits(min, max);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |v| v.set_contrast_limits(min, max)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
     /// Set an arbitrary slice plane
     fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
-            v.set_slice_plane(plane);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |v| {
+                let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
+                v.set_slice_plane(plane);
+            }
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
     /// Enable or disable debug visualization
     fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            v.set_debug_mode(enabled);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_debug_mode(enabled)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 }
 
@@ -1084,25 +1055,28 @@ impl PyChunkedImageStrategy {
     ///
     /// Negative values prefer higher resolution, positive prefer lower resolution.
     fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            v.set_lod_bias(bias);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_lod_bias(bias)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
     /// Get statistics (loaded chunks, visible chunks)
     ///
     /// Returns a tuple (loaded, visible)
     fn get_stats(&self) -> PyResult<(usize, usize)> {
-        with_visual!(ref self.inner, ImageVisual, |v: &ImageVisual| {
-            v.get_stats()
-        })
+        bindings_common::with_visual_ref::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.get_stats()
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
     /// Enable or disable debug visualization
     fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        with_visual!(self.inner, ImageVisual, |v: &mut ImageVisual| {
-            v.set_debug_mode(enabled);
-        })
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_debug_mode(enabled)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 }
 

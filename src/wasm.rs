@@ -17,17 +17,15 @@ pub enum JsChunkStatus {
 }
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::any::Any;
 use js_sys::{Uint8Array, Function, Array};
 use web_sys::console;
 
 use crate::{
-    Camera, ImageVisual, Renderer, Scene, SlicePlane, Visual,
+    bindings_common::{self, VisualRef},
+    Camera, ImageVisual, Renderer, Scene, SlicePlane,
     visuals::image_strategy::{LodLevelConfig, PendingChunks},
     visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus, TileData, TileKey},
 };
-
-type VisualRef = Rc<RefCell<dyn Visual>>;
 
 /// JavaScript viewer for Bovista
 #[wasm_bindgen]
@@ -383,14 +381,14 @@ impl JsImageVisual {
     /// * `px`, `py`, `pz` - Plane position
     /// * `nx`, `ny`, `nz` - Plane normal
     #[wasm_bindgen(js_name = setSlicePlane)]
-    pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) {
-        if let Ok(mut visual) = self.inner.try_borrow_mut() {
-            let visual_any: &mut dyn Any = &mut *visual;
-            if let Some(img) = visual_any.downcast_mut::<ImageVisual>() {
+    pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| {
                 let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
                 img.set_slice_plane(plane);
             }
-        }
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Set contrast limits
@@ -399,24 +397,20 @@ impl JsImageVisual {
     /// * `min` - Minimum value (0.0 to 1.0)
     /// * `max` - Maximum value (0.0 to 1.0)
     #[wasm_bindgen(js_name = setContrast)]
-    pub fn set_contrast(&self, min: f32, max: f32) {
-        if let Ok(mut visual) = self.inner.try_borrow_mut() {
-            let visual_any: &mut dyn Any = &mut *visual;
-            if let Some(img) = visual_any.downcast_mut::<ImageVisual>() {
-                img.set_contrast_limits(min, max);
-            }
-        }
+    pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| img.set_contrast_limits(min, max)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Enable or disable debug visualization
     #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) {
-        if let Ok(mut visual) = self.inner.try_borrow_mut() {
-            let visual_any: &mut dyn Any = &mut *visual;
-            if let Some(img) = visual_any.downcast_mut::<ImageVisual>() {
-                img.set_debug_mode(enabled);
-            }
-        }
+    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_debug_mode(enabled)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Get the visual reference for adding to viewer
@@ -595,14 +589,14 @@ impl JsTiledImageVisual {
     /// * `px`, `py`, `pz` - Plane position
     /// * `nx`, `ny`, `nz` - Plane normal
     #[wasm_bindgen(js_name = setSlicePlane)]
-    pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) {
-        if let Ok(mut visual) = self.inner.try_borrow_mut() {
-            let visual_any: &mut dyn Any = &mut *visual;
-            if let Some(img) = visual_any.downcast_mut::<ImageVisual>() {
+    pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| {
                 let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
                 img.set_slice_plane(plane);
             }
-        }
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Set contrast limits
@@ -611,26 +605,22 @@ impl JsTiledImageVisual {
     /// * `min` - Minimum value (0.0 to 1.0)
     /// * `max` - Maximum value (0.0 to 1.0)
     #[wasm_bindgen(js_name = setContrast)]
-    pub fn set_contrast(&self, min: f32, max: f32) {
-        if let Ok(mut visual) = self.inner.try_borrow_mut() {
-            let visual_any: &mut dyn Any = &mut *visual;
-            if let Some(img) = visual_any.downcast_mut::<ImageVisual>() {
-                img.set_contrast_limits(min, max);
-            }
-        }
+    pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| img.set_contrast_limits(min, max)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Set LOD bias for automatic LOD selection
     ///
     /// Negative values prefer higher resolution, positive prefer lower resolution.
     #[wasm_bindgen(js_name = setLodBias)]
-    pub fn set_lod_bias(&self, bias: f32) {
-        if let Ok(mut visual) = self.inner.try_borrow_mut() {
-            let visual_any: &mut dyn Any = &mut *visual;
-            if let Some(img) = visual_any.downcast_mut::<ImageVisual>() {
-                img.set_lod_bias(bias);
-            }
-        }
+    pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_lod_bias(bias)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Get statistics (loaded chunks, visible chunks)
@@ -638,25 +628,22 @@ impl JsTiledImageVisual {
     /// Returns an array [loaded, visible]
     #[wasm_bindgen(js_name = getStats)]
     pub fn get_stats(&self) -> Vec<usize> {
-        if let Ok(visual) = self.inner.try_borrow() {
-            let visual_any: &dyn Any = &*visual;
-            if let Some(img) = visual_any.downcast_ref::<ImageVisual>() {
+        bindings_common::with_visual_ref::<ImageVisual, _, _>(
+            &self.inner,
+            |img| {
                 let (loaded, visible) = img.get_stats();
-                return vec![loaded, visible];
+                vec![loaded, visible]
             }
-        }
-        vec![0, 0]
+        ).unwrap_or_else(|_| vec![0, 0])
     }
 
     /// Enable or disable debug visualization
     #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) {
-        if let Ok(mut visual) = self.inner.try_borrow_mut() {
-            let visual_any: &mut dyn Any = &mut *visual;
-            if let Some(img) = visual_any.downcast_mut::<ImageVisual>() {
-                img.set_debug_mode(enabled);
-            }
-        }
+    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |visual| visual.set_debug_mode(enabled)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Get the visual reference for adding to viewer

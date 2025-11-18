@@ -16,8 +16,6 @@ rustup target add wasm32-unknown-unknown 2>/dev/null || true
 WASM_BINDGEN=""
 if command -v wasm-bindgen &> /dev/null; then
     WASM_BINDGEN="wasm-bindgen"
-elif [ -f "$HOME/.asdf/installs/rust/1.86.0/bin/wasm-bindgen" ]; then
-    WASM_BINDGEN="$HOME/.asdf/installs/rust/1.86.0/bin/wasm-bindgen"
 elif [ -f "$HOME/.cargo/bin/wasm-bindgen" ]; then
     WASM_BINDGEN="$HOME/.cargo/bin/wasm-bindgen"
 else

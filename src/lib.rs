@@ -108,6 +108,9 @@ pub mod spatial;
 pub mod visual;
 pub mod visuals;
 
+// Shared utilities for bindings
+pub mod bindings_common;
+
 #[cfg(feature = "python")]
 pub mod python;
 
