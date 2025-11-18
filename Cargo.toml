@@ -1,9 +1,14 @@
+[workspace]
+members = [".", "bovista-codegen"]
+resolver = "2"
+
 [package]
 name = "bovista"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bovista-codegen = { path = "bovista-codegen" }
 wgpu = "23"
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = "0.29"

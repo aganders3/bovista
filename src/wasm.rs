@@ -26,6 +26,7 @@ use crate::{
     visuals::image_strategy::{LodLevelConfig, PendingChunks},
     visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus, TileData, TileKey},
 };
+use bovista_codegen::visual_methods;
 
 /// JavaScript viewer for Bovista
 #[wasm_bindgen]
@@ -339,6 +340,7 @@ pub struct JsImageVisual {
     inner: VisualRef,
 }
 
+#[visual_methods(ImageVisual)]
 #[wasm_bindgen]
 impl JsImageVisual {
     /// Create an ImageVisual from a typed array
@@ -375,6 +377,18 @@ impl JsImageVisual {
         }
     }
 
+    /// Set the slice plane position along Z axis
+    #[wasm_bindgen(js_name = setSliceZ)]
+    pub fn set_slice_z(&self, z: f32) -> Result<(), JsValue> {}
+
+    /// Set the slice plane position along Y axis
+    #[wasm_bindgen(js_name = setSliceY)]
+    pub fn set_slice_y(&self, y: f32) -> Result<(), JsValue> {}
+
+    /// Set the slice plane position along X axis
+    #[wasm_bindgen(js_name = setSliceX)]
+    pub fn set_slice_x(&self, x: f32) -> Result<(), JsValue> {}
+
     /// Set the slice plane position and normal
     ///
     /// # Arguments
@@ -406,12 +420,7 @@ impl JsImageVisual {
 
     /// Enable or disable debug visualization
     #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
 
     /// Get the visual reference for adding to viewer
     pub(crate) fn get_inner(&self) -> VisualRef {
@@ -429,6 +438,7 @@ pub struct JsTiledImageVisual {
     chunk_loader: Function,
 }
 
+#[visual_methods(ImageVisual)]
 #[wasm_bindgen]
 impl JsTiledImageVisual {
     /// Create a chunked ImageVisual with multi-resolution LOD
@@ -583,6 +593,18 @@ impl JsTiledImageVisual {
         }
     }
 
+    /// Set the slice plane position along Z axis
+    #[wasm_bindgen(js_name = setSliceZ)]
+    pub fn set_slice_z(&self, z: f32) -> Result<(), JsValue> {}
+
+    /// Set the slice plane position along Y axis
+    #[wasm_bindgen(js_name = setSliceY)]
+    pub fn set_slice_y(&self, y: f32) -> Result<(), JsValue> {}
+
+    /// Set the slice plane position along X axis
+    #[wasm_bindgen(js_name = setSliceX)]
+    pub fn set_slice_x(&self, x: f32) -> Result<(), JsValue> {}
+
     /// Set the slice plane position and normal
     ///
     /// # Arguments
@@ -616,12 +638,7 @@ impl JsTiledImageVisual {
     ///
     /// Negative values prefer higher resolution, positive prefer lower resolution.
     #[wasm_bindgen(js_name = setLodBias)]
-    pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_lod_bias(bias)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+    pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {}
 
     /// Get statistics (loaded chunks, visible chunks)
     ///
@@ -639,12 +656,7 @@ impl JsTiledImageVisual {
 
     /// Enable or disable debug visualization
     #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
 
     /// Get the visual reference for adding to viewer
     pub(crate) fn get_inner(&self) -> VisualRef {

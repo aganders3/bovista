@@ -217,6 +217,7 @@ dependencies = [
 name = "bovista"
 version = "0.1.0"
 dependencies = [
+ "bovista-codegen",
  "bytemuck",
  "console_error_panic_hook",
  "console_log",
@@ -237,6 +238,15 @@ dependencies = [
  "web-sys",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "bovista-codegen"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

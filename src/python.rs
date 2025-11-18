@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex};
 use crate::{
     bindings_common::{self, VisualRef},
     Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
-    Visual, VertexBufferLayout,
+    VertexBufferLayout,
 };
+use bovista_codegen::visual_methods;
 
 /// Python wrapper for ChunkStatus enum
 #[pyclass(name = "ChunkStatus", eq, eq_int)]
@@ -776,6 +777,7 @@ impl PyVisualWrapper for PyImageVisual {
     }
 }
 
+#[visual_methods(ImageVisual)]
 #[pymethods]
 impl PyImageVisual {
     /// Create an ImageVisual from a 3D numpy array
@@ -945,28 +947,13 @@ impl PyImageVisual {
     }
 
     /// Set the slice plane position along Z axis
-    fn set_slice_z(&self, z: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_slice_z(z)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_slice_z(&self, z: f32) -> PyResult<()> {}
 
     /// Set the slice plane position along Y axis
-    fn set_slice_y(&self, y: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_slice_y(y)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_slice_y(&self, y: f32) -> PyResult<()> {}
 
     /// Set the slice plane position along X axis
-    fn set_slice_x(&self, x: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_slice_x(x)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_slice_x(&self, x: f32) -> PyResult<()> {}
 
     /// Set contrast limits
     fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
@@ -988,12 +975,7 @@ impl PyImageVisual {
     }
 
     /// Enable or disable debug visualization
-    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_debug_mode(enabled)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
 }
 
 /// Python wrapper for ChunkedImageStrategy
@@ -1009,6 +991,7 @@ pub struct PyChunkedImageStrategy {
     pending_chunks: crate::visuals::image_strategy::PendingChunks,
 }
 
+#[visual_methods(ImageVisual)]
 #[pymethods]
 impl PyChunkedImageStrategy {
     /// Provide chunk data for a requested tile
@@ -1054,30 +1037,15 @@ impl PyChunkedImageStrategy {
     /// Set LOD bias for automatic LOD selection
     ///
     /// Negative values prefer higher resolution, positive prefer lower resolution.
-    fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_lod_bias(bias)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_lod_bias(&self, bias: f32) -> PyResult<()> {}
 
     /// Get statistics (loaded chunks, visible chunks)
     ///
     /// Returns a tuple (loaded, visible)
-    fn get_stats(&self) -> PyResult<(usize, usize)> {
-        bindings_common::with_visual_ref::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.get_stats()
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn get_stats(&self) -> PyResult<(usize, usize)> {}
 
     /// Enable or disable debug visualization
-    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |visual| visual.set_debug_mode(enabled)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
 }
 
 /// Python wrapper for LevelMetadata
