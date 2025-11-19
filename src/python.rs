@@ -276,12 +276,15 @@ impl PyViewer {
         if let Ok(image) = visual.extract::<PyRef<PyImageVisual>>() {
             return Ok(self.scene.add(image.inner.clone()));
         }
+        if let Ok(tiled_image) = visual.extract::<PyRef<PyTiledImageVisual>>() {
+            return Ok(self.scene.add(tiled_image.inner.clone()));
+        }
         if let Ok(custom) = visual.extract::<PyRef<PyCustomVisual>>() {
             return Ok(self.scene.add(custom.inner.clone()));
         }
 
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "Expected a visual object (Points, Lines, Image, or Custom)"
+            "Expected a visual object (Points, Lines, Image, TiledImage, or Custom)"
         ))
     }
 
@@ -818,134 +821,6 @@ impl PyImageVisual {
         })
     }
 
-    /// Create an ImageVisual with multi-resolution chunked loading
-    ///
-    /// Uses the new ChunkStatus-based API for async chunk loading.
-    ///
-    /// Args:
-    ///     viewer: The viewer instance
-    ///     levels: List of LevelMetadata describing each LOD level
-    ///     loader: Python object with a request(lod, z, y, x) method that returns ChunkStatus
-    ///     max_chunks: Maximum number of chunks to keep in memory (default: 500)
-    ///
-    /// The loader object should:
-    /// - Have a 'strategy' attribute (will be set automatically by this method)
-    /// - Have a request(lod, z, y, x) method that returns ChunkStatus:
-    ///   - ChunkStatus.Accepted if it started loading the chunk
-    ///   - ChunkStatus.AlreadyPending if the chunk is already being loaded
-    ///   - ChunkStatus.Rejected if at capacity and can't accept more requests
-    /// - Call loader.strategy.set_chunk_data(lod, z, y, x, data) when data is ready
-    #[staticmethod]
-    #[pyo3(signature = (viewer, levels, loader, max_chunks=None))]
-    fn from_chunked(
-        viewer: &PyViewer,
-        levels: Vec<PyLevelMetadata>,
-        loader: PyObject,
-        max_chunks: Option<usize>,
-    ) -> PyResult<Self> {
-        let renderer = viewer.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
-
-        if levels.is_empty() {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Must provide at least one LOD level"
-            ));
-        }
-
-        let max_chunks = max_chunks.unwrap_or(500);
-
-        // Convert Python LevelMetadata to Rust LodLevelConfig
-        use crate::visuals::image_strategy::LodLevelConfig;
-        let rust_levels: Vec<LodLevelConfig> = levels
-            .iter()
-            .map(|py_level| {
-                LodLevelConfig {
-                    volume_size: py_level.volume_size,
-                    tile_size: py_level.chunk_size,  // chunk_size becomes tile_size
-                    voxel_size: py_level.voxel_size,
-                    scale_factor: py_level.scale_factor,
-                    translation: py_level.translation,
-                }
-            })
-            .collect();
-
-        // Create a Rust closure that calls the Python loader with (lod_level, z, y, x)
-        // and returns ChunkStatus
-        use crate::visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus};
-        let loader_arc = Arc::new(loader);
-        let loader_for_closure = loader_arc.clone();
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            Python::with_gil(|py| {
-                // Extract LOD level and coordinates
-                let lod_level = request.lod_level.unwrap_or(0);
-                let z = request.z;
-                let y = request.y;
-                let x = request.x;
-
-                // Call the loader's 'request' method
-                let loader_obj = loader_for_closure.bind(py);
-                let result = loader_obj.call_method1("request", (lod_level, z, y, x));
-
-                match result {
-                    Ok(obj) => {
-                        // Try to extract as PyChunkStatus
-                        if let Ok(status) = obj.extract::<PyChunkStatus>() {
-                            match status {
-                                PyChunkStatus::Accepted => ChunkStatus::Accepted,
-                                PyChunkStatus::AlreadyPending => ChunkStatus::AlreadyPending,
-                                PyChunkStatus::Rejected => ChunkStatus::Rejected,
-                            }
-                        } else {
-                            eprintln!("[ImageVisual] Loader must return ChunkStatus, got: {:?}", obj);
-                            ChunkStatus::Rejected
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[ImageVisual] Error calling loader: {}", e);
-                        ChunkStatus::Rejected
-                    }
-                }
-            })
-        });
-
-        // Create ImageVisual with chunked loading
-        // Backpressure control is now handled by the loader returning ChunkStatus::Rejected
-        let visual = ImageVisual::from_chunked(
-            renderer.device(),
-            renderer.queue(),
-            renderer.surface_format(),
-            renderer.camera_bind_group_layout(),
-            rust_levels,
-            max_chunks,
-            loader_fn,
-        );
-
-        // Get the pending_chunks queue before wrapping in Arc<Mutex<>>
-        let pending_chunks = visual.pending_chunks();
-
-        let inner = Arc::new(Mutex::new(visual));
-
-        // Check if the loader has a 'strategy' attribute and set it
-        if let Some(pending_chunks) = pending_chunks {
-            Python::with_gil(|py| {
-                let loader_obj = loader_arc.bind(py);
-                if loader_obj.hasattr("strategy").unwrap_or(false) {
-                    // Create a PyChunkedImageStrategy with both visual reference and pending chunks queue
-                    let strategy = PyChunkedImageStrategy {
-                        inner: inner.clone(),
-                        pending_chunks,
-                    };
-
-                    // Create a Python object and set the strategy attribute on the loader
-                    let _ = Py::new(py, strategy)
-                        .and_then(|s| loader_obj.setattr("strategy", s));
-                }
-            });
-        }
-
-        Ok(Self { inner })
-    }
-
     /// Set the slice plane position along Z axis
     fn set_slice_z(&self, z: f32) -> PyResult<()> {}
 
@@ -978,22 +853,124 @@ impl PyImageVisual {
     fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
 }
 
-/// Python wrapper for ChunkedImageStrategy
+/// Python wrapper for tiled/chunked ImageVisual (multi-LOD with async loading)
 ///
-/// This provides direct access to strategy-specific methods without cluttering
-/// the Image class namespace. It's automatically set on loader objects that have
-/// a 'strategy' attribute when using Image.from_chunked().
-#[pyclass(name = "ChunkedImageStrategy")]
-pub struct PyChunkedImageStrategy {
-    // Share the same visual reference as PyImageVisual (for set_lod_bias, get_stats, etc.)
+/// This matches the WASM JsTiledImageVisual API, providing all image manipulation
+/// methods plus LOD-specific methods like set_chunk_data, set_lod_bias, and get_stats.
+#[pyclass(name = "TiledImage")]
+pub struct PyTiledImageVisual {
     inner: VisualRef,
-    // Direct reference to pending chunks queue (for set_chunk_data from background threads)
+    // Direct reference to pending chunks queue (for lock-free set_chunk_data from background threads)
     pending_chunks: crate::visuals::image_strategy::PendingChunks,
 }
 
 #[visual_methods(ImageVisual)]
 #[pymethods]
-impl PyChunkedImageStrategy {
+impl PyTiledImageVisual {
+    /// Create a TiledImage with multi-resolution chunked loading
+    ///
+    /// Args:
+    ///     viewer: The viewer instance
+    ///     levels: List of LevelMetadata describing each LOD level
+    ///     max_chunks: Maximum number of chunks to keep in memory
+    ///     loader: Callable with signature (lod, z, y, x) -> ChunkStatus
+    ///
+    /// The loader should be a function or closure that:
+    /// - Takes (lod, z, y, x) as arguments
+    /// - Returns ChunkStatus:
+    ///   - ChunkStatus.Accepted if it started loading the chunk
+    ///   - ChunkStatus.AlreadyPending if the chunk is already being loaded
+    ///   - ChunkStatus.Rejected if at capacity and can't accept more requests
+    /// - Calls image.set_chunk_data(lod, z, y, x, data) when data is ready
+    ///
+    /// The loader can capture the image reference using a closure pattern.
+    /// See examples for the recommended nonlocal pattern.
+    #[new]
+    #[pyo3(signature = (viewer, levels, max_chunks, loader))]
+    fn new(
+        viewer: &PyViewer,
+        levels: Vec<PyLevelMetadata>,
+        max_chunks: usize,
+        loader: PyObject,
+    ) -> PyResult<Self> {
+        let renderer = viewer.renderer.as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+
+        if levels.is_empty() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Must provide at least one LOD level"
+            ));
+        }
+
+        // Convert Python LevelMetadata to Rust LodLevelConfig
+        use crate::visuals::image_strategy::LodLevelConfig;
+        let rust_levels: Vec<LodLevelConfig> = levels
+            .iter()
+            .map(|py_level| {
+                LodLevelConfig {
+                    volume_size: py_level.volume_size,
+                    tile_size: py_level.chunk_size,  // chunk_size becomes tile_size
+                    voxel_size: py_level.voxel_size,
+                    scale_factor: py_level.scale_factor,
+                    translation: py_level.translation,
+                }
+            })
+            .collect();
+
+        // Create a Rust closure that calls the Python loader
+        use crate::visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus};
+        let loader_arc = Arc::new(loader);
+        let loader_for_closure = loader_arc.clone();
+        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
+            Python::with_gil(|py| {
+                let lod_level = request.lod_level.unwrap_or(0);
+                let loader_obj = loader_for_closure.bind(py);
+                let result = loader_obj.call1((lod_level, request.z, request.y, request.x));
+
+                match result {
+                    Ok(obj) => {
+                        if let Ok(status) = obj.extract::<PyChunkStatus>() {
+                            match status {
+                                PyChunkStatus::Accepted => ChunkStatus::Accepted,
+                                PyChunkStatus::AlreadyPending => ChunkStatus::AlreadyPending,
+                                PyChunkStatus::Rejected => ChunkStatus::Rejected,
+                            }
+                        } else {
+                            eprintln!("[TiledImage] Loader must return ChunkStatus, got: {:?}", obj);
+                            ChunkStatus::Rejected
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[TiledImage] Error calling loader: {}", e);
+                        ChunkStatus::Rejected
+                    }
+                }
+            })
+        });
+
+        // Create ImageVisual with chunked loading
+        let visual = ImageVisual::from_chunked(
+            renderer.device(),
+            renderer.queue(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            rust_levels,
+            max_chunks,
+            loader_fn,
+        );
+
+        // Get pending_chunks reference before wrapping in Arc<Mutex<>>
+        let pending_chunks = visual.pending_chunks()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to get pending_chunks from visual"
+            ))?;
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(visual)),
+            pending_chunks,
+        })
+    }
+
     /// Provide chunk data for a requested tile
     ///
     /// This is called from background threads. It directly inserts into the pending
@@ -1034,6 +1011,34 @@ impl PyChunkedImageStrategy {
         Ok(())
     }
 
+    /// Set the slice plane position along Z axis
+    fn set_slice_z(&self, z: f32) -> PyResult<()> {}
+
+    /// Set the slice plane position along Y axis
+    fn set_slice_y(&self, y: f32) -> PyResult<()> {}
+
+    /// Set the slice plane position along X axis
+    fn set_slice_x(&self, x: f32) -> PyResult<()> {}
+
+    /// Set an arbitrary slice plane
+    fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |v| {
+                let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
+                v.set_slice_plane(plane);
+            }
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Set contrast limits
+    fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |v| v.set_contrast_limits(min, max)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
     /// Set LOD bias for automatic LOD selection
     ///
     /// Negative values prefer higher resolution, positive prefer lower resolution.
@@ -1046,6 +1051,12 @@ impl PyChunkedImageStrategy {
 
     /// Enable or disable debug visualization
     fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
+}
+
+impl PyVisualWrapper for PyTiledImageVisual {
+    fn get_inner(&self) -> VisualRef {
+        self.inner.clone()
+    }
 }
 
 /// Python wrapper for LevelMetadata
@@ -1236,10 +1247,10 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPointsVisual>()?;
     m.add_class::<PyLinesVisual>()?;
     m.add_class::<PyImageVisual>()?;
+    m.add_class::<PyTiledImageVisual>()?;
     m.add_class::<PyLevelMetadata>()?;
     m.add_class::<PyCustomVisual>()?;
     m.add_class::<PyVertexBufferLayout>()?;
     m.add_class::<PyChunkStatus>()?;
-    m.add_class::<PyChunkedImageStrategy>()?;
     Ok(())
 }
