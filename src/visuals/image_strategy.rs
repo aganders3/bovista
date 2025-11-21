@@ -17,133 +17,23 @@ use wgpu::{Device, Queue};
 /// Type alias for pending chunks queue (can be shared across threads)
 pub type PendingChunks = Arc<Mutex<HashMap<TileKey, TileData>>>;
 
-/// Trait for different image loading/rendering strategies
-#[cfg(not(target_arch = "wasm32"))]
-pub trait ImageStrategy: Send + Sync {
-    /// Prepare for rendering (update textures, load tiles, manage visibility)
-    fn prepare(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        slice_plane: &SlicePlane,
-        frame_number: u64,
-        camera_info: &crate::visual::CameraInfo,
-    );
-
-    /// Get the tiles that should be rendered
-    fn tiles(&self) -> &[Tile];
-
-    /// Get the dimensions of the full image (Z, Y, X)
-    fn dimensions(&self) -> (u32, u32, u32);
-
-    /// Check if data is ready to render
-    fn is_ready(&self) -> bool;
-
-    /// Set LOD bias for automatic LOD selection (optional, only for multi-LOD strategies)
-    fn set_lod_bias(&mut self, _bias: f32) {
-        // Default: no-op for strategies that don't support LOD
-    }
-
-    /// Set debug mode (optional)
-    fn set_debug_mode(&mut self, _enabled: bool) {
-        // Default: no-op
-    }
-
-    /// Get statistics (loaded tiles, visible tiles) - optional
-    fn get_stats(&self) -> (usize, usize) {
-        // Default: return zeros
-        (0, 0)
-    }
-
-    /// Provide chunk data for a requested tile (optional, only for multi-LOD strategies)
-    ///
-    /// This should be called when chunk data is ready for a tile that was requested.
-    fn set_chunk_data(&mut self, _lod_level: usize, _z: u32, _y: u32, _x: u32, _data: crate::visuals::tile::TileData) {
-        // Default: no-op for strategies that don't support async loading
-    }
-
-    /// Get the ideal/target LOD level for the current view
-    /// Used for stencil-based LOD prioritization
-    fn get_ideal_lod(&self) -> usize {
-        0 // Default: use highest resolution for single-LOD strategies
-    }
-
-    /// Get the pending chunks queue (optional, only for multi-LOD strategies)
-    ///
-    /// Returns None for strategies that don't support async chunk loading.
-    fn pending_chunks(&self) -> Option<PendingChunks> {
-        None // Default: no pending chunks queue
-    }
-}
-
-/// Trait for different image loading/rendering strategies (WASM version)
-#[cfg(target_arch = "wasm32")]
-pub trait ImageStrategy {
-    /// Prepare for rendering (update textures, load tiles, manage visibility)
-    fn prepare(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        slice_plane: &SlicePlane,
-        frame_number: u64,
-        camera_info: &crate::visual::CameraInfo,
-    );
-
-    /// Get the tiles that should be rendered
-    fn tiles(&self) -> &[Tile];
-
-    /// Get the dimensions of the full image (Z, Y, X)
-    fn dimensions(&self) -> (u32, u32, u32);
-
-    /// Check if data is ready to render
-    fn is_ready(&self) -> bool;
-
-    /// Set LOD bias for automatic LOD selection (optional, only for multi-LOD strategies)
-    fn set_lod_bias(&mut self, _bias: f32) {
-        // Default: no-op for strategies that don't support LOD
-    }
-
-    /// Set debug mode (optional)
-    fn set_debug_mode(&mut self, _enabled: bool) {
-        // Default: no-op
-    }
-
-    /// Get statistics (loaded tiles, visible tiles) - optional
-    fn get_stats(&self) -> (usize, usize) {
-        // Default: return zeros
-        (0, 0)
-    }
-
-    /// Get the ideal/target LOD level for the current view
-    fn get_ideal_lod(&self) -> usize {
-        0
-    }
-
-    /// Provide chunk data for a requested tile (optional, only for multi-LOD strategies)
-    ///
-    /// This should be called when chunk data is ready for a tile that was requested.
-    fn set_chunk_data(&mut self, _lod_level: usize, _z: u32, _y: u32, _x: u32, _data: crate::visuals::tile::TileData) {
-        // Default: no-op for strategies that don't support async loading
-    }
-
-    /// Get the pending chunks queue (optional, only for multi-LOD strategies)
-    ///
-    /// Returns None for strategies that don't support async chunk loading.
-    fn pending_chunks(&self) -> Option<PendingChunks> {
-        None // Default: no pending chunks queue
-    }
-}
-
-/// Simple strategy for small in-memory images
+/// Image loading and rendering strategy
 ///
-/// This strategy creates a single tile containing the entire image.
-/// Best for images that fit comfortably in GPU memory.
-pub struct SimpleStrategy {
+/// This enum provides different strategies for loading and managing image data:
+/// - Simple: For small images that fit in GPU memory
+/// - Tiled: For large images with on-demand loading and LOD support
+pub enum ImageStrategy {
+    Simple(SimpleData),
+    Tiled(TiledData),
+}
+
+/// Data for simple strategy
+pub struct SimpleData {
     tile: Tile,
     dimensions: (u32, u32, u32),
 }
 
-impl SimpleStrategy {
+impl SimpleData {
     pub fn new(
         device: &Device,
         queue: &Queue,
@@ -221,7 +111,7 @@ impl SimpleStrategy {
     }
 }
 
-impl ImageStrategy for SimpleStrategy {
+impl SimpleData {
     fn prepare(
         &mut self,
         device: &Device,
@@ -304,18 +194,6 @@ impl ImageStrategy for SimpleStrategy {
         self.tile.index_buffer = Some(index_buffer);
         self.tile.vertex_count = 6; // 6 indices for 2 triangles
     }
-
-    fn tiles(&self) -> &[Tile] {
-        std::slice::from_ref(&self.tile)
-    }
-
-    fn dimensions(&self) -> (u32, u32, u32) {
-        self.dimensions
-    }
-
-    fn is_ready(&self) -> bool {
-        true
-    }
 }
 
 /// Configuration for a single LOD level in the pyramid
@@ -353,7 +231,7 @@ impl LodLevelConfig {
 /// - Loads tiles on-demand based on visibility
 /// - Supports multiple LOD levels (multi-resolution pyramid)
 /// - Uses LRU caching to manage memory
-pub struct TiledStrategy {
+pub struct TiledData {
     /// All LOD levels (from high-res to low-res)
     levels: Vec<LodLevelConfig>,
 
@@ -394,7 +272,7 @@ pub struct TiledStrategy {
     debug_mode: bool,
 }
 
-impl TiledStrategy {
+impl TiledData {
     pub fn new(
         _device: &Device,
         lod_levels: Vec<LodLevelConfig>,
@@ -418,21 +296,6 @@ impl TiledStrategy {
             cached_ideal_lod: 0,
             debug_mode: false,
         }
-    }
-
-    /// Get a reference to the pending chunks queue (for PyChunkedImageStrategy)
-    pub fn pending_chunks(&self) -> PendingChunks {
-        self.pending_chunks.clone()
-    }
-
-    /// Set LOD bias (negative = prefer high-res, positive = prefer low-res)
-    pub fn set_lod_bias(&mut self, bias: f32) {
-        self.lod_bias = bias;
-    }
-
-    /// Enable/disable debug mode
-    pub fn set_debug_mode(&mut self, enabled: bool) {
-        self.debug_mode = enabled;
     }
 
     /// Compute AABB for a tile at given LOD and grid position
@@ -922,7 +785,7 @@ impl TiledStrategy {
     }
 }
 
-impl ImageStrategy for TiledStrategy {
+impl TiledData {
     fn prepare(
         &mut self,
         device: &Device,
@@ -980,42 +843,100 @@ impl ImageStrategy for TiledStrategy {
         // Update tile geometry for visible tiles
         self.update_tile_geometry(device, queue, slice_plane);
     }
+}
 
-    fn tiles(&self) -> &[Tile] {
-        &self.tiles
+/// Implementation of image strategy methods with dispatch to concrete types
+impl ImageStrategy {
+    /// Prepare for rendering (update textures, load tiles, manage visibility)
+    pub fn prepare(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        slice_plane: &SlicePlane,
+        frame_number: u64,
+        camera_info: &crate::visual::CameraInfo,
+    ) {
+        match self {
+            ImageStrategy::Simple(s) => s.prepare(device, queue, slice_plane, frame_number, camera_info),
+            ImageStrategy::Tiled(t) => t.prepare(device, queue, slice_plane, frame_number, camera_info),
+        }
     }
 
-    fn dimensions(&self) -> (u32, u32, u32) {
-        self.levels[0].volume_size
+    /// Get the tiles that should be rendered
+    pub fn tiles(&self) -> &[Tile] {
+        match self {
+            ImageStrategy::Simple(s) => std::slice::from_ref(&s.tile),
+            ImageStrategy::Tiled(t) => &t.tiles,
+        }
     }
 
-    fn is_ready(&self) -> bool {
-        !self.tiles.is_empty()
+    /// Get the dimensions of the full image (Z, Y, X)
+    pub fn dimensions(&self) -> (u32, u32, u32) {
+        match self {
+            ImageStrategy::Simple(s) => s.dimensions,
+            ImageStrategy::Tiled(t) => t.levels[0].volume_size,
+        }
     }
 
-    fn set_lod_bias(&mut self, bias: f32) {
-        self.lod_bias = bias;
+    /// Check if data is ready to render
+    pub fn is_ready(&self) -> bool {
+        match self {
+            ImageStrategy::Simple(_) => true,
+            ImageStrategy::Tiled(t) => !t.tiles.is_empty(),
+        }
     }
 
-    fn set_debug_mode(&mut self, enabled: bool) {
-        self.debug_mode = enabled;
+    /// Set LOD bias for automatic LOD selection (only for Tiled strategy)
+    pub fn set_lod_bias(&mut self, bias: f32) {
+        if let ImageStrategy::Tiled(t) = self {
+            t.lod_bias = bias;
+        }
+        // No-op for Simple strategy
     }
 
-    fn get_stats(&self) -> (usize, usize) {
-        (self.tiles.len(), self.visible_tile_keys.len())
+    /// Set debug mode
+    pub fn set_debug_mode(&mut self, enabled: bool) {
+        if let ImageStrategy::Tiled(t) = self {
+            t.debug_mode = enabled;
+        }
+        // No-op for Simple strategy
     }
 
-    fn set_chunk_data(&mut self, lod_level: usize, z: u32, y: u32, x: u32, data: crate::visuals::tile::TileData) {
-        let key = TileKey { lod_level, z, y, x };
-        self.requested_keys.remove(&key);
-        self.pending_chunks.lock().unwrap().insert(key, data);
+    /// Get statistics (loaded tiles, visible tiles)
+    pub fn get_stats(&self) -> (usize, usize) {
+        match self {
+            ImageStrategy::Simple(_) => (0, 0),
+            ImageStrategy::Tiled(t) => (t.tiles.len(), t.visible_tile_keys.len()),
+        }
     }
 
-    fn get_ideal_lod(&self) -> usize {
-        self.cached_ideal_lod
+    /// Provide chunk data for a requested tile (only for Tiled strategy)
+    ///
+    /// This should be called when chunk data is ready for a tile that was requested.
+    pub fn set_chunk_data(&mut self, lod_level: usize, z: u32, y: u32, x: u32, data: crate::visuals::tile::TileData) {
+        if let ImageStrategy::Tiled(t) = self {
+            let key = TileKey { lod_level, z, y, x };
+            t.requested_keys.remove(&key);
+            t.pending_chunks.lock().unwrap().insert(key, data);
+        }
+        // No-op for Simple strategy
     }
 
-    fn pending_chunks(&self) -> Option<PendingChunks> {
-        Some(self.pending_chunks.clone())
+    /// Get the ideal/target LOD level for the current view
+    pub fn get_ideal_lod(&self) -> usize {
+        match self {
+            ImageStrategy::Simple(_) => 0,
+            ImageStrategy::Tiled(t) => t.cached_ideal_lod,
+        }
+    }
+
+    /// Get the pending chunks queue (only for Tiled strategy)
+    ///
+    /// Returns None for Simple strategy.
+    pub fn pending_chunks(&self) -> Option<PendingChunks> {
+        match self {
+            ImageStrategy::Simple(_) => None,
+            ImageStrategy::Tiled(t) => Some(t.pending_chunks.clone()),
+        }
     }
 }

@@ -1,5 +1,5 @@
 use crate::visual::{Transform, Visual};
-use crate::visuals::image_strategy::{ImageStrategy, SimpleStrategy};
+use crate::visuals::image_strategy::{ImageStrategy, SimpleData, TiledData};
 use crate::visuals::tile::{TileUniforms, TileVertex};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -64,7 +64,7 @@ pub enum SliceOrientation {
 
 /// Visual for rendering 2D images and 3D volume slices
 pub struct ImageVisual {
-    strategy: Box<dyn ImageStrategy>,
+    strategy: ImageStrategy,
 
     // Shared resources for tile rendering
     bind_group_layout: wgpu::BindGroupLayout,
@@ -112,7 +112,7 @@ impl ImageVisual {
         height: u32,
         depth: u32,
     ) -> Self {
-        let strategy = Box::new(SimpleStrategy::new(
+        let strategy = ImageStrategy::Simple(SimpleData::new(
             device,
             queue,
             data,
@@ -155,9 +155,7 @@ impl ImageVisual {
         max_tiles: usize,
         loader: crate::visuals::tile::TileLoaderFn,
     ) -> Self {
-        use crate::visuals::image_strategy::TiledStrategy;
-
-        let strategy = Box::new(TiledStrategy::new(
+        let strategy = ImageStrategy::Tiled(TiledData::new(
             device,
             lod_levels.clone(),
             max_tiles,
@@ -189,7 +187,7 @@ impl ImageVisual {
         _queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
-        strategy: Box<dyn ImageStrategy>,
+        strategy: ImageStrategy,
         _width: u32,
         _height: u32,
         depth: u32,

@@ -277,7 +277,8 @@ impl PyViewer {
             return Ok(self.scene.add(image.inner.clone()));
         }
         if let Ok(tiled_image) = visual.extract::<PyRef<PyTiledImageVisual>>() {
-            return Ok(self.scene.add(tiled_image.inner.clone()));
+            let parent = tiled_image.as_super();
+            return Ok(self.scene.add(parent.inner.clone()));
         }
         if let Ok(custom) = visual.extract::<PyRef<PyCustomVisual>>() {
             return Ok(self.scene.add(custom.inner.clone()));
@@ -769,7 +770,7 @@ impl PyLinesVisual {
 }
 
 /// Python wrapper for ImageVisual
-#[pyclass(name = "Image")]
+#[pyclass(name = "Image", subclass)]
 pub struct PyImageVisual {
     inner: VisualRef,
 }
@@ -855,16 +856,14 @@ impl PyImageVisual {
 
 /// Python wrapper for tiled/chunked ImageVisual (multi-LOD with async loading)
 ///
-/// This matches the WASM JsTiledImageVisual API, providing all image manipulation
-/// methods plus LOD-specific methods like set_chunk_data, set_lod_bias, and get_stats.
-#[pyclass(name = "TiledImage")]
+/// Inherits all image manipulation methods from Image base class.
+/// Adds LOD-specific methods like set_chunk_data, set_lod_bias, and get_stats.
+#[pyclass(name = "TiledImage", extends=PyImageVisual)]
 pub struct PyTiledImageVisual {
-    inner: VisualRef,
     // Direct reference to pending chunks queue (for lock-free set_chunk_data from background threads)
     pending_chunks: crate::visuals::image_strategy::PendingChunks,
 }
 
-#[visual_methods(ImageVisual)]
 #[pymethods]
 impl PyTiledImageVisual {
     /// Create a TiledImage with multi-resolution chunked loading
@@ -892,7 +891,7 @@ impl PyTiledImageVisual {
         levels: Vec<PyLevelMetadata>,
         max_chunks: usize,
         loader: PyObject,
-    ) -> PyResult<Self> {
+    ) -> PyResult<(Self, PyImageVisual)> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
@@ -965,10 +964,12 @@ impl PyTiledImageVisual {
                 "Failed to get pending_chunks from visual"
             ))?;
 
-        Ok(Self {
-            inner: Arc::new(Mutex::new(visual)),
-            pending_chunks,
-        })
+        let inner = Arc::new(Mutex::new(visual));
+
+        Ok((
+            Self { pending_chunks },
+            PyImageVisual { inner },
+        ))
     }
 
     /// Provide chunk data for a requested tile
@@ -1011,51 +1012,35 @@ impl PyTiledImageVisual {
         Ok(())
     }
 
-    /// Set the slice plane position along Z axis
-    fn set_slice_z(&self, z: f32) -> PyResult<()> {}
-
-    /// Set the slice plane position along Y axis
-    fn set_slice_y(&self, y: f32) -> PyResult<()> {}
-
-    /// Set the slice plane position along X axis
-    fn set_slice_x(&self, x: f32) -> PyResult<()> {}
-
-    /// Set an arbitrary slice plane
-    fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |v| {
-                let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
-                v.set_slice_plane(plane);
-            }
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
-
-    /// Set contrast limits
-    fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |v| v.set_contrast_limits(min, max)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
-
     /// Set LOD bias for automatic LOD selection
     ///
     /// Negative values prefer higher resolution, positive prefer lower resolution.
-    fn set_lod_bias(&self, bias: f32) -> PyResult<()> {}
+    fn set_lod_bias(self_: PyRef<'_, Self>, bias: f32) -> PyResult<()> {
+        let parent = self_.as_super();
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &parent.inner,
+            |v| v.set_lod_bias(bias)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
 
     /// Get statistics (loaded chunks, visible chunks)
     ///
     /// Returns a tuple (loaded, visible)
-    fn get_stats(&self) -> PyResult<(usize, usize)> {}
+    fn get_stats(self_: PyRef<'_, Self>) -> PyResult<(usize, usize)> {
+        let parent = self_.as_super();
+        bindings_common::with_visual_ref::<ImageVisual, _, _>(
+            &parent.inner,
+            |v| v.get_stats()
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
 
     /// Enable or disable debug visualization
-    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
-}
-
-impl PyVisualWrapper for PyTiledImageVisual {
-    fn get_inner(&self) -> VisualRef {
-        self.inner.clone()
+    fn set_debug_mode(self_: PyRef<'_, Self>, enabled: bool) -> PyResult<()> {
+        let parent = self_.as_super();
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &parent.inner,
+            |v| v.set_debug_mode(enabled)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 }
 

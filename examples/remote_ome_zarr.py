@@ -43,6 +43,11 @@ class ViewerWidget(QWidget):
         self.volume_center = [0, 0, 0]
         self.volume_scale = 1.0
 
+        # Camera spherical coordinates
+        self.camera_distance = 1.0
+        self.camera_azimuth = 0.0
+        self.camera_elevation = 0.0
+
         # Render loop
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._render)
@@ -55,7 +60,8 @@ class ViewerWidget(QWidget):
                 handle = int(self.winId())
                 size = self.size()
                 self.viewer.initialize_with_window(handle, size.width(), size.height())
-                self.viewer.set_camera_clip_planes(0.1, 10000.0)
+                # Don't set clip planes here - they will be set adaptively when dataset loads
+                # (Hard-coded values like 0.1-10000 don't work for very small volumes like beechnut)
                 self._initialized = True
                 for callback in self._setup_callbacks:
                     callback(self.viewer)
@@ -94,9 +100,17 @@ class ViewerWidget(QWidget):
 
     def mouseMoveEvent(self, event):
         if self.left_pressed and self._initialized:
+            import math
             dx = event.position().x() - self.last_x
             dy = event.position().y() - self.last_y
-            self.viewer.orbit_camera(dx * 0.01, dy * 0.01)
+
+            # Orbit camera using spherical coordinates
+            self.camera_azimuth -= dx * 0.005
+            self.camera_elevation += dy * 0.005
+            # Clamp elevation to avoid gimbal lock
+            self.camera_elevation = max(-math.pi / 2 + 0.01, min(math.pi / 2 - 0.01, self.camera_elevation))
+            self._update_camera_position()
+
             self.last_x = event.position().x()
             self.last_y = event.position().y()
         elif self.right_pressed and self._initialized and self._image:
@@ -118,8 +132,34 @@ class ViewerWidget(QWidget):
 
     def wheelEvent(self, event):
         if self._initialized:
-            zoom_delta = -event.angleDelta().y() * self.volume_scale * 0.001
-            self.viewer.zoom_camera(zoom_delta)
+            # Multiplicative zoom (matching JS implementation)
+            # Note: Qt has opposite sign from browser (positive = zoom in, negative = zoom out)
+            delta_y = -event.angleDelta().y()
+            zoom_factor = 1.0 + (delta_y * 0.001)  # 0.1% per wheel tick
+            self.camera_distance *= zoom_factor
+
+            # Constrain distance based on volume size
+            min_distance = self.volume_scale * 0.01
+            max_distance = self.volume_scale * 1000
+            self.camera_distance = max(min_distance, min(max_distance, self.camera_distance))
+
+            # Update camera position using spherical coordinates
+            self._update_camera_position()
+
+    def _update_camera_position(self):
+        """Update camera position from spherical coordinates"""
+        import math
+        center = self.volume_center
+
+        # Convert spherical to Cartesian coordinates
+        pos = [
+            center[0] + self.camera_distance * math.sin(self.camera_azimuth) * math.cos(self.camera_elevation),
+            center[1] + self.camera_distance * math.sin(self.camera_elevation),
+            center[2] + self.camera_distance * math.cos(self.camera_azimuth) * math.cos(self.camera_elevation)
+        ]
+
+        self.viewer.set_camera_position(pos[0], pos[1], pos[2])
+        self.viewer.set_camera_target(center[0], center[1], center[2])
 
     def _update_slice_plane(self):
         """Update slice plane with current angles and offset"""
@@ -144,10 +184,12 @@ class ViewerWidget(QWidget):
             normal_y /= length
             normal_z /= length
 
-        # Apply to image
+        # Apply to image - move slice position along the normal vector
         center = self.volume_center
         self._image.set_slice_plane(
-            center[0], center[1], center[2] + self.slice_offset,
+            center[0] + normal_x * self.slice_offset,
+            center[1] + normal_y * self.slice_offset,
+            center[2] + normal_z * self.slice_offset,
             normal_x, normal_y, normal_z
         )
 
@@ -169,13 +211,19 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        # Dataset selector
+        # Dataset selector with camera distances
+        self.datasets = {
+            "Human Mitotic Cell (HeLa) - 3 channels": ("https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr", 200.0),
+            "Marmoset Neurons - 3D microscopy": ("https://ome-zarr-scivis.s3.us-east-1.amazonaws.com/v0.5/96x2/marmoset_neurons.ome.zarr", 300.0),
+            "Pawpawsaurus - CT scan fossil": ("https://ome-zarr-scivis.s3.us-east-1.amazonaws.com/v0.5/96x2/pawpawsaurus.ome.zarr", 500.0),
+            "Beechnut - CT scan": ("https://ome-zarr-scivis.s3.us-east-1.amazonaws.com/v0.5/96x2/beechnut.ome.zarr", 0.05),
+            "Platybrowser - Embryo, 10 LODs": ("https://s3.embl.de/i2k-2020/platy-raw.ome.zarr", 200.0),
+        }
         dataset_layout = QHBoxLayout()
         dataset_layout.addWidget(QLabel("Dataset:"))
         self.dataset_combo = QComboBox()
-        # Use working datasets from old example
-        self.dataset_combo.addItem("Human Mitotic Cell (HeLa, 3 LODs)", "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr")
-        self.dataset_combo.addItem("Platybrowser (Embryo, 10 LODs)", "https://s3.embl.de/i2k-2020/platy-raw.ome.zarr")
+        for name in self.datasets.keys():
+            self.dataset_combo.addItem(name)
         dataset_layout.addWidget(self.dataset_combo)
         self.load_button = QPushButton("Load")
         self.load_button.clicked.connect(self.load_zarr)
@@ -216,18 +264,29 @@ class MainWindow(QMainWindow):
 
     def load_zarr(self):
         try:
-            url = self.dataset_combo.currentData()
+            dataset_name = self.dataset_combo.currentText()
+            url, camera_distance = self.datasets[dataset_name]
             print(f"\n{'='*60}")
             print(f"Loading: {url}")
             print('='*60)
             self.status_label.setText(f"Loading...")
             self.load_button.setEnabled(False)
 
-            # Open zarr store
-            store = zarr.open(url, mode="r")
+            # Open zarr store (try zarr v3 format first, fallback to v2)
+            try:
+                store = zarr.open_group(url, mode="r", zarr_format=3)
+            except Exception:
+                try:
+                    store = zarr.open_group(url, mode="r", zarr_format=2)
+                except Exception:
+                    store = zarr.open_group(url, mode="r")
 
-            # Get multiscales metadata
-            multiscales = store.attrs.get("multiscales", [{}])[0]
+            # Get multiscales metadata (handle both OME-Zarr 0.4 and 0.5)
+            attrs = dict(store.attrs)
+            if "ome" in attrs:  # OME-Zarr 0.5+ (uses zarr v3)
+                multiscales = attrs["ome"]["multiscales"][0]
+            else:  # OME-Zarr 0.4 (uses zarr v2)
+                multiscales = attrs.get("multiscales", [{}])[0]
             datasets = multiscales.get("datasets", [])
             axes = multiscales.get("axes", [])
             axis_names = [ax.get("name", "?") for ax in axes]
@@ -407,10 +466,22 @@ class MainWindow(QMainWindow):
                 self.viewer_widget.volume_scale = max(world_size)
                 self.image = image
 
-                # Setup camera
-                distance = max(world_size[1], world_size[2]) * 1.0
-                viewer.set_camera_position(center[0], center[1], center[2] + distance)
+                # Set adaptive camera clip planes based on volume size
+                max_dimension = max(world_size)
+                near_plane = max_dimension * 0.001  # 0.1% of max dimension
+                far_plane = max_dimension * 100      # 100x max dimension
+                viewer.set_camera_clip_planes(near_plane, far_plane)
+                print(f"  Clip planes: near={near_plane:.6f}, far={far_plane:.2f}")
+
+                # Setup camera with dataset-specific distance using spherical coordinates
+                self.viewer_widget.camera_distance = camera_distance
+                self.viewer_widget.camera_azimuth = 0.0
+                self.viewer_widget.camera_elevation = 0.0
+
+                # Initial position: azimuth=0, elevation=0 means camera on +Z axis
+                viewer.set_camera_position(center[0], center[1], center[2] + camera_distance)
                 viewer.set_camera_target(*center)
+                print(f"  Camera distance: {camera_distance}")
 
                 # Add axes
                 viewer.add(bv.Lines.axis_helper(viewer, max(lod0.volume_size) * 0.3))

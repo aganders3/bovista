@@ -429,6 +429,16 @@ impl JsImageVisual {
 }
 
 /// JavaScript wrapper for chunked ImageVisual (multi-LOD with async loading)
+///
+/// This class provides LOD-specific methods (setLodBias, getStats, setChunkData).
+/// Common image methods (setSliceZ, setContrast, etc.) should be inherited from
+/// JsImageVisual by setting up the prototype chain in your JavaScript wrapper:
+///
+/// ```javascript
+/// Object.setPrototypeOf(JsTiledImageVisual.prototype, JsImageVisual.prototype);
+/// ```
+///
+/// This will be handled automatically in the NPM package.
 #[wasm_bindgen]
 pub struct JsTiledImageVisual {
     inner: VisualRef,
@@ -438,7 +448,6 @@ pub struct JsTiledImageVisual {
     chunk_loader: Function,
 }
 
-#[visual_methods(ImageVisual)]
 #[wasm_bindgen]
 impl JsTiledImageVisual {
     /// Create a chunked ImageVisual with multi-resolution LOD
@@ -593,52 +602,21 @@ impl JsTiledImageVisual {
         }
     }
 
-    /// Set the slice plane position along Z axis
-    #[wasm_bindgen(js_name = setSliceZ)]
-    pub fn set_slice_z(&self, z: f32) -> Result<(), JsValue> {}
-
-    /// Set the slice plane position along Y axis
-    #[wasm_bindgen(js_name = setSliceY)]
-    pub fn set_slice_y(&self, y: f32) -> Result<(), JsValue> {}
-
-    /// Set the slice plane position along X axis
-    #[wasm_bindgen(js_name = setSliceX)]
-    pub fn set_slice_x(&self, x: f32) -> Result<(), JsValue> {}
-
-    /// Set the slice plane position and normal
-    ///
-    /// # Arguments
-    /// * `px`, `py`, `pz` - Plane position
-    /// * `nx`, `ny`, `nz` - Plane normal
-    #[wasm_bindgen(js_name = setSlicePlane)]
-    pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |img| {
-                let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
-                img.set_slice_plane(plane);
-            }
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Set contrast limits
-    ///
-    /// # Arguments
-    /// * `min` - Minimum value (0.0 to 1.0)
-    /// * `max` - Maximum value (0.0 to 1.0)
-    #[wasm_bindgen(js_name = setContrast)]
-    pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |img| img.set_contrast_limits(min, max)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+    // Note: Common image methods (setSliceZ, setSliceY, setSliceX, setSlicePlane, setContrast,
+    // setDebugMode) are inherited from JsImageVisual via prototype chain.
+    // In your NPM package wrapper, set up inheritance:
+    //   Object.setPrototypeOf(JsTiledImageVisual.prototype, JsImageVisual.prototype);
 
     /// Set LOD bias for automatic LOD selection
     ///
     /// Negative values prefer higher resolution, positive prefer lower resolution.
     #[wasm_bindgen(js_name = setLodBias)]
-    pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {}
+    pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| img.set_lod_bias(bias)
+        ).map_err(|e| JsValue::from_str(&e))
+    }
 
     /// Get statistics (loaded chunks, visible chunks)
     ///
@@ -653,10 +631,6 @@ impl JsTiledImageVisual {
             }
         ).unwrap_or_else(|_| vec![0, 0])
     }
-
-    /// Enable or disable debug visualization
-    #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
 
     /// Get the visual reference for adding to viewer
     pub(crate) fn get_inner(&self) -> VisualRef {
