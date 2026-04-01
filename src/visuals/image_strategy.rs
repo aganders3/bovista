@@ -609,12 +609,13 @@ impl TiledData {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R8Unorm,
+            format: data.format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
         // Upload data
+        let bytes_per_row = data.width * data.bytes_per_voxel();
         queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &texture,
@@ -625,7 +626,7 @@ impl TiledData {
             &data.data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(data.width),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(data.height),
             },
             texture_size,

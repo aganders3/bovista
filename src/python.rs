@@ -906,6 +906,24 @@ impl PyImageVisual {
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
+    /// Set a colormap LUT.
+    /// `rgba` should be a numpy array of shape (256, 4) with dtype uint8 (RGBA values 0-255).
+    /// Pass None or an empty array to reset to grayscale.
+    #[pyo3(signature = (rgba=None))]
+    fn set_colormap(&self, rgba: Option<PyReadonlyArray3<u8>>) -> PyResult<()> {
+        let bytes: Vec<u8> = match rgba {
+            Some(arr) => {
+                let a = arr.as_array();
+                a.iter().copied().collect()
+            }
+            None => Vec::new(),
+        };
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |v| v.set_colormap(&bytes)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
     /// Set an arbitrary slice plane
     fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
         bindings_common::with_visual_mut::<ImageVisual, _, _>(
@@ -1058,24 +1076,38 @@ impl PyTiledImageVisual {
         x: u32,
         data: PyReadonlyArray3<u8>,
     ) -> PyResult<()> {
-        // Convert numpy array to TileData
-        let array = data.as_array();
-        let shape = array.shape();
-        let data_vec: Vec<u8> = array.iter().copied().collect();
-
         use crate::visuals::tile::{TileData, TileKey};
+        let a = data.as_array();
         let tile_data = TileData {
-            data: data_vec,
-            width: shape[2] as u32,
-            height: shape[1] as u32,
-            depth: shape[0] as u32,
+            data: a.iter().copied().collect(),
+            width: a.shape()[2] as u32,
+            height: a.shape()[1] as u32,
+            depth: a.shape()[0] as u32,
+            format: wgpu::TextureFormat::R8Unorm,
         };
+        self.pending_chunks.lock().unwrap().insert(TileKey { lod_level, z, y, x }, tile_data);
+        Ok(())
+    }
 
-        let key = TileKey { lod_level, z, y, x };
-
-        // Insert directly into pending chunks queue (doesn't require visual lock)
-        self.pending_chunks.lock().unwrap().insert(key, tile_data);
-
+    /// Provide uint16 chunk data (stored as R16Unorm — no CPU normalization needed)
+    fn set_chunk_data_u16(
+        &self,
+        lod_level: usize,
+        z: u32,
+        y: u32,
+        x: u32,
+        data: PyReadonlyArray3<u16>,
+    ) -> PyResult<()> {
+        use crate::visuals::tile::{TileData, TileKey};
+        let a = data.as_array();
+        let tile_data = TileData {
+            data: a.iter().flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes()).collect(),
+            width: a.shape()[2] as u32,
+            height: a.shape()[1] as u32,
+            depth: a.shape()[0] as u32,
+            format: wgpu::TextureFormat::R16Float,
+        };
+        self.pending_chunks.lock().unwrap().insert(TileKey { lod_level, z, y, x }, tile_data);
         Ok(())
     }
 

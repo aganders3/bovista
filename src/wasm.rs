@@ -491,6 +491,18 @@ impl JsImageVisual {
         ).map_err(|e| JsValue::from_str(&e))
     }
 
+    /// Set a colormap LUT.
+    /// `rgba` should be a Uint8Array of length 1024 (256 RGBA entries, values 0-255).
+    /// Pass null or a zero-length array to reset to grayscale.
+    #[wasm_bindgen(js_name = setColormap)]
+    pub fn set_colormap(&self, rgba: &Uint8Array) -> Result<(), JsValue> {
+        let bytes = rgba.to_vec();
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| img.set_colormap(&bytes)
+        ).map_err(|e| JsValue::from_str(&e))
+    }
+
     /// Enable or disable debug visualization
     #[wasm_bindgen(js_name = setDebugMode)]
     pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
@@ -661,16 +673,46 @@ impl JsTiledImageVisual {
         depth: u32,
     ) {
         if let Some(ref pending_chunks) = self.pending_chunks {
-            let data_vec = data.to_vec();
             let tile_data = TileData {
-                data: data_vec,
+                data: data.to_vec(),
                 width,
                 height,
                 depth,
+                format: wgpu::TextureFormat::R8Unorm,
             };
             let key = TileKey { lod_level: lod, z, y, x };
+            pending_chunks.lock().unwrap().insert(key, tile_data);
+        }
+    }
 
-            // Insert directly into pending chunks queue
+    /// Provide uint16 chunk data (stored as R16Float — no CPU normalization needed).
+    /// Values are normalized to [0.0, 1.0] as f16 to match the shader's contrast uniforms.
+    #[wasm_bindgen(js_name = setChunkDataU16)]
+    pub fn set_chunk_data_u16(
+        &self,
+        lod: usize,
+        z: u32,
+        y: u32,
+        x: u32,
+        data: &js_sys::Uint16Array,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) {
+        if let Some(ref pending_chunks) = self.pending_chunks {
+            // Convert u16 integer values to normalized f16: value / 65535.0
+            // R16Unorm has no WebGPU equivalent, so we use R16Float instead.
+            let bytes: Vec<u8> = data.to_vec().iter()
+                .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
+                .collect();
+            let tile_data = TileData {
+                data: bytes,
+                width,
+                height,
+                depth,
+                format: wgpu::TextureFormat::R16Float,
+            };
+            let key = TileKey { lod_level: lod, z, y, x };
             pending_chunks.lock().unwrap().insert(key, tile_data);
         }
     }

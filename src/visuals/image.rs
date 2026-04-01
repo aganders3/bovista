@@ -77,6 +77,11 @@ pub struct ImageVisual {
     // Uniform buffers (one per tile, created on demand)
     uniform_buffer_cache: HashMap<usize, wgpu::Buffer>,
 
+    // Colormap LUT (group 2) — 256-entry 1D RGBA texture
+    colormap_texture: wgpu::Texture,
+    colormap_bind_group: wgpu::BindGroup,
+    pending_colormap: Option<Vec<u8>>,
+
     slice_plane: SlicePlane,
     contrast_limits: (f32, f32),
     debug_mode: bool,
@@ -184,7 +189,7 @@ impl ImageVisual {
     /// Internal constructor from a strategy
     fn from_strategy(
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         strategy: ImageStrategy,
@@ -247,9 +252,32 @@ impl ImageVisual {
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/tile.wgsl").into()),
         });
 
+        // Colormap LUT bind group layout (group 2)
+        let colormap_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Colormap Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D1,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Tile Pipeline Layout"),
-            bind_group_layouts: &[camera_bind_group_layout, &bind_group_layout],
+            bind_group_layouts: &[camera_bind_group_layout, &bind_group_layout, &colormap_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -312,6 +340,48 @@ impl ImageVisual {
             cache: None,
         });
 
+        // Build default grayscale colormap (256 RGBA entries: r=g=b=i, a=255)
+        let colormap_data: Vec<u8> = (0u32..256)
+            .flat_map(|i| { let v = i as u8; [v, v, v, 255] })
+            .collect();
+        let colormap_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Colormap Texture"),
+            size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D1,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &colormap_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &colormap_data,
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+            wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+        );
+        let colormap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Colormap Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let colormap_view = colormap_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let colormap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Colormap Bind Group"),
+            layout: &colormap_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&colormap_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&colormap_sampler) },
+            ],
+        });
+
         // Initialize with centered slice
         let slice_plane = SlicePlane::xy((depth as f32) / 2.0);
 
@@ -325,6 +395,9 @@ impl ImageVisual {
             sampler,
             bind_group_cache: HashMap::new(),
             uniform_buffer_cache: HashMap::new(),
+            colormap_texture,
+            colormap_bind_group,
+            pending_colormap: None,
             slice_plane,
             contrast_limits,
             debug_mode: false,
@@ -379,6 +452,17 @@ impl ImageVisual {
         self.contrast_limits
     }
 
+    /// Set a colormap LUT from 256 RGBA entries (1024 bytes, values in 0..=255).
+    /// Pass an empty slice to reset to the default grayscale map.
+    /// The upload is deferred to the next `prepare()` call.
+    pub fn set_colormap(&mut self, rgba: &[u8]) {
+        self.pending_colormap = Some(if rgba.len() == 1024 {
+            rgba.to_vec()
+        } else {
+            (0u32..256).flat_map(|i| { let v = i as u8; [v, v, v, 255] }).collect()
+        });
+    }
+
     pub fn set_name(&mut self, name: String) {
         self.name = name;
     }
@@ -420,6 +504,21 @@ impl ImageVisual {
 
 impl Visual for ImageVisual {
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &crate::visual::CameraInfo) {
+        // Upload pending colormap if set
+        if let Some(data) = self.pending_colormap.take() {
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.colormap_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+                wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+            );
+        }
+
         // Update frame counter
         self.frame_number += 1;
 
@@ -532,6 +631,9 @@ impl Visual for ImageVisual {
 
         // Stencil reference = 1 (buffer cleared to 0, NotEqual ensures first painted wins)
         render_pass.set_stencil_reference(1);
+
+        // Set colormap LUT once for all tiles
+        render_pass.set_bind_group(2, &self.colormap_bind_group, &[]);
 
         for (tile, _, _) in tiles_with_distance {
             // Note: uniform buffer is already bound in the bind group created during prepare()

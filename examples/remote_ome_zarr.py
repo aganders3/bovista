@@ -46,6 +46,11 @@ class ViewerWidget(QWidget):
         # Camera distance (synced from Rust after each zoom)
         self.camera_distance = 1.0
 
+        # Window/level state (contrast)
+        self.middle_pressed = False
+        self.window_center = 0.5
+        self.window_width = 1.0
+
         # Render loop
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._render)
@@ -89,12 +94,18 @@ class ViewerWidget(QWidget):
             self.right_pressed = True
             self.last_x = event.position().x()
             self.last_y = event.position().y()
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            self.middle_pressed = True
+            self.last_x = event.position().x()
+            self.last_y = event.position().y()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.left_pressed = False
         elif event.button() == Qt.MouseButton.RightButton:
             self.right_pressed = False
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            self.middle_pressed = False
 
     def mouseMoveEvent(self, event):
         if self.left_pressed and self._initialized:
@@ -126,6 +137,16 @@ class ViewerWidget(QWidget):
             # Horizontal drag moves slice offset
             self.slice_offset += dx * self.volume_scale * 0.005
             self._update_slice_plane()
+            self.last_x = event.position().x()
+            self.last_y = event.position().y()
+        elif self.middle_pressed and self._initialized and self._image:
+            dx = event.position().x() - self.last_x
+            dy = event.position().y() - self.last_y
+            # Horizontal drag: level (center); vertical drag: window (width)
+            self.window_center += dx * 0.002
+            self.window_width  += dy * 0.002
+            self.window_width   = max(0.001, self.window_width)
+            self._apply_window_level()
             self.last_x = event.position().x()
             self.last_y = event.position().y()
 
@@ -175,6 +196,12 @@ class ViewerWidget(QWidget):
         # If in orthographic mode, align camera to slice plane
         if self.viewer.get_camera_projection_mode() == bv.ProjectionMode.Orthographic:
             self._align_camera_to_slice(normal_x, normal_y, normal_z)
+
+    def _apply_window_level(self):
+        if not self._image:
+            return
+        half = self.window_width / 2.0
+        self._image.set_contrast(self.window_center - half, self.window_center + half)
 
     def _align_camera_to_slice(self, normal_x, normal_y, normal_z):
         """Position camera along slice plane normal"""
@@ -283,7 +310,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
 
         # Controls info
-        layout.addWidget(QLabel("Left-drag: Orbit | Right-drag: Slice | Shift+Right: Rotate | Scroll: Zoom"))
+        layout.addWidget(QLabel("Left-drag: Orbit | Middle-drag: Window/Level | Right-drag: Slice | Shift+Right: Rotate | Scroll: Zoom"))
 
         # Status
         self.status_label = QLabel("Select dataset and click Load")
@@ -430,18 +457,25 @@ class MainWindow(QMainWindow):
                         slices[y_idx] = y_slice
                         slices[x_idx] = x_slice
 
-                        # Load data
+                        # Load data — pass uint8 or uint16 directly; Rust handles both
                         data = arr[tuple(slices)]
-
-                        # Normalize to uint8
-                        if data.dtype != np.uint8:
-                            if np.issubdtype(data.dtype, np.integer):
-                                info = np.iinfo(data.dtype)
-                                data = ((data.astype(np.float32) - info.min) / (info.max - info.min) * 255).astype(np.uint8)
+                        if data.dtype == np.uint8:
+                            return np.ascontiguousarray(data)
+                        elif data.dtype == np.uint16:
+                            return np.ascontiguousarray(data)
+                        elif np.issubdtype(data.dtype, np.integer):
+                            # Other integer types: normalize to uint16 to preserve precision
+                            info = np.iinfo(data.dtype)
+                            data = ((data.astype(np.float32) - info.min) / (info.max - info.min) * 65535).astype(np.uint16)
+                            return np.ascontiguousarray(data)
+                        else:
+                            # Float data: normalize to uint16
+                            lo, hi = data.min(), data.max()
+                            if hi > lo:
+                                data = ((data - lo) / (hi - lo) * 65535).astype(np.uint16)
                             else:
-                                data = ((data - data.min()) / (data.max() - data.min()) * 255).astype(np.uint8)
-
-                        return np.ascontiguousarray(data)
+                                data = np.zeros_like(data, dtype=np.uint16)
+                            return np.ascontiguousarray(data)
                     except Exception as e:
                         print(f"Error loading chunk LOD{lod} ({z},{y},{x}): {e}")
                         return None
@@ -453,7 +487,10 @@ class MainWindow(QMainWindow):
                     if not future.cancelled() and image:
                         data = future.result()
                         if data is not None:
-                            image.set_chunk_data(lod, z, y, x, data)
+                            if data.dtype == np.uint16:
+                                image.set_chunk_data_u16(lod, z, y, x, data)
+                            else:
+                                image.set_chunk_data(lod, z, y, x, data)
 
                 def request(lod, z, y, x):
                     nonlocal pending
@@ -500,6 +537,8 @@ class MainWindow(QMainWindow):
                 self.viewer_widget._image = image
                 self.viewer_widget.volume_center = center
                 self.viewer_widget.volume_scale = max(world_size)
+                self.viewer_widget.window_center = 0.5
+                self.viewer_widget.window_width = 1.0
                 self.image = image
 
                 # Set adaptive camera clip planes based on volume size

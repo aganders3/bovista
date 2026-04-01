@@ -36,6 +36,13 @@ var tile_sampler: sampler;
 @group(1) @binding(2)
 var<uniform> tile: TileUniforms;
 
+// Colormap LUT (bind group 2) - 256-entry 1D RGBA texture
+@group(2) @binding(0)
+var colormap: texture_1d<f32>;
+
+@group(2) @binding(1)
+var colormap_sampler: sampler;
+
 // Vertex shader input
 struct VertexInput {
     @location(0) position: vec3<f32>,   // 3D world-space position
@@ -63,33 +70,24 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Sample texture FIRST (uniform control flow required for textureSample)
+    // Both textureSample calls must be in uniform control flow, so do them both up front
     let tex_value = textureSample(tile_texture, tile_sampler, input.texcoord).r;
-
-    // Apply contrast adjustment
     let adjusted = (tex_value - tile.contrast_min) / (tile.contrast_max - tile.contrast_min);
     let clamped = clamp(adjusted, 0.0, 1.0);
+    let color = textureSample(colormap, colormap_sampler, clamped);
 
     // Debug mode: show tile boundaries with color-coded visualization
     if (tile.debug_mode > 0.5) {
-        // Draw wireframe by checking distance to edges
         let tc = input.texcoord;
         let edge_threshold = 0.05;
-
         let near_edge = tc.x < edge_threshold || tc.x > (1.0 - edge_threshold) ||
-                       tc.y < edge_threshold || tc.y > (1.0 - edge_threshold) ||
-                       tc.z < edge_threshold || tc.z > (1.0 - edge_threshold);
-
+                        tc.y < edge_threshold || tc.y > (1.0 - edge_threshold) ||
+                        tc.z < edge_threshold || tc.z > (1.0 - edge_threshold);
         if (near_edge) {
-            // White wireframe
             return vec4<f32>(1.0, 1.0, 1.0, 1.0);
-        } else {
-            // Tint the texture with debug color
-            let tinted = mix(vec3<f32>(clamped, clamped, clamped), tile.debug_color, 0.3);
-            return vec4<f32>(tinted, 1.0);
         }
+        return vec4<f32>(mix(color.rgb, tile.debug_color, 0.3), 1.0);
     }
 
-    // Normal mode: grayscale output
-    return vec4<f32>(clamped, clamped, clamped, 1.0);
+    return vec4<f32>(color.rgb, 1.0);
 }

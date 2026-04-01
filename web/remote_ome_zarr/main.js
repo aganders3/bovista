@@ -49,13 +49,6 @@ let volumeScale = 1.0;  // Largest dimension of volume for adaptive zoom
 let cameraDistance = 1.0;  // Distance from target (synced from Rust after each zoom)
 let animationFrameId = null;
 
-// Data type range for contrast mapping
-let dataTypeMin = 0;
-let dataTypeMax = 255;
-
-// Current contrast window (in data space)
-let contrastWindowMin = 0;
-let contrastWindowMax = 255;
 let contrastDebounceTimer = null;
 
 // Chunk loading state (matching Python's pending_futures)
@@ -66,8 +59,11 @@ let loadedChunkCount = 0;
 // Mouse interaction state
 let isDragging = false;
 let isRightDragging = false;
+let isMiddleDragging = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
+let windowCenter = 0.5;
+let windowWidth = 1.0;
 let sliceAngleX = 0.0;
 let sliceAngleY = 0.0;
 let sliceOffset = 0.0;
@@ -207,85 +203,17 @@ async function loadChunkAsync(lod, z, y, x, key) {
             throw new Error('Empty chunk data');
         }
 
-        let uint8Data;
-        if (data instanceof Uint8Array) {
-            uint8Data = data;
-
-            if (loadedChunkCount === 0) {
-                dataTypeMin = 0;
-                dataTypeMax = 255;
-                updateContrastSliderRange(0, 255);
-            }
-        } else if (data instanceof Uint16Array || data instanceof Int16Array) {
-            uint8Data = new Uint8Array(data.length);
-
-            let dtypeMin, dtypeMax;
-            if (data instanceof Int16Array) {
-                // Signed int16: -32768 to 32767
-                dtypeMin = -32768;
-                dtypeMax = 32767;
-            } else {
-                // Unsigned uint16: 0 to 65535
-                dtypeMin = 0;
-                dtypeMax = 65535;
-            }
-
-            if (loadedChunkCount === 0) {
-                // Only reset range if it's not already set (new dataset, not chunk reload)
-                if (dataTypeMin === 0 && dataTypeMax === 255 && dtypeMax > 255) {
-                    dataTypeMin = dtypeMin;
-                    dataTypeMax = dtypeMax;
-                    contrastWindowMin = dtypeMin;
-                    contrastWindowMax = dtypeMax;
-
-                    updateContrastSliderRange(dtypeMin, dtypeMax);
-                }
-            }
-
-            const windowMin = contrastWindowMin;
-            const windowMax = contrastWindowMax;
-            const windowRange = windowMax - windowMin;
-
-            if (windowRange > 0) {
-                for (let i = 0; i < data.length; i++) {
-                    const val = data[i];
-                    if (val <= windowMin) {
-                        uint8Data[i] = 0;
-                    } else if (val >= windowMax) {
-                        uint8Data[i] = 255;
-                    } else {
-                        uint8Data[i] = Math.round(((val - windowMin) / windowRange) * 255);
-                    }
-                }
-            } else {
-                uint8Data.fill(128);
-            }
-        } else {
-            uint8Data = new Uint8Array(data.buffer || data);
-        }
-
-        // Provide to WASM (Rust TiledStrategy will cache it)
+        // Provide to WASM — pass uint8 or uint16 directly; Rust handles R8Unorm/R16Unorm
         if (tiledImage) {
-            const actualWidth = xEnd - xStart;
-            const actualHeight = yEnd - yStart;
-            const actualDepth = zEnd - zStart;
-
-            tiledImage.setChunkData(
-                lod, z, y, x,
-                uint8Data,
-                actualWidth,
-                actualHeight,
-                actualDepth
-            );
-
+            if (data instanceof Uint8Array) {
+                tiledImage.setChunkData(lod, z, y, x, data, actualWidth, actualHeight, actualDepth);
+            } else if (data instanceof Uint16Array) {
+                tiledImage.setChunkDataU16(lod, z, y, x, data, actualWidth, actualHeight, actualDepth);
+            } else {
+                // Fallback: reinterpret as uint8
+                tiledImage.setChunkData(lod, z, y, x, new Uint8Array(data.buffer || data), actualWidth, actualHeight, actualDepth);
+            }
             loadedChunkCount++;
-            if (loadedChunkCount <= 5 || loadedChunkCount % 50 === 0) {
-
-            // Extra debug when near cache limit
-            if (loadedChunkCount >= 250 && tiledImage) {
-                const stats = tiledImage.getStats();
-            }
-            }
         }
 
     } catch (error) {
@@ -429,8 +357,7 @@ function createVisual() {
         updateSlicePlane();
     }
 
-    // For int16/uint16, set shader contrast to full range (windowing done during conversion)
-    if (dataTypeMax > 255) {
+    {
         tiledImage.setContrast(0.0, 1.0);
     }
 }
@@ -441,6 +368,11 @@ canvas.addEventListener('mousedown', (e) => {
         isDragging = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
+    } else if (e.button === 1) {
+        isMiddleDragging = true;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+        e.preventDefault();
     } else if (e.button === 2) {
         isRightDragging = true;
         lastMouseX = e.clientX;
@@ -464,6 +396,12 @@ canvas.addEventListener('mousemove', (e) => {
         } else {
             viewer.orbitCamera(deltaX * 0.005, deltaY * 0.005);
         }
+    } else if (isMiddleDragging && tiledImage) {
+        // Horizontal drag: level (center); vertical drag: window (width)
+        windowCenter += deltaX * 0.002;
+        windowWidth  += deltaY * 0.002;
+        windowWidth   = Math.max(0.001, windowWidth);
+        tiledImage.setContrast(windowCenter - windowWidth / 2, windowCenter + windowWidth / 2);
     } else if (isRightDragging) {
         if (e.shiftKey) {
             sliceAngleX += deltaY * 0.01;
@@ -486,11 +424,16 @@ canvas.addEventListener('mousemove', (e) => {
 
 canvas.addEventListener('mouseup', () => {
     isDragging = false;
+    isMiddleDragging = false;
     isRightDragging = false;
 });
 
 canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
+});
+
+canvas.addEventListener('auxclick', (e) => {
+    if (e.button === 1) e.preventDefault(); // suppress middle-click default (autoscroll)
 });
 
 canvas.addEventListener('wheel', (e) => {
@@ -530,12 +473,6 @@ async function loadDataset(datasetKey) {
         loadedChunkCount = 0;
         zarrArrays = [];
         lodLevels = [];
-
-        // Reset data type range (will be updated when first chunk loads)
-        dataTypeMin = 0;
-        dataTypeMax = 255;
-        contrastWindowMin = 0;
-        contrastWindowMax = 255;
 
         // Open Zarr store using the root location directly
         zarrStore = new zarr.FetchStore(dataset.url);
@@ -694,13 +631,11 @@ async function loadDataset(datasetKey) {
         sliceAngleX = 0.0;
         sliceAngleY = 0.0;
         sliceOffset = 0.0;
+        windowCenter = 0.5;
+        windowWidth = 1.0;
         updateSlicePlane();
 
-        // For int16/uint16, set shader contrast to full range (windowing done during conversion)
-        // For uint8, contrast can be adjusted in shader
-        if (dataTypeMax > 255) {
-            tiledImage.setContrast(0.0, 1.0);
-        }
+        tiledImage.setContrast(0.0, 1.0);
 
         const stats = tiledImage.getStats();
 
@@ -745,14 +680,12 @@ document.getElementById('lod-bias').addEventListener('input', (e) => {
 });
 
 document.getElementById('contrast-min').addEventListener('input', (e) => {
-    const value = parseInt(e.target.value);
-    document.getElementById('contrast-min-value').textContent = value;
+    document.getElementById('contrast-min-value').textContent = (parseInt(e.target.value) / 1000.0).toFixed(3);
     updateContrast();
 });
 
 document.getElementById('contrast-max').addEventListener('input', (e) => {
-    const value = parseInt(e.target.value);
-    document.getElementById('contrast-max-value').textContent = value;
+    document.getElementById('contrast-max-value').textContent = (parseInt(e.target.value) / 1000.0).toFixed(3);
     updateContrast();
 });
 
@@ -783,49 +716,12 @@ document.getElementById('projection-toggle').addEventListener('click', () => {
     }
 });
 
-function updateContrastSliderRange(minVal, maxVal) {
-    const minSlider = document.getElementById('contrast-min');
-    const maxSlider = document.getElementById('contrast-max');
-
-    minSlider.min = minVal;
-    minSlider.max = maxVal;
-    minSlider.value = minVal;
-
-    maxSlider.min = minVal;
-    maxSlider.max = maxVal;
-    maxSlider.value = maxVal;
-
-    document.getElementById('contrast-min-value').textContent = minVal;
-    document.getElementById('contrast-max-value').textContent = maxVal;
-
-}
 
 function updateContrast() {
     if (!tiledImage) return;
-    const min = parseInt(document.getElementById('contrast-min').value);
-    const max = parseInt(document.getElementById('contrast-max').value);
-
-    contrastWindowMin = min;
-    contrastWindowMax = max;
-
-    // For int16/uint16 data, we need to reload chunks with new window
-    // Debounce to avoid reloading on every slider movement
-    if (dataTypeMax > 255) {
-        if (contrastDebounceTimer) {
-            clearTimeout(contrastDebounceTimer);
-        }
-
-        // Schedule reload after 500ms of no slider movement
-        contrastDebounceTimer = setTimeout(() => {
-            viewer.clearScene();
-            createVisual();
-        }, 500);
-    } else {
-        // uint8 data - use shader contrast (no debounce needed, it's fast)
-        const normalizedMin = (min - dataTypeMin) / (dataTypeMax - dataTypeMin);
-        const normalizedMax = (max - dataTypeMin) / (dataTypeMax - dataTypeMin);
-        tiledImage.setContrast(normalizedMin, normalizedMax);
-    }
+    const min = parseFloat(document.getElementById('contrast-min').value) / 1000.0;
+    const max = parseFloat(document.getElementById('contrast-max').value) / 1000.0;
+    tiledImage.setContrast(min, max);
 }
 
 // Stats update interval

@@ -67,7 +67,7 @@ impl TileRequest {
 /// Response containing tile/chunk data
 #[derive(Debug, Clone)]
 pub struct TileData {
-    /// Raw voxel data (typically R8Unorm format, 1 byte per voxel)
+    /// Raw voxel data as bytes (layout determined by `format`)
     pub data: Vec<u8>,
 
     /// Width of the data in voxels
@@ -78,6 +78,21 @@ pub struct TileData {
 
     /// Depth of the data in voxels (1 for 2D images)
     pub depth: u32,
+
+    /// GPU texture format for this data (determines bytes-per-voxel)
+    pub format: wgpu::TextureFormat,
+}
+
+impl TileData {
+    /// Bytes per voxel for the stored format
+    pub fn bytes_per_voxel(&self) -> u32 {
+        match self.format {
+            wgpu::TextureFormat::R8Unorm => 1,
+            wgpu::TextureFormat::R16Float => 2,
+            wgpu::TextureFormat::R32Float => 4,
+            _ => 1,
+        }
+    }
 }
 
 /// Axis-aligned bounding box in 3D space
