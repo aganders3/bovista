@@ -369,17 +369,27 @@ impl TiledData {
         tile_world_size: f32,
         camera_info: &crate::visual::CameraInfo,
     ) -> usize {
-        let distance = (tile_center - camera_info.position).length();
-        // Use adaptive threshold: very close relative to tile size
-        let min_distance = tile_world_size * 0.1;
-        if distance < min_distance {
-            return 0; // Very close, use highest resolution
-        }
+        // Screen-space size calculation depends on projection mode
+        let screen_pixels = match camera_info.projection_mode {
+            crate::ProjectionMode::Perspective => {
+                let distance = (tile_center - camera_info.position).length();
+                // Use adaptive threshold: very close relative to tile size
+                let min_distance = tile_world_size * 0.1;
+                if distance < min_distance {
+                    return 0; // Very close, use highest resolution
+                }
 
-        // Screen-space size calculation
-        // focal_length = viewport_height / (2 * tan(fov_y / 2))
-        let focal_length = camera_info.viewport_height as f32 / (2.0 * (camera_info.fov_y / 2.0).tan());
-        let screen_pixels = (tile_world_size / distance) * focal_length;
+                // Perspective: screen size depends on distance and FOV
+                // focal_length = viewport_height / (2 * tan(fov_y / 2))
+                let focal_length = camera_info.viewport_height as f32 / (2.0 * (camera_info.fov_y / 2.0).tan());
+                (tile_world_size / distance) * focal_length
+            }
+            crate::ProjectionMode::Orthographic => {
+                // Orthographic: screen size is proportional to object size / view height
+                // screen_pixels = (tile_world_size / ortho_height) * viewport_height
+                (tile_world_size / camera_info.ortho_height) * camera_info.viewport_height as f32
+            }
+        };
 
         // Pixels per voxel at LOD 0
         let lod0 = &self.levels[0];

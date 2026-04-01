@@ -43,10 +43,8 @@ class ViewerWidget(QWidget):
         self.volume_center = [0, 0, 0]
         self.volume_scale = 1.0
 
-        # Camera spherical coordinates
+        # Camera distance (synced from Rust after each zoom)
         self.camera_distance = 1.0
-        self.camera_azimuth = 0.0
-        self.camera_elevation = 0.0
 
         # Render loop
         self.timer = QTimer(self)
@@ -104,12 +102,13 @@ class ViewerWidget(QWidget):
             dx = event.position().x() - self.last_x
             dy = event.position().y() - self.last_y
 
-            # Orbit camera using spherical coordinates
-            self.camera_azimuth -= dx * 0.005
-            self.camera_elevation += dy * 0.005
-            # Clamp elevation to avoid gimbal lock
-            self.camera_elevation = max(-math.pi / 2 + 0.01, min(math.pi / 2 - 0.01, self.camera_elevation))
-            self._update_camera_position()
+            # Check projection mode
+            if self.viewer.get_camera_projection_mode() == bv.ProjectionMode.Orthographic:
+                # Pan in orthographic mode
+                pan_speed = self.volume_scale * 0.002
+                self.viewer.pan_camera(-dx * pan_speed, dy * pan_speed)
+            else:
+                self.viewer.orbit_camera(dx * 0.005, dy * 0.005)
 
             self.last_x = event.position().x()
             self.last_y = event.position().y()
@@ -132,34 +131,14 @@ class ViewerWidget(QWidget):
 
     def wheelEvent(self, event):
         if self._initialized:
-            # Multiplicative zoom (matching JS implementation)
+            # Use the zoom_camera method which handles both perspective and orthographic modes
             # Note: Qt has opposite sign from browser (positive = zoom in, negative = zoom out)
             delta_y = -event.angleDelta().y()
-            zoom_factor = 1.0 + (delta_y * 0.001)  # 0.1% per wheel tick
-            self.camera_distance *= zoom_factor
+            self.viewer.zoom_camera(delta_y)
 
-            # Constrain distance based on volume size
-            min_distance = self.volume_scale * 0.01
-            max_distance = self.volume_scale * 1000
-            self.camera_distance = max(min_distance, min(max_distance, self.camera_distance))
+            if self.viewer.get_camera_projection_mode() == bv.ProjectionMode.Perspective:
+                self.camera_distance = self.viewer.get_camera_distance()
 
-            # Update camera position using spherical coordinates
-            self._update_camera_position()
-
-    def _update_camera_position(self):
-        """Update camera position from spherical coordinates"""
-        import math
-        center = self.volume_center
-
-        # Convert spherical to Cartesian coordinates
-        pos = [
-            center[0] + self.camera_distance * math.sin(self.camera_azimuth) * math.cos(self.camera_elevation),
-            center[1] + self.camera_distance * math.sin(self.camera_elevation),
-            center[2] + self.camera_distance * math.cos(self.camera_azimuth) * math.cos(self.camera_elevation)
-        ]
-
-        self.viewer.set_camera_position(pos[0], pos[1], pos[2])
-        self.viewer.set_camera_target(center[0], center[1], center[2])
 
     def _update_slice_plane(self):
         """Update slice plane with current angles and offset"""
@@ -192,6 +171,59 @@ class ViewerWidget(QWidget):
             center[2] + normal_z * self.slice_offset,
             normal_x, normal_y, normal_z
         )
+
+        # If in orthographic mode, align camera to slice plane
+        if self.viewer.get_camera_projection_mode() == bv.ProjectionMode.Orthographic:
+            self._align_camera_to_slice(normal_x, normal_y, normal_z)
+
+    def _align_camera_to_slice(self, normal_x, normal_y, normal_z):
+        """Position camera along slice plane normal"""
+        import math
+        center = self.volume_center
+
+        # Position camera along the normal at a fixed distance
+        distance = self.volume_scale * 2.0
+        pos_x = center[0] + normal_x * distance
+        pos_y = center[1] + normal_y * distance
+        pos_z = center[2] + normal_z * distance
+
+        self.viewer.set_camera_position(pos_x, pos_y, pos_z)
+        self.viewer.set_camera_target(center[0], center[1], center[2])
+
+        # Calculate proper up vector perpendicular to normal (forward vector)
+        # Try to align with world Y when possible
+        if abs(normal_y) > 0.9:
+            # Normal is nearly vertical, use Z as reference
+            ref_x, ref_y, ref_z = 0.0, 0.0, 1.0
+        else:
+            # Use Y as reference
+            ref_x, ref_y, ref_z = 0.0, 1.0, 0.0
+
+        # Calculate right = forward × reference
+        right_x = normal_y * ref_z - normal_z * ref_y
+        right_y = normal_z * ref_x - normal_x * ref_z
+        right_z = normal_x * ref_y - normal_y * ref_x
+
+        # Normalize right
+        right_len = math.sqrt(right_x**2 + right_y**2 + right_z**2)
+        if right_len > 0.0001:
+            right_x /= right_len
+            right_y /= right_len
+            right_z /= right_len
+
+        # Calculate up = right × forward
+        up_x = right_y * normal_z - right_z * normal_y
+        up_y = right_z * normal_x - right_x * normal_z
+        up_z = right_x * normal_y - right_y * normal_x
+
+        # Normalize up
+        up_len = math.sqrt(up_x**2 + up_y**2 + up_z**2)
+        if up_len > 0.0001:
+            up_x /= up_len
+            up_y /= up_len
+            up_z /= up_len
+
+        self.viewer.set_camera_up(up_x, up_y, up_z)
 
     def on_ready(self, callback):
         if self._initialized:
@@ -244,6 +276,10 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.lod_slider)
         self.lod_label = QLabel("0.0")
         controls.addWidget(self.lod_label)
+        controls.addStretch()
+        self.projection_button = QPushButton("Switch to Orthographic")
+        self.projection_button.clicked.connect(self.toggle_projection)
+        controls.addWidget(self.projection_button)
         layout.addLayout(controls)
 
         # Controls info
@@ -473,12 +509,7 @@ class MainWindow(QMainWindow):
                 viewer.set_camera_clip_planes(near_plane, far_plane)
                 print(f"  Clip planes: near={near_plane:.6f}, far={far_plane:.2f}")
 
-                # Setup camera with dataset-specific distance using spherical coordinates
                 self.viewer_widget.camera_distance = camera_distance
-                self.viewer_widget.camera_azimuth = 0.0
-                self.viewer_widget.camera_elevation = 0.0
-
-                # Initial position: azimuth=0, elevation=0 means camera on +Z axis
                 viewer.set_camera_position(center[0], center[1], center[2] + camera_distance)
                 viewer.set_camera_target(*center)
                 print(f"  Camera distance: {camera_distance}")
@@ -503,6 +534,20 @@ class MainWindow(QMainWindow):
             bias = self.lod_slider.value() / 10.0
             self.lod_label.setText(f"{bias:.1f}")
             self.image.set_lod_bias(bias)
+
+    def toggle_projection(self):
+        current_mode = self.viewer_widget.viewer.get_camera_projection_mode()
+        if current_mode == bv.ProjectionMode.Perspective:
+            # Switch to orthographic
+            self.viewer_widget.viewer.set_camera_projection_mode(bv.ProjectionMode.Orthographic)
+            # Set ortho height based on volume size
+            self.viewer_widget.viewer.set_camera_ortho_height(self.volume_scale * 0.5)
+            # Align camera to slice plane
+            self.viewer_widget._update_slice_plane()
+            self.projection_button.setText("Switch to Perspective")
+        else:
+            self.viewer_widget.viewer.set_camera_projection_mode(bv.ProjectionMode.Perspective)
+            self.projection_button.setText("Switch to Orthographic")
 
     def update_stats(self):
         if self.image:

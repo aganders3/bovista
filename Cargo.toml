@@ -15,7 +15,7 @@ glam = "0.29"
 winit = "0.30"
 pollster = "0.3"
 raw-window-handle = "0.6"
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py311"], optional = true }
 numpy = { version = "0.22", optional = true }
 
 # Async runtime and futures

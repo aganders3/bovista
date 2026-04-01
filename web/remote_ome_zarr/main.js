@@ -46,10 +46,7 @@ let currentChannel = 0;
 let lodLevels = [];
 let volumeCenter = [0, 0, 0];
 let volumeScale = 1.0;  // Largest dimension of volume for adaptive zoom
-let cameraPosition = [0, 0, 0];  // Track camera position
-let cameraDistance = 1.0;  // Distance from target
-let cameraAzimuth = 0.0;   // Horizontal rotation angle
-let cameraElevation = 0.0; // Vertical rotation angle
+let cameraDistance = 1.0;  // Distance from target (synced from Rust after each zoom)
 let animationFrameId = null;
 
 // Data type range for contrast mapping
@@ -299,17 +296,6 @@ async function loadChunkAsync(lod, z, y, x, key) {
     }
 }
 
-// Camera Control
-function updateCameraPosition() {
-    cameraPosition = [
-        volumeCenter[0] + cameraDistance * Math.sin(cameraAzimuth) * Math.cos(cameraElevation),
-        volumeCenter[1] + cameraDistance * Math.sin(cameraElevation),
-        volumeCenter[2] + cameraDistance * Math.cos(cameraAzimuth) * Math.cos(cameraElevation)
-    ];
-    viewer.setCameraPosition(cameraPosition[0], cameraPosition[1], cameraPosition[2]);
-    viewer.setCameraTarget(volumeCenter[0], volumeCenter[1], volumeCenter[2]);
-}
-
 // Slice Plane Control
 function updateSlicePlane() {
     if (!tiledImage) return;
@@ -339,9 +325,64 @@ function updateSlicePlane() {
         normalZ
     );
 
+    // If in orthographic mode, align camera to slice plane
+    if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Orthographic) {
+        alignCameraToSlice(normalX, normalY, normalZ);
+    }
+
     // Use adaptive precision based on volume scale
     const precision = volumeScale < 1.0 ? 6 : volumeScale < 10 ? 3 : 1;
     sliceOffsetEl.textContent = sliceOffset.toFixed(precision);
+}
+
+function alignCameraToSlice(normalX, normalY, normalZ) {
+    // Position camera along the normal at a fixed distance
+    const distance = volumeScale * 2.0;
+    const posX = volumeCenter[0] + normalX * distance;
+    const posY = volumeCenter[1] + normalY * distance;
+    const posZ = volumeCenter[2] + normalZ * distance;
+
+    viewer.setCameraPosition(posX, posY, posZ);
+    viewer.setCameraTarget(volumeCenter[0], volumeCenter[1], volumeCenter[2]);
+
+    // Calculate proper up vector perpendicular to normal (forward vector)
+    // Try to align with world Y when possible
+    let refX, refY, refZ;
+    if (Math.abs(normalY) > 0.9) {
+        // Normal is nearly vertical, use Z as reference
+        refX = 0.0; refY = 0.0; refZ = 1.0;
+    } else {
+        // Use Y as reference
+        refX = 0.0; refY = 1.0; refZ = 0.0;
+    }
+
+    // Calculate right = forward × reference
+    let rightX = normalY * refZ - normalZ * refY;
+    let rightY = normalZ * refX - normalX * refZ;
+    let rightZ = normalX * refY - normalY * refX;
+
+    // Normalize right
+    const rightLen = Math.sqrt(rightX * rightX + rightY * rightY + rightZ * rightZ);
+    if (rightLen > 0.0001) {
+        rightX /= rightLen;
+        rightY /= rightLen;
+        rightZ /= rightLen;
+    }
+
+    // Calculate up = right × forward
+    let upX = rightY * normalZ - rightZ * normalY;
+    let upY = rightZ * normalX - rightX * normalZ;
+    let upZ = rightX * normalY - rightY * normalX;
+
+    // Normalize up
+    const upLen = Math.sqrt(upX * upX + upY * upY + upZ * upZ);
+    if (upLen > 0.0001) {
+        upX /= upLen;
+        upY /= upLen;
+        upZ /= upLen;
+    }
+
+    viewer.setCameraUp(upX, upY, upZ);
 }
 
 /**
@@ -415,10 +456,14 @@ canvas.addEventListener('mousemove', (e) => {
     const deltaY = e.clientY - lastMouseY;
 
     if (isDragging) {
-        cameraAzimuth -= deltaX * 0.005;
-        cameraElevation += deltaY * 0.005;
-        cameraElevation = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, cameraElevation));
-        updateCameraPosition();
+        // Check projection mode
+        if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Orthographic) {
+            // Pan in orthographic mode
+            const panSpeed = volumeScale * 0.002;
+            viewer.panCamera(-deltaX * panSpeed, deltaY * panSpeed);
+        } else {
+            viewer.orbitCamera(deltaX * 0.005, deltaY * 0.005);
+        }
     } else if (isRightDragging) {
         if (e.shiftKey) {
             sliceAngleX += deltaY * 0.01;
@@ -450,14 +495,14 @@ canvas.addEventListener('contextmenu', (e) => {
 
 canvas.addEventListener('wheel', (e) => {
     if (!viewer) return;
-    const zoomFactor = 1.0 + (e.deltaY * 0.001);  // 0.1% per wheel tick
-    cameraDistance *= zoomFactor;
 
-    const minDistance = volumeScale * 0.01;
-    const maxDistance = volumeScale * 1000;
-    cameraDistance = Math.max(minDistance, Math.min(maxDistance, cameraDistance));
+    // Use zoomCamera which handles both perspective and orthographic modes
+    viewer.zoomCamera(e.deltaY);
 
-    updateCameraPosition();
+    if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Perspective) {
+        cameraDistance = viewer.getCameraDistance();
+    }
+
     e.preventDefault();
 });
 
@@ -633,19 +678,11 @@ async function loadDataset(datasetKey) {
         viewer.setCameraClipPlanes(nearPlane, farPlane);
 
         cameraDistance = dataset.cameraDistance || 200.0;
-        cameraAzimuth = 0.0;
-        cameraElevation = 0.0;
-
-        cameraPosition = [
-            volumeCenter[0] + cameraDistance * Math.sin(cameraAzimuth) * Math.cos(cameraElevation),
-            volumeCenter[1] + cameraDistance * Math.sin(cameraElevation),
-            volumeCenter[2] + cameraDistance * Math.cos(cameraAzimuth) * Math.cos(cameraElevation)
-        ];
 
         viewer.setCameraPosition(
-            cameraPosition[0],
-            cameraPosition[1],
-            cameraPosition[2]
+            volumeCenter[0],
+            volumeCenter[1],
+            volumeCenter[2] + cameraDistance
         );
 
         viewer.setCameraTarget(
@@ -674,6 +711,7 @@ async function loadDataset(datasetKey) {
         document.getElementById('contrast-min').disabled = false;
         document.getElementById('contrast-max').disabled = false;
         document.getElementById('debug-mode').disabled = false;
+        document.getElementById('projection-toggle').disabled = false;
 
     } catch (error) {
         console.error('Error loading dataset:', error);
@@ -722,6 +760,26 @@ document.getElementById('debug-mode').addEventListener('change', (e) => {
     debugMode = e.target.checked;
     if (tiledImage) {
         tiledImage.setDebugMode(debugMode);
+    }
+});
+
+document.getElementById('projection-toggle').addEventListener('click', () => {
+    if (!viewer) return;
+
+    const currentMode = viewer.getCameraProjectionMode();
+    const button = document.getElementById('projection-toggle');
+
+    if (currentMode === wasmModule.JsProjectionMode.Perspective) {
+        // Switch to orthographic
+        viewer.setCameraProjectionMode(wasmModule.JsProjectionMode.Orthographic);
+        // Set ortho height based on volume size
+        viewer.setCameraOrthoHeight(volumeScale * 0.5);
+        // Align camera to slice plane
+        updateSlicePlane();
+        button.textContent = 'Switch to Perspective';
+    } else {
+        viewer.setCameraProjectionMode(wasmModule.JsProjectionMode.Perspective);
+        button.textContent = 'Switch to Orthographic';
     }
 });
 

@@ -138,6 +138,10 @@ pub struct CameraInfo {
     pub viewport_height: u32,
     /// View frustum planes for culling
     pub frustum: crate::camera::FrustumPlanes,
+    /// Projection mode
+    pub projection_mode: crate::ProjectionMode,
+    /// Orthographic view height (only used when projection_mode is Orthographic)
+    pub ortho_height: f32,
 }
 
 /// Base trait for all visual objects that can be rendered in a scene

@@ -16,9 +16,8 @@ dependencies = [
     "aiohttp>=3.10.11",
     "fsspec>=2025.3.0",
     "numpy>=1.20",
-    "pyside6>=6.6.3.1",
+    "PyQt6>=6.6",
     "requests>=2.32.4",
-    "scikit-image>=0.21.0",
     "zarr>=3.0.8",  # v3 required for OME-Zarr 0.5 support
 ]
 
@@ -26,10 +25,12 @@ dependencies = [
 features = ["pyo3/extension-module", "python"]
 module-name = "bovista"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "maturin>=1.7",
 ]
+
+[tool.uv]
 # Cache keys for automatic Rust rebuilds
 cache-keys = [
     {file = "Cargo.toml"},

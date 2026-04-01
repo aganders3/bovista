@@ -25,6 +25,34 @@ pub enum PyChunkStatus {
     Rejected = 2,
 }
 
+/// Python wrapper for ProjectionMode enum
+#[pyclass(name = "ProjectionMode", eq, eq_int)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PyProjectionMode {
+    /// Perspective projection with field of view
+    Perspective = 0,
+    /// Orthographic projection with fixed size
+    Orthographic = 1,
+}
+
+impl From<PyProjectionMode> for crate::ProjectionMode {
+    fn from(mode: PyProjectionMode) -> Self {
+        match mode {
+            PyProjectionMode::Perspective => crate::ProjectionMode::Perspective,
+            PyProjectionMode::Orthographic => crate::ProjectionMode::Orthographic,
+        }
+    }
+}
+
+impl From<crate::ProjectionMode> for PyProjectionMode {
+    fn from(mode: crate::ProjectionMode) -> Self {
+        match mode {
+            crate::ProjectionMode::Perspective => PyProjectionMode::Perspective,
+            crate::ProjectionMode::Orthographic => PyProjectionMode::Orthographic,
+        }
+    }
+}
+
 /// Python wrapper for the Viewer (combines window, renderer, camera, scene)
 #[pyclass(name = "Viewer")]
 pub struct PyViewer {
@@ -304,9 +332,19 @@ impl PyViewer {
         self.camera.target = glam::Vec3::new(x, y, z);
     }
 
+    /// Set camera up vector
+    fn set_camera_up(&mut self, x: f32, y: f32, z: f32) {
+        self.camera.up = glam::Vec3::new(x, y, z);
+    }
+
     /// Orbit the camera
     fn orbit_camera(&mut self, delta_x: f32, delta_y: f32) {
         self.camera.orbit(delta_x, delta_y);
+    }
+
+    /// Pan the camera (move in view plane)
+    fn pan_camera(&mut self, delta_x: f32, delta_y: f32) {
+        self.camera.pan(delta_x, delta_y);
     }
 
     /// Zoom the camera
@@ -318,6 +356,31 @@ impl PyViewer {
     fn set_camera_clip_planes(&mut self, near: f32, far: f32) {
         self.camera.near = near;
         self.camera.far = far;
+    }
+
+    /// Set camera projection mode
+    fn set_camera_projection_mode(&mut self, mode: PyProjectionMode) {
+        self.camera.set_projection_mode(mode.into());
+    }
+
+    /// Get camera projection mode
+    fn get_camera_projection_mode(&self) -> PyProjectionMode {
+        self.camera.projection_mode().into()
+    }
+
+    /// Set orthographic camera height
+    fn set_camera_ortho_height(&mut self, height: f32) {
+        self.camera.set_ortho_height(height);
+    }
+
+    /// Get orthographic camera height
+    fn get_camera_ortho_height(&self) -> f32 {
+        self.camera.ortho_height()
+    }
+
+    /// Get the current distance from camera position to target
+    fn get_camera_distance(&self) -> f32 {
+        (self.camera.position - self.camera.target).length()
     }
 
     /// Get the number of visuals in the scene
@@ -348,6 +411,8 @@ impl PyViewer {
             viewport_width: self.width,
             viewport_height: self.height,
             frustum: self.camera.frustum_planes(),
+            projection_mode: self.camera.projection_mode,
+            ortho_height: self.camera.ortho_height,
         };
 
         self.scene.prepare(renderer.device(), renderer.queue(), &camera_info);
@@ -538,6 +603,8 @@ impl PyViewer {
                                 viewport_width,
                                 viewport_height,
                                 frustum: self.camera.frustum_planes(),
+                                projection_mode: self.camera.projection_mode,
+                                ortho_height: self.camera.ortho_height,
                             };
 
                             self.scene.prepare(renderer.device(), renderer.queue(), &camera_info);
@@ -1237,5 +1304,6 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCustomVisual>()?;
     m.add_class::<PyVertexBufferLayout>()?;
     m.add_class::<PyChunkStatus>()?;
+    m.add_class::<PyProjectionMode>()?;
     Ok(())
 }

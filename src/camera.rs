@@ -8,7 +8,16 @@
 
 use glam::{Mat4, Vec3, Vec4};
 
-/// A perspective camera for 3D visualization with orbit controls.
+/// Projection mode for the camera
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProjectionMode {
+    /// Perspective projection with field of view
+    Perspective,
+    /// Orthographic projection with fixed size
+    Orthographic,
+}
+
+/// A camera for 3D visualization with orbit controls.
 ///
 /// The camera uses a target-based system where the camera orbits around a fixed
 /// point in space (the target). This is ideal for inspecting 3D objects and volumes.
@@ -45,6 +54,8 @@ pub struct Camera {
     pub aspect_ratio: f32,
     pub near: f32,
     pub far: f32,
+    pub projection_mode: ProjectionMode,
+    pub ortho_height: f32,
 }
 
 impl Camera {
@@ -57,6 +68,8 @@ impl Camera {
             aspect_ratio,
             near: 0.1,
             far: 100.0,
+            projection_mode: ProjectionMode::Perspective,
+            ortho_height: 2.0,
         }
     }
 
@@ -65,7 +78,23 @@ impl Camera {
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, self.aspect_ratio, self.near, self.far)
+        match self.projection_mode {
+            ProjectionMode::Perspective => {
+                Mat4::perspective_rh(self.fov_y, self.aspect_ratio, self.near, self.far)
+            }
+            ProjectionMode::Orthographic => {
+                let half_height = self.ortho_height / 2.0;
+                let half_width = half_height * self.aspect_ratio;
+                Mat4::orthographic_rh(
+                    -half_width,
+                    half_width,
+                    -half_height,
+                    half_height,
+                    self.near,
+                    self.far,
+                )
+            }
+        }
     }
 
     pub fn view_projection_matrix(&self) -> Mat4 {
@@ -97,19 +126,63 @@ impl Camera {
         self.position = self.target + Vec3::new(x, y, z);
     }
 
-    /// Zoom by moving camera closer/farther from target
+    /// Pan the camera (move both position and target in the view plane)
+    pub fn pan(&mut self, delta_x: f32, delta_y: f32) {
+        // Get camera's right and up vectors
+        let forward = (self.target - self.position).normalize();
+        let right = forward.cross(self.up).normalize();
+        let up = right.cross(forward).normalize();
+
+        // Move both position and target
+        let offset = right * delta_x + up * delta_y;
+        self.position += offset;
+        self.target += offset;
+    }
+
+    /// Zoom by moving camera closer/farther from target (perspective)
+    /// or adjusting ortho height (orthographic)
     /// Uses exponential scaling for smooth, consistent zoom at all distances
     pub fn zoom(&mut self, delta: f32) {
-        let direction = (self.position - self.target).normalize();
-        let distance = (self.position - self.target).length();
+        match self.projection_mode {
+            ProjectionMode::Perspective => {
+                let direction = (self.position - self.target).normalize();
+                let distance = (self.position - self.target).length();
 
-        // Exponential zoom: each delta unit multiplies distance by a factor
-        // Very small factor for smooth, fine control
-        let zoom_sensitivity = 0.01_f32; // 1% change per unit
-        let scale = (1.0_f32 + zoom_sensitivity).powf(delta);
-        let new_distance = (distance * scale).max(0.1);
+                // Exponential zoom: each delta unit multiplies distance by a factor
+                // Very small factor for smooth, fine control
+                let zoom_sensitivity = 0.001_f32; // 0.1% change per unit
+                let scale = (1.0_f32 + zoom_sensitivity).powf(delta);
+                let new_distance = (distance * scale).max(distance * 1e-4);
 
-        self.position = self.target + direction * new_distance;
+                self.position = self.target + direction * new_distance;
+            }
+            ProjectionMode::Orthographic => {
+                // For orthographic, zoom by adjusting the view height
+                let zoom_sensitivity = 0.001_f32; // 0.1% change per unit
+                let scale = (1.0_f32 + zoom_sensitivity).powf(delta);
+                self.ortho_height = (self.ortho_height * scale).max(0.001);
+            }
+        }
+    }
+
+    /// Set the projection mode
+    pub fn set_projection_mode(&mut self, mode: ProjectionMode) {
+        self.projection_mode = mode;
+    }
+
+    /// Get the current projection mode
+    pub fn projection_mode(&self) -> ProjectionMode {
+        self.projection_mode
+    }
+
+    /// Set the orthographic view height
+    pub fn set_ortho_height(&mut self, height: f32) {
+        self.ortho_height = height.max(0.001);
+    }
+
+    /// Get the orthographic view height
+    pub fn ortho_height(&self) -> f32 {
+        self.ortho_height
     }
 }
 

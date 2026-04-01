@@ -117,7 +117,7 @@ pub mod python;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-pub use camera::{Camera, FrustumPlanes};
+pub use camera::{Camera, FrustumPlanes, ProjectionMode};
 pub use renderer::{CameraUniforms, Renderer};
 pub use scene::Scene;
 pub use spatial::VolumeGrid;

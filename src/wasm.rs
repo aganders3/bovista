@@ -15,6 +15,35 @@ pub enum JsChunkStatus {
     /// The chunk request was rejected (e.g., at capacity)
     Rejected = 2,
 }
+
+/// Camera projection mode
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsProjectionMode {
+    /// Perspective projection with field of view
+    Perspective = 0,
+    /// Orthographic projection with fixed size
+    Orthographic = 1,
+}
+
+impl From<JsProjectionMode> for crate::ProjectionMode {
+    fn from(mode: JsProjectionMode) -> Self {
+        match mode {
+            JsProjectionMode::Perspective => crate::ProjectionMode::Perspective,
+            JsProjectionMode::Orthographic => crate::ProjectionMode::Orthographic,
+        }
+    }
+}
+
+impl From<crate::ProjectionMode> for JsProjectionMode {
+    fn from(mode: crate::ProjectionMode) -> Self {
+        match mode {
+            crate::ProjectionMode::Perspective => JsProjectionMode::Perspective,
+            crate::ProjectionMode::Orthographic => JsProjectionMode::Orthographic,
+        }
+    }
+}
+
 use std::rc::Rc;
 use std::cell::RefCell;
 use js_sys::{Uint8Array, Function, Array};
@@ -145,6 +174,8 @@ impl JsViewer {
             viewport_width: self.config.width,
             viewport_height: self.config.height,
             frustum: self.camera.frustum_planes(),
+            projection_mode: self.camera.projection_mode,
+            ortho_height: self.camera.ortho_height,
         };
         self.scene.prepare(self.renderer.device(), self.renderer.queue(), &camera_info);
 
@@ -210,11 +241,41 @@ impl JsViewer {
         self.camera.target = glam::Vec3::new(x, y, z);
     }
 
+    /// Set camera up vector
+    #[wasm_bindgen(js_name = setCameraUp)]
+    pub fn set_camera_up(&mut self, x: f32, y: f32, z: f32) {
+        self.camera.up = glam::Vec3::new(x, y, z);
+    }
+
     /// Set camera near and far clip planes
     #[wasm_bindgen(js_name = setCameraClipPlanes)]
     pub fn set_camera_clip_planes(&mut self, near: f32, far: f32) {
         self.camera.near = near;
         self.camera.far = far;
+    }
+
+    /// Set camera projection mode
+    #[wasm_bindgen(js_name = setCameraProjectionMode)]
+    pub fn set_camera_projection_mode(&mut self, mode: JsProjectionMode) {
+        self.camera.set_projection_mode(mode.into());
+    }
+
+    /// Get camera projection mode
+    #[wasm_bindgen(js_name = getCameraProjectionMode)]
+    pub fn get_camera_projection_mode(&self) -> JsProjectionMode {
+        self.camera.projection_mode().into()
+    }
+
+    /// Set orthographic camera height
+    #[wasm_bindgen(js_name = setCameraOrthoHeight)]
+    pub fn set_camera_ortho_height(&mut self, height: f32) {
+        self.camera.set_ortho_height(height);
+    }
+
+    /// Get orthographic camera height
+    #[wasm_bindgen(js_name = getCameraOrthoHeight)]
+    pub fn get_camera_ortho_height(&self) -> f32 {
+        self.camera.ortho_height()
     }
 
     /// Orbit camera
@@ -223,10 +284,22 @@ impl JsViewer {
         self.camera.orbit(delta_x, delta_y);
     }
 
+    /// Pan camera (move in view plane)
+    #[wasm_bindgen(js_name = panCamera)]
+    pub fn pan_camera(&mut self, delta_x: f32, delta_y: f32) {
+        self.camera.pan(delta_x, delta_y);
+    }
+
     /// Zoom camera
     #[wasm_bindgen(js_name = zoomCamera)]
     pub fn zoom_camera(&mut self, delta: f32) {
         self.camera.zoom(delta);
+    }
+
+    /// Get the current distance from camera position to target
+    #[wasm_bindgen(js_name = getCameraDistance)]
+    pub fn get_camera_distance(&self) -> f32 {
+        (self.camera.position - self.camera.target).length()
     }
 
     /// Get visual count
