@@ -245,6 +245,81 @@ impl TileVertex {
     }
 }
 
+// ── VT uniform types ─────────────────────────────────────────────────────────
+
+pub const VT_MAX_LODS: usize = 8;
+
+/// Per-LOD data in the VT uniforms block.
+/// Layout must match `VTLodInfo` in `virtual_tile.wgsl`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct VTLodInfo {
+    /// Number of tiles in (x, y, z) at this LOD (ceil).
+    pub grid_dims: [u32; 3],
+    pub _pad: u32,
+    /// tile_size / volume_size per axis (x, y, z).
+    /// Used for exact sub-tile UV computation independent of grid rounding.
+    pub tile_scale: [f32; 3],
+    pub _pad2: f32,
+    /// Fraction of the atlas slot actually filled with data for this LOD.
+    /// = lod_tile_size / atlas_slot_size (element-wise).
+    /// Coarser LODs have fewer voxels per chunk; multiplying within_tile by
+    /// data_scale restricts sampling to the populated region of the slot.
+    pub data_scale: [f32; 3],
+    pub _pad3: f32,
+}
+
+/// Uniform block for the VT pipeline.
+/// Layout must match `VTUniforms` in `virtual_tile.wgsl`.
+///
+/// Slot linearisation (cols-major, then rows, then layers):
+///   col   = slot % atlas_cols
+///   row   = (slot / atlas_cols) % atlas_rows
+///   layer = slot / (atlas_cols * atlas_rows)
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct VTUniforms {
+    pub atlas_cols: u32,
+    pub atlas_rows: u32,
+    /// UV advance per tile: 1/atlas_cols, 1/atlas_rows, 1/atlas_layers.
+    pub atlas_tile_pitch_x: f32,
+    pub atlas_tile_pitch_y: f32,
+    pub atlas_tile_pitch_z: f32,
+    pub lod_count: u32,
+    pub contrast_min: f32,
+    pub contrast_max: f32,
+    /// Non-zero enables debug LOD tinting (green=LOD0, red=coarsest).
+    pub debug_mode: u32,
+    /// Width of the page table texture (for linear→2D index mapping in the shader).
+    pub page_table_width: u32,
+    /// CPU-computed ideal LOD for this frame (accounts for lod_bias and camera distance).
+    /// The shader starts its page-table walk here rather than at LOD 0.
+    pub target_lod: u32,
+    pub _pad_c: u32,
+    // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
+    pub lods: [VTLodInfo; VT_MAX_LODS],
+}
+
+impl Default for VTUniforms {
+    fn default() -> Self {
+        Self {
+            atlas_cols: 1,
+            atlas_rows: 1,
+            atlas_tile_pitch_x: 1.0,
+            atlas_tile_pitch_y: 1.0,
+            atlas_tile_pitch_z: 1.0,
+            lod_count: 1,
+            contrast_min: 0.0,
+            contrast_max: 1.0,
+            debug_mode: 0,
+            page_table_width: 1,
+            target_lod: 0,
+            _pad_c: 0,
+            lods: [VTLodInfo { grid_dims: [1, 1, 1], _pad: 0, tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0, data_scale: [1.0, 1.0, 1.0], _pad3: 0.0 }; VT_MAX_LODS],
+        }
+    }
+}
+
 /// Shared uniforms for tile rendering
 ///
 /// These uniforms are used by both simple and tiled strategies.

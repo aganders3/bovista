@@ -304,6 +304,10 @@ class MainWindow(QMainWindow):
         self.lod_label = QLabel("0.0")
         controls.addWidget(self.lod_label)
         controls.addStretch()
+        self.debug_button = QPushButton("Debug LOD: Off")
+        self.debug_button.setCheckable(True)
+        self.debug_button.clicked.connect(self.toggle_debug_mode)
+        controls.addWidget(self.debug_button)
         self.projection_button = QPushButton("Switch to Orthographic")
         self.projection_button.clicked.connect(self.toggle_projection)
         controls.addWidget(self.projection_button)
@@ -487,10 +491,9 @@ class MainWindow(QMainWindow):
                     if not future.cancelled() and image:
                         data = future.result()
                         if data is not None:
-                            if data.dtype == np.uint16:
-                                image.set_chunk_data_u16(lod, z, y, x, data)
-                            else:
-                                image.set_chunk_data(lod, z, y, x, data)
+                            if data.dtype == np.uint8:
+                                data = (data.astype(np.uint16) * 257)  # 0-255 → 0-65535
+                            image.set_chunk_data_u16(lod, z, y, x, data)
 
                 def request(lod, z, y, x):
                     nonlocal pending
@@ -519,8 +522,8 @@ class MainWindow(QMainWindow):
 
             # Setup scene
             def setup_scene(viewer):
-                # Create TiledImage
-                image = bv.TiledImage(viewer, lod_levels, 500, loader)
+                # Create VirtualTiledImage (single draw call, shader-side LOD fallback)
+                image = bv.VirtualTiledImage(viewer, lod_levels, 500, loader)
                 loader.set_image(image)  # Close the closure loop
 
                 # Calculate world space
@@ -574,13 +577,19 @@ class MainWindow(QMainWindow):
             self.lod_label.setText(f"{bias:.1f}")
             self.image.set_lod_bias(bias)
 
+    def toggle_debug_mode(self):
+        enabled = self.debug_button.isChecked()
+        self.debug_button.setText(f"Debug LOD: {'On' if enabled else 'Off'}")
+        if self.image:
+            self.image.set_debug_mode(enabled)
+
     def toggle_projection(self):
         current_mode = self.viewer_widget.viewer.get_camera_projection_mode()
         if current_mode == bv.ProjectionMode.Perspective:
             # Switch to orthographic
             self.viewer_widget.viewer.set_camera_projection_mode(bv.ProjectionMode.Orthographic)
             # Set ortho height based on volume size
-            self.viewer_widget.viewer.set_camera_ortho_height(self.volume_scale * 0.5)
+            self.viewer_widget.viewer.set_camera_ortho_height(self.viewer_widget.volume_scale * 0.5)
             # Align camera to slice plane
             self.viewer_widget._update_slice_plane()
             self.projection_button.setText("Switch to Perspective")

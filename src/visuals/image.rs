@@ -1,6 +1,10 @@
+// Force recompilation when any shader file changes.
+const _SHADER_HASH: &str = env!("SHADER_HASH");
+
 use crate::visual::{Transform, Visual};
-use crate::visuals::image_strategy::{ImageStrategy, SimpleData, TiledData};
-use crate::visuals::tile::{TileUniforms, TileVertex};
+use crate::visuals::image_strategy::{ImageStrategy, SimpleData, TiledData, VirtualTextureData};
+use crate::visuals::tile::{TileUniforms, TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
+use crate::visuals::image_strategy::LodLevelConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::RenderPass;
@@ -66,7 +70,7 @@ pub enum SliceOrientation {
 pub struct ImageVisual {
     strategy: ImageStrategy,
 
-    // Shared resources for tile rendering
+    // Shared resources for tile rendering (Simple / Tiled strategies)
     bind_group_layout: wgpu::BindGroupLayout,
     render_pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
@@ -77,10 +81,20 @@ pub struct ImageVisual {
     // Uniform buffers (one per tile, created on demand)
     uniform_buffer_cache: HashMap<usize, wgpu::Buffer>,
 
-    // Colormap LUT (group 2) — 256-entry 1D RGBA texture
+    // Colormap LUT (group 2) — 256-entry 1D RGBA texture (shared across strategies)
     colormap_texture: wgpu::Texture,
     colormap_bind_group: wgpu::BindGroup,
+    #[allow(dead_code)]
+    colormap_bind_group_layout: wgpu::BindGroupLayout,
     pending_colormap: Option<Vec<u8>>,
+
+    // Virtual-texture pipeline resources (VirtualTexture strategy only)
+    vt_render_pipeline: Option<wgpu::RenderPipeline>,
+    vt_bind_group: Option<wgpu::BindGroup>,
+    vt_uniform_buffer: Option<wgpu::Buffer>,
+    vt_vertex_buffer: Option<wgpu::Buffer>,
+    vt_index_buffer: Option<wgpu::Buffer>,
+    vt_index_count: u32,
 
     slice_plane: SlicePlane,
     contrast_limits: (f32, f32),
@@ -125,6 +139,49 @@ impl ImageVisual {
             height,
             depth,
             wgpu::TextureFormat::R8Unorm,
+        ));
+
+        Self::from_strategy(
+            device,
+            queue,
+            surface_format,
+            camera_bind_group_layout,
+            strategy,
+            width,
+            height,
+            depth,
+        )
+    }
+
+    /// Create an ImageVisual with virtual-texture multiscale rendering.
+    ///
+    /// Like `from_chunked` but renders with a single draw call via a physical atlas +
+    /// page table, with shader-side LOD fallback.  The tile format is R16Float.
+    ///
+    /// # Arguments
+    /// * `lod_levels` - Configuration for each LOD level (high-res to low-res)
+    /// * `max_tiles` - Atlas capacity (number of simultaneously resident tiles)
+    /// * `loader` - Callback invoked when a tile is needed
+    pub fn from_virtual_tiled(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        lod_levels: Vec<LodLevelConfig>,
+        max_tiles: usize,
+        loader: crate::visuals::tile::TileLoaderFn,
+    ) -> Self {
+        let (depth, height, width) = if !lod_levels.is_empty() {
+            lod_levels[0].volume_size
+        } else {
+            (1, 1, 1)
+        };
+
+        let strategy = ImageStrategy::VirtualTexture(VirtualTextureData::new(
+            device,
+            lod_levels,
+            max_tiles,
+            loader,
         ));
 
         Self::from_strategy(
@@ -252,7 +309,7 @@ impl ImageVisual {
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/tile.wgsl").into()),
         });
 
-        // Colormap LUT bind group layout (group 2)
+        // Colormap LUT bind group layout (group 2) — shared across all pipelines
         let colormap_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Colormap Bind Group Layout"),
             entries: &[
@@ -385,8 +442,154 @@ impl ImageVisual {
         // Initialize with centered slice
         let slice_plane = SlicePlane::xy((depth as f32) / 2.0);
 
-        // Auto-detect reasonable contrast limits (for now, use full range)
         let contrast_limits = (0.0, 1.0);
+
+        // ── Virtual-texture pipeline (only for VirtualTexture strategy) ──────
+        let (vt_render_pipeline, vt_bind_group, vt_uniform_buffer) =
+            if let ImageStrategy::VirtualTexture(ref vt) = strategy {
+                let vt_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("VT Bind Group Layout"),
+                    entries: &[
+                        // binding 0: physical atlas
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D3,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        // binding 1: atlas sampler
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                        // binding 2: page table (integer texture array)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Uint,
+                                view_dimension: wgpu::TextureViewDimension::D2Array,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        // binding 3: VT uniforms
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+
+                let vt_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("VT Uniform Buffer"),
+                    size: std::mem::size_of::<VTUniforms>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+
+                let vt_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("VT Bind Group"),
+                    layout: &vt_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&vt.atlas_texture_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: vt_uniform_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+
+                let vt_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("VT Shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        include_str!("../shaders/virtual_tile.wgsl").into(),
+                    ),
+                });
+
+                let vt_pipeline_layout =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("VT Pipeline Layout"),
+                        bind_group_layouts: &[
+                            camera_bind_group_layout,
+                            &vt_bgl,
+                            &colormap_bind_group_layout,
+                        ],
+                        push_constant_ranges: &[],
+                    });
+
+                let vt_pipeline =
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("VT Render Pipeline"),
+                        layout: Some(&vt_pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: &vt_shader,
+                            entry_point: Some("vs_main"),
+                            buffers: &[TileVertex::desc()],
+                            compilation_options: Default::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: &vt_shader,
+                            entry_point: Some("fs_main"),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format: surface_format,
+                                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: Default::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState {
+                            topology: wgpu::PrimitiveTopology::TriangleList,
+                            strip_index_format: None,
+                            front_face: wgpu::FrontFace::Ccw,
+                            cull_mode: None,
+                            unclipped_depth: false,
+                            polygon_mode: wgpu::PolygonMode::Fill,
+                            conservative: false,
+                        },
+                        depth_stencil: Some(wgpu::DepthStencilState {
+                            format: wgpu::TextureFormat::Depth24PlusStencil8,
+                            depth_write_enabled: true,
+                            depth_compare: wgpu::CompareFunction::LessEqual,
+                            stencil: wgpu::StencilState::default(),
+                            bias: wgpu::DepthBiasState::default(),
+                        }),
+                        multisample: wgpu::MultisampleState {
+                            count: 1,
+                            mask: !0,
+                            alpha_to_coverage_enabled: false,
+                        },
+                        multiview: None,
+                        cache: None,
+                    });
+
+                (Some(vt_pipeline), Some(vt_bind_group), Some(vt_uniform_buffer))
+            } else {
+                (None, None, None)
+            };
 
         Self {
             strategy,
@@ -397,7 +600,14 @@ impl ImageVisual {
             uniform_buffer_cache: HashMap::new(),
             colormap_texture,
             colormap_bind_group,
+            colormap_bind_group_layout,
             pending_colormap: None,
+            vt_render_pipeline,
+            vt_bind_group,
+            vt_uniform_buffer,
+            vt_vertex_buffer: None,
+            vt_index_buffer: None,
+            vt_index_count: 0,
             slice_plane,
             contrast_limits,
             debug_mode: false,
@@ -531,7 +741,100 @@ impl Visual for ImageVisual {
             camera_info,
         );
 
-        // Get dimensions and extract values to avoid borrow issues
+        // ── Virtual-texture path: update uniforms and slice geometry ──────────
+        if let ImageStrategy::VirtualTexture(ref vt) = self.strategy {
+            // Update VT uniform buffer.
+            if let Some(ref ub) = self.vt_uniform_buffer {
+                let mut lods = [VTLodInfo {
+                    grid_dims: [1, 1, 1], _pad: 0,
+                    tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
+                    data_scale: [1.0, 1.0, 1.0], _pad3: 0.0,
+                }; VT_MAX_LODS];
+                // Atlas slot size is fixed at LOD 0's tile dimensions.
+                let (atlas_tile_d, atlas_tile_h, atlas_tile_w) = vt.levels[0].tile_size;
+                for (i, level) in vt.levels.iter().take(VT_MAX_LODS).enumerate() {
+                    let (gz, gy, gx) = level.grid_size();
+                    let (vol_z, vol_y, vol_x) = level.volume_size;
+                    let (tile_d, tile_h, tile_w) = level.tile_size;
+                    lods[i] = VTLodInfo {
+                        grid_dims: [gx, gy, gz],
+                        _pad: 0,
+                        tile_scale: [
+                            tile_w as f32 / vol_x as f32,
+                            tile_h as f32 / vol_y as f32,
+                            tile_d as f32 / vol_z as f32,
+                        ],
+                        _pad2: 0.0,
+                        data_scale: [
+                            tile_w as f32 / atlas_tile_w as f32,
+                            tile_h as f32 / atlas_tile_h as f32,
+                            tile_d as f32 / atlas_tile_d as f32,
+                        ],
+                        _pad3: 0.0,
+                    };
+                }
+                let uniforms = VTUniforms {
+                    atlas_cols: vt.atlas_cols,
+                    atlas_rows: vt.atlas_rows,
+                    atlas_tile_pitch_x: 1.0 / vt.atlas_cols as f32,
+                    atlas_tile_pitch_y: 1.0 / vt.atlas_rows as f32,
+                    atlas_tile_pitch_z: 1.0 / vt.atlas_layers as f32,
+                    lod_count: vt.levels.len().min(VT_MAX_LODS) as u32,
+                    contrast_min: self.contrast_limits.0,
+                    contrast_max: self.contrast_limits.1,
+                    debug_mode: self.debug_mode as u32,
+                    page_table_width: vt.page_table.width,
+                    target_lod: vt.cached_ideal_lod as u32,
+                    _pad_c: 0,
+                    lods,
+                };
+                queue.write_buffer(ub, 0, bytemuck::cast_slice(&[uniforms]));
+            }
+
+            // Rebuild slice-plane intersection geometry for the full volume.
+            let lod0 = &vt.levels[0];
+            let vol_min = glam::Vec3::new(
+                lod0.translation.2,
+                lod0.translation.1,
+                lod0.translation.0,
+            );
+            let vol_max = vol_min + glam::Vec3::new(
+                lod0.volume_size.2 as f32 * lod0.voxel_size.2,
+                lod0.volume_size.1 as f32 * lod0.voxel_size.1,
+                lod0.volume_size.0 as f32 * lod0.voxel_size.0,
+            );
+            let vol_aabb = crate::visuals::tile::AABB::new(vol_min, vol_max);
+            let tile_plane = crate::visuals::tile::SlicePlane {
+                position: self.slice_plane.position,
+                normal: self.slice_plane.normal,
+            };
+
+            if let Some((vertices, indices)) =
+                crate::visuals::tile::compute_plane_aabb_intersection(&tile_plane, &vol_aabb)
+            {
+                use wgpu::util::DeviceExt;
+                self.vt_vertex_buffer =
+                    Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("VT Vertex Buffer"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }));
+                self.vt_index_buffer =
+                    Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("VT Index Buffer"),
+                        contents: bytemuck::cast_slice(&indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    }));
+                self.vt_index_count = indices.len() as u32;
+            } else {
+                self.vt_vertex_buffer = None;
+                self.vt_index_buffer = None;
+                self.vt_index_count = 0;
+            }
+            return; // VT prepare is done; skip the per-tile bind-group path below.
+        }
+
+        // ── Tiled / Simple path: per-tile bind groups ────────────────────────
         let dims = self.strategy.dimensions();
         let contrast_min = self.contrast_limits.0;
         let contrast_max = self.contrast_limits.1;
@@ -539,7 +842,6 @@ impl Visual for ImageVisual {
         let plane_position = self.slice_plane.position;
         let plane_normal = self.slice_plane.normal;
 
-        // Collect tile information (to avoid holding immutable borrow of self.strategy)
         let tile_info: Vec<_> = self.strategy.tiles().iter()
             .map(|tile| (tile.debug_color.unwrap_or([1.0, 1.0, 1.0]), Arc::clone(&tile.texture), Arc::clone(&tile.texture_view)))
             .collect();
@@ -559,10 +861,8 @@ impl Visual for ImageVisual {
 
         // Second pass: update uniforms and create bind groups
         for (idx, (debug_color, texture, texture_view)) in tile_info.iter().enumerate() {
-            // Get uniform buffer (we know it exists from first pass)
             let uniform_buffer = self.uniform_buffer_cache.get(&idx).unwrap();
 
-            // Create uniforms for this tile
             let uniforms = TileUniforms {
                 contrast_min,
                 contrast_max,
@@ -572,7 +872,7 @@ impl Visual for ImageVisual {
                 _padding2: 0.0,
                 plane_normal,
                 _padding3: 0.0,
-                volume_size: [dims.2 as f32, dims.1 as f32, dims.0 as f32], // ZYX order
+                volume_size: [dims.2 as f32, dims.1 as f32, dims.0 as f32],
                 _padding4: 0.0,
                 debug_color: *debug_color,
                 _padding5: 0.0,
@@ -580,8 +880,6 @@ impl Visual for ImageVisual {
 
             queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
-            // Always recreate bind group to avoid stale cache entries when textures are reused
-            // (Arc may reuse same memory address after tile eviction)
             let texture_ptr = Arc::as_ptr(texture) as usize;
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Tile Bind Group"),
@@ -607,9 +905,31 @@ impl Visual for ImageVisual {
 
     fn render(&self, render_pass: &mut RenderPass) {
         if !self.strategy.is_ready() {
-            return; // Don't render if data isn't loaded yet
+            return;
         }
 
+        // ── Virtual-texture path: single draw call ────────────────────────────
+        if matches!(self.strategy, ImageStrategy::VirtualTexture(_)) {
+            if let (Some(pipeline), Some(bg), Some(vb), Some(ib)) = (
+                &self.vt_render_pipeline,
+                &self.vt_bind_group,
+                &self.vt_vertex_buffer,
+                &self.vt_index_buffer,
+            ) {
+                if self.vt_index_count == 0 {
+                    return;
+                }
+                render_pass.set_pipeline(pipeline);
+                render_pass.set_bind_group(1, bg, &[]);
+                render_pass.set_bind_group(2, &self.colormap_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, vb.slice(..));
+                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint16);
+                render_pass.draw_indexed(0..self.vt_index_count, 0, 0..1);
+            }
+            return;
+        }
+
+        // ── Tiled / Simple path ───────────────────────────────────────────────
         render_pass.set_pipeline(&self.render_pipeline);
 
         // Get ideal LOD for sorting
