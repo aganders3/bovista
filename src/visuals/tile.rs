@@ -247,7 +247,7 @@ impl TileVertex {
 
 // ── VT uniform types ─────────────────────────────────────────────────────────
 
-pub const VT_MAX_LODS: usize = 8;
+pub const VT_MAX_LODS: usize = 16;
 
 /// Per-LOD data in the VT uniforms block.
 /// Layout must match `VTLodInfo` in `virtual_tile.wgsl`.

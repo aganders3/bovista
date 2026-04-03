@@ -345,14 +345,14 @@ function createVisual() {
         );
     });
 
-    tiledImage = new wasmModule.JsVirtualTiledImageVisual(
+    tiledImage = new wasmModule.JsImageVisual(
         viewer,     // Pass the viewer instance
         jsLevels,   // Array of JsLevelMetadata
         256,        // max_chunks
         chunkLoader // JavaScript callback function
     );
 
-    viewer.addVirtualTiledImage(tiledImage);
+    viewer.addImage(tiledImage);
 
     // Reapply slice plane if volumeCenter is set
     if (volumeCenter) {
@@ -799,8 +799,6 @@ async function init() {
         // Import and initialize WASM module
         wasmModule = await import('../pkg/bovista.js');
         await wasmModule.default();
-
-        Object.setPrototypeOf(wasmModule.JsVirtualTiledImageVisual.prototype, wasmModule.JsImageVisual.prototype);
 
         console.log('✓ WASM module loaded');
 

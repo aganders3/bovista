@@ -12,7 +12,7 @@
 //   texel_x = linear_index % width
 //   texel_y = linear_index / width
 
-use crate::visuals::image_strategy::LodLevelConfig;
+use crate::visuals::virtual_texture::LodLevelConfig;
 
 pub struct PageTable {
     pub texture: wgpu::Texture,

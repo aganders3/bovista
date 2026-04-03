@@ -1,7 +1,7 @@
 // Free-list allocator for physical texture atlas slots.
 //
-// The atlas is a 3D texture laid out as a 2D grid of tile slots (cols × rows), all sharing
-// the same depth dimension (= tile_d). Each slot holds one tile's voxel data.
+// The atlas is a 3D texture laid out as a 3D grid of tile slots (cols × rows × layers).
+// Each slot holds one tile's voxel data (tile_w × tile_h × tile_d voxels).
 
 pub struct AtlasAllocator {
     free_slots: Vec<u32>,

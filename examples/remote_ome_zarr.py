@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-OME-Zarr Remote Viewer - TiledImage API Demo
+OME-Zarr Remote Viewer
 
-Demonstrates the unified TiledImage API for multi-resolution chunked image loading.
-The Python API now matches the WASM JsTiledImageVisual API, using a closure pattern
-for async chunk loading. All image methods (slice, contrast, LOD) are on the image object.
+Demonstrates multi-resolution chunked image loading with bovista.Image.
 """
 
 import sys
@@ -262,7 +260,7 @@ class ViewerWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OME-Zarr Viewer - TiledImage API")
+        self.setWindowTitle("OME-Zarr Viewer")
         self.setGeometry(100, 100, 1024, 768)
 
         # Central widget
@@ -522,8 +520,7 @@ class MainWindow(QMainWindow):
 
             # Setup scene
             def setup_scene(viewer):
-                # Create VirtualTiledImage (single draw call, shader-side LOD fallback)
-                image = bv.VirtualTiledImage(viewer, lod_levels, 500, loader)
+                image = bv.Image(viewer, lod_levels, 500, loader)
                 loader.set_image(image)  # Close the closure loop
 
                 # Calculate world space
@@ -610,9 +607,9 @@ class MainWindow(QMainWindow):
 
 def main():
     print("=" * 60)
-    print("OME-Zarr TiledImage Viewer")
+    print("OME-Zarr Viewer")
     print("=" * 60)
-    print("Demonstrates unified TiledImage API matching WASM")
+    print("Multi-resolution OME-Zarr viewer")
     print("=" * 60 + "\n")
 
     app = QApplication(sys.argv)

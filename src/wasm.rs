@@ -52,7 +52,7 @@ use web_sys::console;
 use crate::{
     bindings_common::{self, VisualRef},
     Camera, ImageVisual, Renderer, Scene, SlicePlane,
-    visuals::image_strategy::{LodLevelConfig, PendingChunks},
+    visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus, TileData, TileKey},
 };
 use bovista_codegen::visual_methods;
@@ -226,18 +226,6 @@ impl JsViewer {
     /// Add an image visual to the scene
     #[wasm_bindgen(js_name = addImage)]
     pub fn add_image(&mut self, visual: &JsImageVisual) -> usize {
-        self.scene.add(visual.get_inner())
-    }
-
-    /// Add a tiled image visual to the scene
-    #[wasm_bindgen(js_name = addTiledImage)]
-    pub fn add_tiled_image(&mut self, visual: &JsTiledImageVisual) -> usize {
-        self.scene.add(visual.get_inner())
-    }
-
-    /// Add a virtual-tiled image visual to the scene
-    #[wasm_bindgen(js_name = addVirtualTiledImage)]
-    pub fn add_virtual_tiled_image(&mut self, visual: &JsVirtualTiledImageVisual) -> usize {
         self.scene.add(visual.get_inner())
     }
 
@@ -419,366 +407,22 @@ impl JsLevelMetadata {
     }
 }
 
-/// JavaScript wrapper for simple ImageVisual (in-memory)
+
+/// JavaScript wrapper for ImageVisual — single-draw-call multiscale rendering.
+///
+/// Tile data must be provided as uint16 via `setChunkDataU16`.
 #[wasm_bindgen]
 pub struct JsImageVisual {
     inner: VisualRef,
+    pending_chunks: Option<PendingChunks>,
+    #[allow(dead_code)]
+    chunk_loader: Function,
 }
 
 #[visual_methods(ImageVisual)]
 #[wasm_bindgen]
 impl JsImageVisual {
-    /// Create an ImageVisual from a typed array
-    ///
-    /// # Arguments
-    /// * `viewer` - The JsViewer instance
-    /// * `data` - Uint8Array containing image data (depth * height * width)
-    /// * `width` - Image width
-    /// * `height` - Image height
-    /// * `depth` - Image depth
-    #[wasm_bindgen(constructor)]
-    pub fn new(
-        viewer: &JsViewer,
-        data: &Uint8Array,
-        width: u32,
-        height: u32,
-        depth: u32,
-    ) -> Self {
-        let data_vec = data.to_vec();
-        let renderer = viewer.renderer();
-        let visual = ImageVisual::new_3d(
-            renderer.device(),
-            renderer.queue(),
-            renderer.surface_format(),
-            renderer.camera_bind_group_layout(),
-            &data_vec,
-            width,
-            height,
-            depth,
-        );
-
-        Self {
-            inner: Rc::new(RefCell::new(visual)),
-        }
-    }
-
-    /// Set the slice plane position along Z axis
-    #[wasm_bindgen(js_name = setSliceZ)]
-    pub fn set_slice_z(&self, z: f32) -> Result<(), JsValue> {}
-
-    /// Set the slice plane position along Y axis
-    #[wasm_bindgen(js_name = setSliceY)]
-    pub fn set_slice_y(&self, y: f32) -> Result<(), JsValue> {}
-
-    /// Set the slice plane position along X axis
-    #[wasm_bindgen(js_name = setSliceX)]
-    pub fn set_slice_x(&self, x: f32) -> Result<(), JsValue> {}
-
-    /// Set the slice plane position and normal
-    ///
-    /// # Arguments
-    /// * `px`, `py`, `pz` - Plane position
-    /// * `nx`, `ny`, `nz` - Plane normal
-    #[wasm_bindgen(js_name = setSlicePlane)]
-    pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |img| {
-                let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
-                img.set_slice_plane(plane);
-            }
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Set contrast limits
-    ///
-    /// # Arguments
-    /// * `min` - Minimum value (0.0 to 1.0)
-    /// * `max` - Maximum value (0.0 to 1.0)
-    #[wasm_bindgen(js_name = setContrast)]
-    pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |img| img.set_contrast_limits(min, max)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Set a colormap LUT.
-    /// `rgba` should be a Uint8Array of length 1024 (256 RGBA entries, values 0-255).
-    /// Pass null or a zero-length array to reset to grayscale.
-    #[wasm_bindgen(js_name = setColormap)]
-    pub fn set_colormap(&self, rgba: &Uint8Array) -> Result<(), JsValue> {
-        let bytes = rgba.to_vec();
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |img| img.set_colormap(&bytes)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Enable or disable debug visualization
-    #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
-
-    /// Get the visual reference for adding to viewer
-    pub(crate) fn get_inner(&self) -> VisualRef {
-        self.inner.clone()
-    }
-}
-
-/// JavaScript wrapper for chunked ImageVisual (multi-LOD with async loading)
-///
-/// This class provides LOD-specific methods (setLodBias, getStats, setChunkData).
-/// Common image methods (setSliceZ, setContrast, etc.) should be inherited from
-/// JsImageVisual by setting up the prototype chain in your JavaScript wrapper:
-///
-/// ```javascript
-/// Object.setPrototypeOf(JsTiledImageVisual.prototype, JsImageVisual.prototype);
-/// ```
-///
-/// This will be handled automatically in the NPM package.
-#[wasm_bindgen]
-pub struct JsTiledImageVisual {
-    inner: VisualRef,
-    pending_chunks: Option<PendingChunks>,
-    /// Keep a reference to the JS function to prevent garbage collection
-    #[allow(dead_code)]
-    chunk_loader: Function,
-}
-
-#[wasm_bindgen]
-impl JsTiledImageVisual {
-    /// Create a chunked ImageVisual with multi-resolution LOD
-    ///
-    /// The chunk_loader function will be called with (lod, z, y, x) when chunks are needed.
-    /// It should fetch the chunk data asynchronously and then call setChunkData().
-    ///
-    /// Example JavaScript:
-    /// ```javascript
-    /// const visual = new JsTiledImageVisual(viewer, levels, 500,
-    ///     (lod, z, y, x) => {
-    ///         // Fetch chunk asynchronously
-    ///         fetchChunk(lod, z, y, x).then(data => {
-    ///             visual.setChunkData(lod, z, y, x, data, chunkWidth, chunkHeight, chunkDepth);
-    ///         });
-    ///     }
-    /// );
-    /// ```
-    ///
-    /// # Arguments
-    /// * `viewer` - The JsViewer instance
-    /// * `levels` - Array of JsLevelMetadata describing each LOD level
-    /// * `max_chunks` - Maximum number of chunks to keep in memory
-    /// * `chunk_loader` - JavaScript function called when chunks are needed: `(lod, z, y, x) => void`
-    #[wasm_bindgen(constructor)]
-    pub fn new(
-        viewer: &JsViewer,
-        levels: Vec<JsLevelMetadata>,
-        max_chunks: usize,
-        chunk_loader: Function,
-    ) -> Self {
-        // Convert JsLevelMetadata to LodLevelConfig
-        let rust_levels: Vec<LodLevelConfig> = levels
-            .iter()
-            .map(|js_level| js_level.to_lod_level_config())
-            .collect();
-
-        // Clone the chunk_loader for use in the closure
-        let chunk_loader_clone = chunk_loader.clone();
-
-        // Create the loader function that will call the JS callback
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            // Extract tile coordinates
-            let lod_level = request.lod_level.unwrap_or(0);
-            let z = request.z;
-            let y = request.y;
-            let x = request.x;
-
-            // Call the JavaScript chunk loader function
-            // Signature: chunk_loader(lod, z, y, x)
-            let this = &JsValue::NULL;
-            let args = Array::new();
-            args.push(&JsValue::from(lod_level as u32));
-            args.push(&JsValue::from(z));
-            args.push(&JsValue::from(y));
-            args.push(&JsValue::from(x));
-
-            match chunk_loader_clone.apply(this, &args) {
-                Ok(result) => {
-                    // JavaScript should return JsChunkStatus enum value
-                    if let Some(status_num) = result.as_f64() {
-                        let status_val = status_num as u32;
-                        if status_val == JsChunkStatus::Accepted as u32 {
-                            ChunkStatus::Accepted
-                        } else if status_val == JsChunkStatus::AlreadyPending as u32 {
-                            ChunkStatus::AlreadyPending
-                        } else if status_val == JsChunkStatus::Rejected as u32 {
-                            ChunkStatus::Rejected
-                        } else {
-                            console::warn_1(&JsValue::from_str(&format!(
-                                "Invalid chunk status returned: {}, treating as Rejected",
-                                status_num
-                            )));
-                            ChunkStatus::Rejected
-                        }
-                    } else {
-                        // Fallback: if no value returned, assume Accepted (backward compat)
-                        ChunkStatus::Accepted
-                    }
-                }
-                Err(err) => {
-                    console::error_2(
-                        &JsValue::from_str("Error calling chunk_loader:"),
-                        &err
-                    );
-                    ChunkStatus::Rejected
-                }
-            }
-        });
-
-        // Get renderer from viewer
-        let renderer = viewer.renderer();
-
-        // Create the visual with chunked loading
-        let visual = ImageVisual::from_chunked(
-            renderer.device(),
-            renderer.queue(),
-            renderer.surface_format(),
-            renderer.camera_bind_group_layout(),
-            rust_levels,
-            max_chunks,
-            loader_fn,
-        );
-
-        let pending_chunks = visual.pending_chunks();
-        let inner = Rc::new(RefCell::new(visual));
-
-        Self {
-            inner,
-            pending_chunks,
-            chunk_loader,
-        }
-    }
-
-    /// Provide chunk data for a requested tile
-    ///
-    /// This is called from JavaScript after the chunk has been loaded.
-    ///
-    /// # Arguments
-    /// * `lod` - LOD level (0 = highest resolution)
-    /// * `z` - Z coordinate in chunk grid
-    /// * `y` - Y coordinate in chunk grid
-    /// * `x` - X coordinate in chunk grid
-    /// * `data` - Uint8Array containing chunk data (depth * height * width)
-    /// * `width` - Chunk width
-    /// * `height` - Chunk height
-    /// * `depth` - Chunk depth
-    #[wasm_bindgen(js_name = setChunkData)]
-    pub fn set_chunk_data(
-        &self,
-        lod: usize,
-        z: u32,
-        y: u32,
-        x: u32,
-        data: &Uint8Array,
-        width: u32,
-        height: u32,
-        depth: u32,
-    ) {
-        if let Some(ref pending_chunks) = self.pending_chunks {
-            let tile_data = TileData {
-                data: data.to_vec(),
-                width,
-                height,
-                depth,
-                format: wgpu::TextureFormat::R8Unorm,
-            };
-            let key = TileKey { lod_level: lod, z, y, x };
-            pending_chunks.lock().unwrap().insert(key, tile_data);
-        }
-    }
-
-    /// Provide uint16 chunk data (stored as R16Float — no CPU normalization needed).
-    /// Values are normalized to [0.0, 1.0] as f16 to match the shader's contrast uniforms.
-    #[wasm_bindgen(js_name = setChunkDataU16)]
-    pub fn set_chunk_data_u16(
-        &self,
-        lod: usize,
-        z: u32,
-        y: u32,
-        x: u32,
-        data: &js_sys::Uint16Array,
-        width: u32,
-        height: u32,
-        depth: u32,
-    ) {
-        if let Some(ref pending_chunks) = self.pending_chunks {
-            // Convert u16 integer values to normalized f16: value / 65535.0
-            // R16Unorm has no WebGPU equivalent, so we use R16Float instead.
-            let bytes: Vec<u8> = data.to_vec().iter()
-                .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
-                .collect();
-            let tile_data = TileData {
-                data: bytes,
-                width,
-                height,
-                depth,
-                format: wgpu::TextureFormat::R16Float,
-            };
-            let key = TileKey { lod_level: lod, z, y, x };
-            pending_chunks.lock().unwrap().insert(key, tile_data);
-        }
-    }
-
-    // Note: Common image methods (setSliceZ, setSliceY, setSliceX, setSlicePlane, setContrast,
-    // setDebugMode) are inherited from JsImageVisual via prototype chain.
-    // In your NPM package wrapper, set up inheritance:
-    //   Object.setPrototypeOf(JsTiledImageVisual.prototype, JsImageVisual.prototype);
-
-    /// Set LOD bias for automatic LOD selection
-    ///
-    /// Negative values prefer higher resolution, positive prefer lower resolution.
-    #[wasm_bindgen(js_name = setLodBias)]
-    pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
-            &self.inner,
-            |img| img.set_lod_bias(bias)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Get statistics (loaded chunks, visible chunks)
-    ///
-    /// Returns an array [loaded, visible]
-    #[wasm_bindgen(js_name = getStats)]
-    pub fn get_stats(&self) -> Vec<usize> {
-        bindings_common::with_visual_ref::<ImageVisual, _, _>(
-            &self.inner,
-            |img| {
-                let (loaded, visible) = img.get_stats();
-                vec![loaded, visible]
-            }
-        ).unwrap_or_else(|_| vec![0, 0])
-    }
-
-    /// Get the visual reference for adding to viewer
-    pub(crate) fn get_inner(&self) -> VisualRef {
-        self.inner.clone()
-    }
-}
-
-/// JavaScript wrapper for VirtualTiledImageVisual — single-draw-call multiscale rendering.
-///
-/// Tile data must be provided as uint16 via `setChunkDataU16`.
-#[wasm_bindgen]
-pub struct JsVirtualTiledImageVisual {
-    inner: VisualRef,
-    pending_chunks: Option<PendingChunks>,
-    #[allow(dead_code)]
-    chunk_loader: Function,
-}
-
-#[wasm_bindgen]
-impl JsVirtualTiledImageVisual {
-    /// Create a VirtualTiledImage.
+    /// Create an ImageVisual.
     ///
     /// The `chunk_loader` is called with `(lod, z, y, x)` and should return a
     /// `JsChunkStatus`.  When data is ready, call `setChunkDataU16`.
@@ -789,8 +433,6 @@ impl JsVirtualTiledImageVisual {
         max_chunks: usize,
         chunk_loader: Function,
     ) -> Self {
-        use crate::visuals::image_strategy::LodLevelConfig;
-
         let rust_levels: Vec<LodLevelConfig> =
             levels.iter().map(|l| l.to_lod_level_config()).collect();
 
@@ -827,7 +469,7 @@ impl JsVirtualTiledImageVisual {
         });
 
         let renderer = viewer.renderer();
-        let visual = ImageVisual::from_virtual_tiled(
+        let visual = ImageVisual::new(
             renderer.device(),
             renderer.queue(),
             renderer.surface_format(),
@@ -841,6 +483,50 @@ impl JsVirtualTiledImageVisual {
         let inner = Rc::new(RefCell::new(visual));
 
         Self { inner, pending_chunks, chunk_loader }
+    }
+
+    /// Set the slice plane position along Z axis
+    #[wasm_bindgen(js_name = setSliceZ)]
+    pub fn set_slice_z(&self, z: f32) -> Result<(), JsValue> {}
+
+    /// Set the slice plane position along Y axis
+    #[wasm_bindgen(js_name = setSliceY)]
+    pub fn set_slice_y(&self, y: f32) -> Result<(), JsValue> {}
+
+    /// Set the slice plane position along X axis
+    #[wasm_bindgen(js_name = setSliceX)]
+    pub fn set_slice_x(&self, x: f32) -> Result<(), JsValue> {}
+
+    /// Set the slice plane position and normal
+    #[wasm_bindgen(js_name = setSlicePlane)]
+    pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| {
+                let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
+                img.set_slice_plane(plane);
+            }
+        ).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Set contrast limits (0.0 to 1.0)
+    #[wasm_bindgen(js_name = setContrast)]
+    pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| img.set_contrast_limits(min, max)
+        ).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+    /// Pass a zero-length array to reset to grayscale.
+    #[wasm_bindgen(js_name = setColormap)]
+    pub fn set_colormap(&self, rgba: &Uint8Array) -> Result<(), JsValue> {
+        let bytes = rgba.to_vec();
+        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+            &self.inner,
+            |img| img.set_colormap(&bytes)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Provide uint16 tile data (stored as R16Float).

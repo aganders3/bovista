@@ -64,7 +64,7 @@ struct VTUniforms {
     target_lod: u32,
     _pad_c: u32,
     // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
-    lods: array<VTLodInfo, 8>,
+    lods: array<VTLodInfo, 16>,
 }
 
 @group(1) @binding(3)
