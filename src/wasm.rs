@@ -105,13 +105,19 @@ impl JsViewer {
             .await
             .ok_or("Failed to find adapter")?;
 
+        let adapter_limits = adapter.limits();
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                        .using_resolution(adapter.limits()),
+                    required_limits: wgpu::Limits {
+                        // Inherit the adapter's buffer size limit so large atlas textures
+                        // and staging buffers don't hit the conservative 256 MB default.
+                        max_buffer_size: adapter_limits.max_buffer_size,
+                        ..wgpu::Limits::downlevel_webgl2_defaults()
+                            .using_resolution(adapter_limits)
+                    },
                     memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,

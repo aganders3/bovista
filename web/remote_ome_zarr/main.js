@@ -203,16 +203,18 @@ async function loadChunkAsync(lod, z, y, x, key) {
             throw new Error('Empty chunk data');
         }
 
-        // Provide to WASM — pass uint8 or uint16 directly; Rust handles R8Unorm/R16Unorm
+        // Provide to WASM — VT pipeline requires uint16; upscale uint8 if needed.
         if (tiledImage) {
-            if (data instanceof Uint8Array) {
-                tiledImage.setChunkData(lod, z, y, x, data, actualWidth, actualHeight, actualDepth);
-            } else if (data instanceof Uint16Array) {
-                tiledImage.setChunkDataU16(lod, z, y, x, data, actualWidth, actualHeight, actualDepth);
+            let u16data;
+            if (data instanceof Uint16Array) {
+                u16data = data;
             } else {
-                // Fallback: reinterpret as uint8
-                tiledImage.setChunkData(lod, z, y, x, new Uint8Array(data.buffer || data), actualWidth, actualHeight, actualDepth);
+                // Scale uint8 [0,255] → uint16 [0,65535]
+                const src = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
+                u16data = new Uint16Array(src.length);
+                for (let i = 0; i < src.length; i++) u16data[i] = src[i] * 257;
             }
+            tiledImage.setChunkDataU16(lod, z, y, x, u16data, actualWidth, actualHeight, actualDepth);
             loadedChunkCount++;
         }
 
@@ -343,14 +345,14 @@ function createVisual() {
         );
     });
 
-    tiledImage = new wasmModule.JsTiledImageVisual(
+    tiledImage = new wasmModule.JsVirtualTiledImageVisual(
         viewer,     // Pass the viewer instance
         jsLevels,   // Array of JsLevelMetadata
         256,        // max_chunks
         chunkLoader // JavaScript callback function
     );
 
-    viewer.addTiledImage(tiledImage);
+    viewer.addVirtualTiledImage(tiledImage);
 
     // Reapply slice plane if volumeCenter is set
     if (volumeCenter) {
@@ -798,7 +800,7 @@ async function init() {
         wasmModule = await import('../pkg/bovista.js');
         await wasmModule.default();
 
-        Object.setPrototypeOf(wasmModule.JsTiledImageVisual.prototype, wasmModule.JsImageVisual.prototype);
+        Object.setPrototypeOf(wasmModule.JsVirtualTiledImageVisual.prototype, wasmModule.JsImageVisual.prototype);
 
         console.log('✓ WASM module loaded');
 

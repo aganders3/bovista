@@ -1135,8 +1135,18 @@ impl VirtualTextureData {
                 continue;
             }
 
+            // Discard tiles that are no longer needed (camera moved past that LOD).
+            // Remove from requested_keys so the tile can be re-requested if it becomes
+            // visible again.
+            if !self.visible_tile_keys.contains(&key) {
+                self.requested_keys.remove(&key);
+                continue;
+            }
+
             let Some(slot) = self.atlas_allocator.alloc() else {
-                // No space yet; chunk stays dropped (will be re-requested next frame).
+                // Eviction ran before this, but visible tiles may have consumed all slots.
+                // Release the key so it can be re-requested once space frees up.
+                self.requested_keys.remove(&key);
                 continue;
             };
 
@@ -1160,19 +1170,45 @@ impl VirtualTextureData {
     }
 
     fn evict_tiles(&mut self, queue: &Queue) {
-        if self.slot_map.len() <= self.max_tiles {
+        if self.slot_map.len() < self.max_tiles {
             return;
         }
 
-        let num_to_remove = self.slot_map.len() - self.max_tiles;
+        // Evict enough to bring us back below max_tiles and open one free slot
+        // for the next arriving chunk.
+        let num_to_remove = (self.slot_map.len() + 1).saturating_sub(self.max_tiles);
+        let ideal_lod = self.cached_ideal_lod;
 
-        let mut by_age: Vec<(TileKey, u64)> = self.slot_map.keys()
+        // Phase 1: tiles not currently visible — pure LRU.
+        let mut candidates: Vec<TileKey> = self.slot_map.keys()
             .filter(|k| !self.visible_tile_keys.contains(k))
-            .map(|k| (*k, *self.lru_map.get(k).unwrap_or(&0)))
+            .copied()
             .collect();
-        by_age.sort_by_key(|(_, frame)| *frame);
+        candidates.sort_by_key(|k| *self.lru_map.get(k).unwrap_or(&0));
 
-        for (key, _) in by_age.into_iter().take(num_to_remove) {
+        // Phase 2: if still short, add visible tiles at the wrong LOD.
+        // All loaded tiles pass the `visible_tile_keys` check (update_visible_tiles
+        // inserts every resident tile that intersects the slice plane), so without this
+        // second pass the atlas would fill with stale LOD data and block new loads.
+        // Sort by distance from ideal_lod descending so the most off-target tiles go first.
+        if candidates.len() < num_to_remove {
+            let mut wrong_lod: Vec<TileKey> = self.slot_map.keys()
+                .filter(|k| self.visible_tile_keys.contains(k) && k.lod_level != ideal_lod)
+                .copied()
+                .collect();
+            wrong_lod.sort_by(|a, b| {
+                let da = a.lod_level.abs_diff(ideal_lod);
+                let db = b.lod_level.abs_diff(ideal_lod);
+                // Farthest-from-ideal first; break ties by LRU (oldest first).
+                db.cmp(&da).then_with(|| {
+                    self.lru_map.get(a).unwrap_or(&0)
+                        .cmp(self.lru_map.get(b).unwrap_or(&0))
+                })
+            });
+            candidates.extend(wrong_lod);
+        }
+
+        for key in candidates.into_iter().take(num_to_remove) {
             if let Some(slot) = self.slot_map.remove(&key) {
                 self.atlas_allocator.free(slot);
                 self.lru_map.remove(&key);
@@ -1303,29 +1339,15 @@ impl VirtualTextureData {
 
         let plane_normal = Vec3::from_array(slice_plane.normal);
         let plane_point = Vec3::from_array(slice_plane.position);
-        let min_distance = typical_tile_size * 0.5;
-        let distance_to_plane = (camera_info.position - plane_point)
-            .dot(plane_normal)
-            .abs()
-            .max(min_distance);
+        // Signed distance: positive = camera on the normal-facing side.
+        let signed_dist = (camera_info.position - plane_point).dot(plane_normal);
 
-        let center_point = camera_info.position + plane_normal * distance_to_plane;
+        // Project the camera position onto the slice plane.  The old code used
+        // `camera_pos + normal * abs(signed_dist)`, which moves *away* from the plane
+        // when the camera is on the positive-normal side, giving a wrong LOD from the front.
+        let center_point = camera_info.position - plane_normal * signed_dist;
         let ideal_lod = self.select_lod_for_tile(center_point, typical_tile_size, camera_info);
         self.cached_ideal_lod = ideal_lod;
-
-        // Include already-loaded tiles that pass visibility tests.
-        for tile_key in self.slot_map.keys() {
-            let aabb = self.compute_tile_aabb(tile_key.lod_level, (tile_key.z, tile_key.y, tile_key.x));
-            let margin = (aabb.max - aabb.min) * 0.05;
-            let expanded_min = aabb.min - margin;
-            let expanded_max = aabb.max + margin;
-            if !camera_info.frustum.contains_aabb_xy(expanded_min, expanded_max) {
-                continue;
-            }
-            if Self::plane_aabb_intersection(slice_plane, &aabb) {
-                self.visible_tile_keys.insert(*tile_key);
-            }
-        }
 
         // Hierarchical traversal from a manageable coarse LOD down to ideal_lod.
         let mut start_lod = ideal_lod;
@@ -1357,8 +1379,9 @@ impl VirtualTextureData {
             }
         }
 
-        // Add start_lod tiles as fallback coverage — shader walks LOD chain so
-        // coarser tiles must be resident for fragments whose fine tile isn't loaded yet.
+        // Add start_lod tiles as fallback coverage.  Only start_lod and ideal_lod
+        // go into visible_tile_keys — adding every intermediate LOD was inflating the
+        // visible count far above max_tiles and causing constant eviction/reload churn.
         for &(lod, tz, ty, tx) in &active_regions {
             self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
         }
@@ -1370,16 +1393,18 @@ impl VirtualTextureData {
                     next_regions.push((*parent_lod, *pz, *py, *px));
                     continue;
                 }
-                let parent_level = &self.levels[*parent_lod];
-                let child_level = &self.levels[current_lod];
-                let scale_ratio = parent_level.scale_factor / child_level.scale_factor;
-                let cpp = (scale_ratio as u32).max(1);
-                let child_grid = child_level.grid_size();
+                let parent_grid_dims = self.levels[*parent_lod].grid_size();
+                let child_grid = self.levels[current_lod].grid_size();
+                // Children-per-parent per axis: derived from grid sizes so floating-point
+                // scale_factor imprecision can't cause tiles to be silently skipped.
+                let cpp_z = ((child_grid.0 + parent_grid_dims.0 - 1) / parent_grid_dims.0).max(1);
+                let cpp_y = ((child_grid.1 + parent_grid_dims.1 - 1) / parent_grid_dims.1).max(1);
+                let cpp_x = ((child_grid.2 + parent_grid_dims.2 - 1) / parent_grid_dims.2).max(1);
 
-                for dz in 0..cpp {
-                    for dy in 0..cpp {
-                        for dx in 0..cpp {
-                            let (cz, cy, cx) = (pz * cpp + dz, py * cpp + dy, px * cpp + dx);
+                for dz in 0..cpp_z {
+                    for dy in 0..cpp_y {
+                        for dx in 0..cpp_x {
+                            let (cz, cy, cx) = (pz * cpp_z + dz, py * cpp_y + dy, px * cpp_x + dx);
                             if cz >= child_grid.0 || cy >= child_grid.1 || cx >= child_grid.2 {
                                 continue;
                             }
@@ -1396,10 +1421,14 @@ impl VirtualTextureData {
                 }
             }
             active_regions = next_regions;
-            // Add each intermediate LOD so coarser fallbacks are always requested.
-            for &(lod, tz, ty, tx) in &active_regions {
-                self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
-            }
+            // Intermediate LODs are not added to visible_tile_keys; only the final
+            // ideal_lod result below is, so the visible count stays proportional to
+            // the number of on-screen tiles rather than the sum across all LODs.
+        }
+
+        // Add the ideal_lod tiles — these are the ones we actually want to display.
+        for &(lod, tz, ty, tx) in &active_regions {
+            self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
         }
     }
 
@@ -1414,13 +1443,23 @@ impl VirtualTextureData {
     ) {
         self.frame_counter = frame_number;
 
-        self.process_pending_chunks(queue);
         self.update_visible_tiles(slice_plane, camera_info);
+
+        // Cancel in-flight requests for tiles that are no longer visible. Without this,
+        // rapidly zooming past several LODs leaves stale requests stuck as AlreadyPending
+        // and, when they eventually arrive, they'd displace tiles we actually need.
+        self.requested_keys.retain(|k| self.visible_tile_keys.contains(k) || self.slot_map.contains_key(k));
 
         // Touch LRU timestamps for visible loaded tiles.
         for key in &self.visible_tile_keys {
             self.lru_map.insert(*key, frame_number);
         }
+
+        // Evict before placing arriving chunks so there's always a free slot available.
+        self.evict_tiles(queue);
+
+        // Place any chunks that finished loading.
+        self.process_pending_chunks(queue);
 
         // Request any visible tiles that aren't loaded.
         // Sort coarsest-first so fallback LODs are resident while fine tiles stream in.
@@ -1435,7 +1474,5 @@ impl VirtualTextureData {
                 ChunkStatus::Rejected => break,
             }
         }
-
-        self.evict_tiles(queue);
     }
 }
