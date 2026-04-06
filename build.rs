@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 fn main() {
     let shaders = [
         "src/shaders/virtual_tile.wgsl",
+        "src/shaders/volume_raymarch.wgsl",
     ];
 
     // Tell cargo to re-run this script if any shader file changes.

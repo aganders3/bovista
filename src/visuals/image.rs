@@ -425,7 +425,7 @@ impl ImageVisual {
         self.debug_mode = debug;
     }
 
-    /// Set LOD bias. Negative = prefer higher resolution, positive = prefer lower.
+    /// Set LOD bias. Positive = prefer higher resolution (finer), negative = prefer lower (coarser).
     pub fn set_lod_bias(&mut self, bias: f32) {
         self.strategy.lod_bias = bias;
     }
@@ -485,9 +485,11 @@ impl Visual for ImageVisual {
                 ],
                 _pad2: 0.0,
                 data_scale: [
-                    tile_w as f32 / atlas_tile_w as f32,
-                    tile_h as f32 / atlas_tile_h as f32,
-                    tile_d as f32 / atlas_tile_d as f32,
+                    // (tile - 0.5) / atlas_tile: half-texel inset so the max
+                    // within-tile UV never crosses into the adjacent atlas slot.
+                    (tile_w as f32 - 0.5) / atlas_tile_w as f32,
+                    (tile_h as f32 - 0.5) / atlas_tile_h as f32,
+                    (tile_d as f32 - 0.5) / atlas_tile_d as f32,
                 ],
                 _pad3: 0.0,
             };

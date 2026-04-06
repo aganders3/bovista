@@ -348,7 +348,7 @@ function createVisual() {
     tiledImage = new wasmModule.JsImageVisual(
         viewer,     // Pass the viewer instance
         jsLevels,   // Array of JsLevelMetadata
-        256,        // max_chunks
+        512,        // max_chunks
         chunkLoader // JavaScript callback function
     );
 

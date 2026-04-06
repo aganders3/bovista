@@ -132,17 +132,31 @@
 
     <div class="examples">
         <div class="card">
-            <h2>OME-Zarr Viewer</h2>
-            <p>Load and visualize multiscale OME-Zarr datasets directly from remote S3 storage.</p>
+            <h2>Slice Viewer</h2>
+            <p>Load multiscale OME-Zarr datasets from remote S3 and explore them with an interactive slice plane.</p>
             <ul>
-                <li>On-demand chunk loading from S3</li>
+                <li>On-demand tile streaming from S3</li>
                 <li>Multiscale pyramid (LOD) support</li>
                 <li>Multi-channel fluorescence imaging</li>
-                <li>Interactive slice plane manipulation</li>
-                <li>Real-time contrast adjustment</li>
-                <li>Coordinate transformation support</li>
+                <li>Arbitrary slice plane: tilt, rotate, offset</li>
+                <li>Orthographic + perspective projection</li>
+                <li>Real-time window/level contrast</li>
             </ul>
             <a href="remote_ome_zarr/index.html" class="btn">Launch Demo →</a>
+        </div>
+
+        <div class="card">
+            <h2>Volume Renderer</h2>
+            <p>Direct volume rendering via GPU ray marching. Same tile-streaming backend as the slice viewer — no extra data required.</p>
+            <ul>
+                <li>Front-to-back alpha-composited ray march</li>
+                <li>Adjustable step size and density scale</li>
+                <li>Same virtual-texture tile cache as slice viewer</li>
+                <li>Multiscale LOD streaming from remote S3</li>
+                <li>Real-time window/level contrast</li>
+                <li>Debug LOD tinting</li>
+            </ul>
+            <a href="volume_ome_zarr/index.html" class="btn">Launch Demo →</a>
         </div>
     </div>
 

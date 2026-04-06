@@ -320,6 +320,47 @@ impl Default for VTUniforms {
     }
 }
 
+/// Vertex for volume rendering — just world-space position.
+/// The fragment shader derives volume UVs from the world position and AABB bounds.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct VolumeVertex {
+    pub position: [f32; 3],
+}
+
+impl VolumeVertex {
+    pub const ATTRIBS: [wgpu::VertexAttribute; 1] =
+        wgpu::vertex_attr_array![0 => Float32x3];
+
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VolumeVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+/// Uniform block for the volume ray-marching pipeline.
+/// Layout must match `VolumeUniforms` in `volume_raymarch.wgsl`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct VolumeUniforms {
+    pub vol_min: [f32; 3],
+    /// Step size in LOD-0 voxels. At coarser LODs the advance scales up so you always sample
+    /// once per equivalent voxel. 1.0 = Nyquist at finest LOD; larger = faster but lower quality.
+    /// The shader converts this to world-space units using lod0_dims.
+    pub relative_step_size: f32,
+    pub vol_max: [f32; 3],
+    pub density_scale: f32,
+    pub camera_pos: [f32; 3],
+    pub _pad: f32,
+    /// Voxel dimensions of the full volume at LOD 0 (x, y, z).
+    pub lod0_dims: [u32; 3],
+    /// 0=normal DVR, 1=LOD tint + tile wireframe, 2=atlas direct
+    pub debug_mode: u32,
+}
+
 /// Shared uniforms for tile rendering
 ///
 /// These uniforms are used by both simple and tiled strategies.

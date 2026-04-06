@@ -496,6 +496,115 @@ impl VirtualTextureData {
         }
     }
 
+    fn update_visible_tiles_volume(
+        &mut self,
+        camera_info: &crate::visual::CameraInfo,
+    ) {
+        self.visible_tile_keys.clear();
+        if self.levels.is_empty() { return; }
+
+        // Seed the stack from the coarsest (single or few tile) LOD.
+        let coarsest = self.levels.len() - 1;
+        let coarse_grid = self.levels[coarsest].grid_size();
+        let mut stack: Vec<(usize, u32, u32, u32)> = Vec::with_capacity(
+            (coarse_grid.0 * coarse_grid.1 * coarse_grid.2) as usize,
+        );
+        for tz in 0..coarse_grid.0 {
+            for ty in 0..coarse_grid.1 {
+                for tx in 0..coarse_grid.2 {
+                    stack.push((coarsest, tz, ty, tx));
+                }
+            }
+        }
+
+        // cached_ideal_lod from the volume centre — used as the shader's target_lod starting
+        // point so the page-table walk is efficient on average.
+        {
+            let lod0 = &self.levels[0];
+            let (vz, vy, vx) = lod0.volume_size;
+            let (sz, sy, sx) = lod0.voxel_size;
+            let (tz0, ty0, tx0) = lod0.translation;
+            let vol_center = Vec3::new(
+                tx0 + vx as f32 * sx * 0.5,
+                ty0 + vy as f32 * sy * 0.5,
+                tz0 + vz as f32 * sz * 0.5,
+            );
+            let typical = lod0.tile_size.2 as f32 * lod0.voxel_size.2;
+            self.cached_ideal_lod = self.select_lod_for_tile(vol_center, typical, camera_info);
+        }
+
+        // Per-tile LOD selection: refine a tile only when its ideal LOD is finer than its
+        // current LOD. Tiles close to the camera get refined; distant tiles stay coarse.
+        while let Some((lod, tz, ty, tx)) = stack.pop() {
+            let aabb = self.compute_tile_aabb(lod, (tz, ty, tx));
+
+            // Frustum cull — skip tiles the camera cannot see.
+            let margin = (aabb.max - aabb.min) * 0.05;
+            if !camera_info.frustum.contains_aabb_xy(aabb.min - margin, aabb.max + margin) {
+                continue;
+            }
+
+            if lod == 0 {
+                // Already at finest LOD — just mark it.
+                self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
+                continue;
+            }
+
+            // How fine does the camera need this tile? Use the tile's own centre + X-extent.
+            let tile_center = (aabb.min + aabb.max) * 0.5;
+            let tile_size   = aabb.max.x - aabb.min.x;
+            let ideal_for_tile = self.select_lod_for_tile(tile_center, tile_size, camera_info);
+
+            if lod <= ideal_for_tile {
+                // Current LOD is fine enough (camera is far away enough) — use this tile.
+                self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
+            } else {
+                // Need finer data — push children of the next finer LOD.
+                let child_lod    = lod - 1;
+                let parent_grid  = self.levels[lod].grid_size();
+                let child_grid   = self.levels[child_lod].grid_size();
+                let cpp_z = ((child_grid.0 + parent_grid.0 - 1) / parent_grid.0).max(1);
+                let cpp_y = ((child_grid.1 + parent_grid.1 - 1) / parent_grid.1).max(1);
+                let cpp_x = ((child_grid.2 + parent_grid.2 - 1) / parent_grid.2).max(1);
+                for dz in 0..cpp_z {
+                    for dy in 0..cpp_y {
+                        for dx in 0..cpp_x {
+                            let (cz, cy, cx) = (tz * cpp_z + dz, ty * cpp_y + dy, tx * cpp_x + dx);
+                            if cz < child_grid.0 && cy < child_grid.1 && cx < child_grid.2 {
+                                stack.push((child_lod, cz, cy, cx));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn prepare_volume(
+        &mut self,
+        queue: &Queue,
+        frame_number: u64,
+        camera_info: &crate::visual::CameraInfo,
+    ) {
+        self.frame_counter = frame_number;
+        self.update_visible_tiles_volume(camera_info);
+        self.requested_keys.retain(|k| self.visible_tile_keys.contains(k) || self.slot_map.contains_key(k));
+        for key in &self.visible_tile_keys {
+            self.lru_map.insert(*key, frame_number);
+        }
+        self.evict_tiles(queue);
+        self.process_pending_chunks(queue);
+        let mut visible: Vec<TileKey> = self.visible_tile_keys.iter().copied().collect();
+        visible.sort_by_key(|k| Reverse(k.lod_level));
+        for key in visible {
+            if self.slot_map.contains_key(&key) { continue; }
+            match self.request_tile(key) {
+                ChunkStatus::Accepted | ChunkStatus::AlreadyPending => {}
+                ChunkStatus::Rejected => break,
+            }
+        }
+    }
+
     // ── Main prepare ─────────────────────────────────────────────────────────
 
     pub(crate) fn prepare(

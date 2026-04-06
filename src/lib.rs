@@ -123,6 +123,6 @@ pub use scene::Scene;
 pub use spatial::VolumeGrid;
 pub use visual::{Transform, VertexAttribute, VertexBufferLayout, VertexFormat, Visual};
 pub use visuals::{
-    CustomVisual, ImageVisual, LinesVisual, PointsVisual,
+    CustomVisual, ImageVisual, LinesVisual, PointsVisual, VolumeVisual,
     LodLevelConfig, SliceOrientation, SlicePlane,
 };

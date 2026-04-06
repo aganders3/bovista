@@ -104,7 +104,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 // Returns vec2f(raw_value, lod_f) if tile is resident, or vec2f(0, -1) if not.
 fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let grid = vt.lods[lod].grid_dims;
-    let vol_in_tiles = vol_uv / vt.lods[lod].tile_scale;
+    let vol_in_tiles = min(vol_uv / vt.lods[lod].tile_scale, vec3f(grid) - vec3f(1e-5));
     let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
     let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
     let pt_x = i32(linear % vt.page_table_width);

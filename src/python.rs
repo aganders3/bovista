@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
+    Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, VolumeVisual, Renderer, Scene, SlicePlane,
     VertexBufferLayout,
 };
 use bovista_codegen::visual_methods;
@@ -304,12 +304,15 @@ impl PyViewer {
         if let Ok(image) = visual.extract::<PyRef<PyImageVisual>>() {
             return Ok(self.scene.add(image.inner.clone()));
         }
+        if let Ok(volume) = visual.extract::<PyRef<PyVolumeVisual>>() {
+            return Ok(self.scene.add(volume.inner.clone()));
+        }
         if let Ok(custom) = visual.extract::<PyRef<PyCustomVisual>>() {
             return Ok(self.scene.add(custom.inner.clone()));
         }
 
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "Expected a visual object (Points, Lines, Image, TiledImage, or Custom)"
+            "Expected a visual object (Points, Lines, Image, Volume, or Custom)"
         ))
     }
 
@@ -992,7 +995,7 @@ impl PyImageVisual {
         Ok(())
     }
 
-    /// Set LOD bias (negative = prefer higher resolution).
+    /// Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
     fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
         bindings_common::with_visual_mut::<ImageVisual, _, _>(&self.inner, |v| {
             v.set_lod_bias(bias)
@@ -1191,6 +1194,199 @@ impl PyVertexBufferLayout {
 }
 
 
+/// Python wrapper for VolumeVisual
+#[pyclass(name = "Volume")]
+pub struct PyVolumeVisual {
+    inner: VisualRef,
+    pending_chunks: crate::visuals::virtual_texture::PendingChunks,
+}
+
+impl PyVisualWrapper for PyVolumeVisual {
+    fn get_inner(&self) -> VisualRef {
+        self.inner.clone()
+    }
+}
+
+#[visual_methods(VolumeVisual)]
+#[pymethods]
+impl PyVolumeVisual {
+    #[new]
+    #[pyo3(signature = (viewer, levels, max_tiles, loader))]
+    fn new(
+        viewer: &PyViewer,
+        levels: Vec<PyLevelMetadata>,
+        max_tiles: usize,
+        loader: PyObject,
+    ) -> PyResult<Self> {
+        let renderer = viewer.renderer.as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+
+        if levels.is_empty() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Must provide at least one LOD level",
+            ));
+        }
+
+        use crate::visuals::virtual_texture::LodLevelConfig;
+        let rust_levels: Vec<LodLevelConfig> = levels
+            .iter()
+            .map(|l| LodLevelConfig {
+                volume_size: l.volume_size,
+                tile_size: l.chunk_size,
+                voxel_size: l.voxel_size,
+                scale_factor: l.scale_factor,
+                translation: l.translation,
+            })
+            .collect();
+
+        use crate::visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus};
+        let loader_arc = Arc::new(loader);
+        let loader_clone = loader_arc.clone();
+        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
+            Python::with_gil(|py| {
+                let lod_level = request.lod_level.unwrap_or(0);
+                let result = loader_clone.bind(py).call1((lod_level, request.z, request.y, request.x));
+                match result {
+                    Ok(obj) => {
+                        if let Ok(status) = obj.extract::<PyChunkStatus>() {
+                            match status {
+                                PyChunkStatus::Accepted => ChunkStatus::Accepted,
+                                PyChunkStatus::AlreadyPending => ChunkStatus::AlreadyPending,
+                                PyChunkStatus::Rejected => ChunkStatus::Rejected,
+                            }
+                        } else {
+                            ChunkStatus::Rejected
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[Volume] Error calling loader: {}", e);
+                        ChunkStatus::Rejected
+                    }
+                }
+            })
+        });
+
+        use crate::visuals::VolumeVisual;
+        let visual = VolumeVisual::new(
+            renderer.device(),
+            renderer.queue(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            rust_levels,
+            max_tiles,
+            loader_fn,
+        );
+
+        let pending_chunks = visual.pending_chunks().unwrap();
+        let inner = Arc::new(Mutex::new(visual));
+        Ok(Self { inner, pending_chunks })
+    }
+
+    /// Set contrast limits
+    fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_contrast_limits(min, max)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Set a colormap LUT.
+    /// `rgba` should be a numpy array of shape (256, 4) with dtype uint8 (RGBA values 0-255).
+    /// Pass None or an empty array to reset to grayscale.
+    #[pyo3(signature = (rgba=None))]
+    fn set_colormap(&self, rgba: Option<PyReadonlyArray3<u8>>) -> PyResult<()> {
+        let bytes: Vec<u8> = match rgba {
+            Some(arr) => {
+                let a = arr.as_array();
+                a.iter().copied().collect()
+            }
+            None => Vec::new(),
+        };
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_colormap(&bytes)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Enable or disable debug LOD tinting + wireframes (mode 1).
+    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_debug_mode(enabled)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Enable or disable atlas-direct debug mode (mode 2).
+    fn set_atlas_debug_mode(&self, enabled: bool) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_atlas_debug_mode(enabled)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Enable step-count heatmap (mode 3): blue = few steps, red = many.
+    fn set_step_debug_mode(&self, enabled: bool) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_step_debug_mode(enabled)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Set step size in LOD-0 voxels (1.0 = Nyquist at finest LOD; coarser LODs step proportionally further).
+    fn set_relative_step_size(&self, step: f32) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_relative_step_size(step)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Set density scale (per-step opacity multiplier).
+    fn set_density_scale(&self, scale: f32) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_density_scale(scale)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Provide uint16 tile data (R16Float in the atlas).
+    fn set_chunk_data_u16(
+        &self,
+        lod_level: usize,
+        z: u32,
+        y: u32,
+        x: u32,
+        data: PyReadonlyArray3<u16>,
+    ) -> PyResult<()> {
+        use crate::visuals::tile::{TileData, TileKey};
+        let a = data.as_array();
+        let tile_data = TileData {
+            data: a.iter()
+                .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
+                .collect(),
+            width: a.shape()[2] as u32,
+            height: a.shape()[1] as u32,
+            depth: a.shape()[0] as u32,
+            format: wgpu::TextureFormat::R16Float,
+        };
+        self.pending_chunks.lock().unwrap().insert(TileKey { lod_level, z, y, x }, tile_data);
+        Ok(())
+    }
+
+    /// Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
+    fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(&self.inner, |v| {
+            v.set_lod_bias(bias)
+        })
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
+    /// Returns (loaded_tiles, visible_tiles).
+    fn get_stats(&self) -> PyResult<(usize, usize)> {
+        bindings_common::with_visual_ref::<VolumeVisual, _, _>(&self.inner, |v| v.get_stats())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+}
+
 /// Python module definition
 #[pymodule]
 fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1198,6 +1394,7 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPointsVisual>()?;
     m.add_class::<PyLinesVisual>()?;
     m.add_class::<PyImageVisual>()?;
+    m.add_class::<PyVolumeVisual>()?;
     m.add_class::<PyLevelMetadata>()?;
     m.add_class::<PyCustomVisual>()?;
     m.add_class::<PyVertexBufferLayout>()?;
