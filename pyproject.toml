@@ -31,8 +31,10 @@ dev = [
 ]
 
 [tool.uv]
-# Cache keys for automatic Rust rebuilds
+# Cache keys for automatic Rust rebuilds — include shaders so uv rebuilds on .wgsl changes too
 cache-keys = [
     {file = "Cargo.toml"},
-    {file = "src/**/*.rs"}
+    {file = "build.rs"},
+    {file = "src/**/*.rs"},
+    {file = "src/**/*.wgsl"},
 ]

@@ -100,6 +100,19 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 // ── Fragment stage ────────────────────────────────────────────────────────────
 
+// Manual linear→sRGB encoding for linear-format surfaces (Bgra8Unorm).
+// Used when the GPU does not apply the conversion automatically (srgb_encode == 1).
+fn linear_to_srgb_channel(c: f32) -> f32 {
+    if c <= 0.0031308 { return c * 12.92; }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+fn encode_srgb(c: vec4f) -> vec4f {
+    return vec4f(linear_to_srgb_channel(c.r),
+                 linear_to_srgb_channel(c.g),
+                 linear_to_srgb_channel(c.b),
+                 c.a);
+}
+
 // Sample the atlas for the given LOD and vol_uv.
 // Returns vec2f(raw_value, lod_f) if tile is resident, or vec2f(0, -1) if not.
 fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
@@ -163,6 +176,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
     let color    = textureSample(colormap, colormap_sampler, adjusted);
 
+    var out: vec4f;
     if vt.debug_mode != 0u {
         // Compute LOD tint: green (LOD 0) → yellow → red (coarsest).
         // lod_t = 0 at LOD 0, 1 at the coarsest loaded LOD.
@@ -172,8 +186,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                             clamp(2.0 - lod_t * 2.0, 0.0, 1.0),
                             select(0.0, 1.0, lod_idx < 0.0));  // blue if not found
         // Show image data through the tint: tint provides hue, image provides brightness.
-        return vec4f(tint * (0.3 + 0.7 * adjusted), 1.0);
+        out = vec4f(tint * (0.3 + 0.7 * adjusted), 1.0);
+    } else {
+        out = color;
     }
 
-    return color;
+    return encode_srgb(out);
 }

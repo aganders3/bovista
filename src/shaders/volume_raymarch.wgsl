@@ -105,6 +105,19 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+// ── sRGB encoding (for linear-format surfaces) ────────────────────────────────
+
+fn linear_to_srgb_channel(c: f32) -> f32 {
+    if c <= 0.0031308 { return c * 12.92; }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+fn encode_srgb(c: vec4f) -> vec4f {
+    return vec4f(linear_to_srgb_channel(c.r),
+                 linear_to_srgb_channel(c.g),
+                 linear_to_srgb_channel(c.b),
+                 c.a);
+}
+
 // ── Page-table sampling (mirrored from virtual_tile.wgsl) ─────────────────────
 
 fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
@@ -198,7 +211,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if vol.debug_mode == 2u {
             let raw      = textureSampleLevel(atlas, atlas_sampler, vol_uv, 0.0).r;
             let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-            let cs       = textureSampleLevel(colormap, colormap_sampler, adjusted, 0);
+            let cs       = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
             if adjusted > 0.01 {
                 let extinction = cs.a * vol.density_scale * step_size;
                 let alpha      = 1.0 - exp(-extinction);
@@ -266,7 +279,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 );
                 // Same opacity model as normal DVR → no artificial saturation.
                 if adjusted > 0.01 {
-                    let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0);
+                    let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
                     let extinction = cs.a * vol.density_scale * advance;
                     let alpha      = 1.0 - exp(-extinction);
                     accum_color += (1.0 - accum_alpha) * alpha * tint;
@@ -276,7 +289,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else {
             // ── Mode 0: normal DVR ──────────────────────────────────────────
             let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-            let cs       = textureSampleLevel(colormap, colormap_sampler, adjusted, 0);
+            let cs       = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
             // Beer-Lambert extinction: cs.a alone controls opacity (TF already encodes
             // density-dependent opacity; multiplying by adjusted would double-penalize
             // low-density regions, making the volume appear too transparent).
@@ -308,5 +321,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4f(heat, 1.0);
     }
 
-    return vec4f(accum_color, accum_alpha);
+    return encode_srgb(vec4f(accum_color, accum_alpha));
 }

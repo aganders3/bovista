@@ -224,7 +224,7 @@ impl PyViewer {
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps.formats.iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
         // Create device and queue
@@ -424,9 +424,9 @@ impl PyViewer {
 
         // Render
         let clear_color = wgpu::Color {
-            r: 0.1,
-            g: 0.1,
-            b: 0.1,
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
             a: 1.0,
         };
 
@@ -542,7 +542,7 @@ impl PyViewer {
                     let surface_caps = surface.get_capabilities(&adapter);
                     let surface_format = surface_caps.formats.iter()
                         .copied()
-                        .find(|f| f.is_srgb())
+                        .find(|f| !f.is_srgb())
                         .unwrap_or(surface_caps.formats[0]);
 
                     let config = wgpu::SurfaceConfiguration {
