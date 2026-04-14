@@ -6,5 +6,5 @@ __pycache__/
 .DS_Store
 web/pkg/
 TODO.txt
-*.md
+/*.md
 .claude/
