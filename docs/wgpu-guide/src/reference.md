@@ -1,278 +1,28 @@
-# Code Reference
+# Quick Reference
 
-Quick reference for common WGPU operations.
-
-## Buffers
-
-### Create Vertex Buffer
-
-```rust
-let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    label: Some("Vertex Buffer"),
-    contents: bytemuck::cast_slice(&vertices),
-    usage: wgpu::BufferUsages::VERTEX,
-});
-```
-
-### Create Index Buffer
-
-```rust
-let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    label: Some("Index Buffer"),
-    contents: bytemuck::cast_slice(&indices),
-    usage: wgpu::BufferUsages::INDEX,
-});
-```
-
-### Create Uniform Buffer
-
-```rust
-let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-    label: Some("Uniform Buffer"),
-    size: std::mem::size_of::<Uniforms>() as u64,
-    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    mapped_at_creation: false,
-});
-```
-
-### Update Buffer
-
-```rust
-queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&data));
-```
-
-## Textures
-
-### Create 2D Texture
-
-```rust
-let texture = device.create_texture(&wgpu::TextureDescriptor {
-    label: Some("Texture"),
-    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-    mip_level_count: 1,
-    sample_count: 1,
-    dimension: wgpu::TextureDimension::D2,
-    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-    view_formats: &[],
-});
-```
-
-### Create 3D Texture
-
-```rust
-let texture = device.create_texture(&wgpu::TextureDescriptor {
-    size: wgpu::Extent3d { width, height, depth_or_array_layers: depth },
-    dimension: wgpu::TextureDimension::D3,  // ← 3D!
-    format: wgpu::TextureFormat::R8Unorm,
-    // ... rest same as 2D
-});
-```
-
-### Upload Texture Data
-
-```rust
-queue.write_texture(
-    wgpu::ImageCopyTexture {
-        texture: &texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-    },
-    &data,
-    wgpu::ImageDataLayout {
-        offset: 0,
-        bytes_per_row: Some(width * 4),  // 4 bytes per pixel (RGBA)
-        rows_per_image: Some(height),
-    },
-    texture_size,
-);
-```
-
-### Create Sampler
-
-```rust
-let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-    address_mode_u: wgpu::AddressMode::ClampToEdge,
-    address_mode_v: wgpu::AddressMode::ClampToEdge,
-    address_mode_w: wgpu::AddressMode::ClampToEdge,
-    mag_filter: wgpu::FilterMode::Linear,
-    min_filter: wgpu::FilterMode::Linear,
-    mipmap_filter: wgpu::FilterMode::Nearest,
-    ..Default::default()
-});
-```
-
-## Bind Groups
-
-### Create Bind Group Layout
-
-```rust
-let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-    label: Some("Bind Group Layout"),
-    entries: &[
-        wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: 1,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                multisampled: false,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: 2,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-        },
-    ],
-});
-```
-
-### Create Bind Group
-
-```rust
-let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-    label: Some("Bind Group"),
-    layout: &layout,
-    entries: &[
-        wgpu::BindGroupEntry {
-            binding: 0,
-            resource: uniform_buffer.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::TextureView(&texture_view),
-        },
-        wgpu::BindGroupEntry {
-            binding: 2,
-            resource: wgpu::BindingResource::Sampler(&sampler),
-        },
-    ],
-});
-```
-
-## Pipelines
-
-### Create Render Pipeline
-
-```rust
-let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-    label: Some("Render Pipeline"),
-    layout: Some(&pipeline_layout),
-    vertex: wgpu::VertexState {
-        module: &shader,
-        entry_point: Some("vs_main"),
-        buffers: &[vertex_buffer_layout],
-        compilation_options: Default::default(),
-    },
-    fragment: Some(wgpu::FragmentState {
-        module: &shader,
-        entry_point: Some("fs_main"),
-        targets: &[Some(wgpu::ColorTargetState {
-            format: surface_format,
-            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-            write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-    }),
-    primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        front_face: wgpu::FrontFace::Ccw,
-        cull_mode: Some(wgpu::Face::Back),
-        polygon_mode: wgpu::PolygonMode::Fill,
-        ..Default::default()
-    },
-    depth_stencil: Some(wgpu::DepthStencilState {
-        format: wgpu::TextureFormat::Depth32Float,
-        depth_write_enabled: true,
-        depth_compare: wgpu::CompareFunction::Less,
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
-    }),
-    multisample: wgpu::MultisampleState::default(),
-    multiview: None,
-    cache: None,
-});
-```
-
-## Rendering
-
-### Begin Render Pass
-
-```rust
-let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-    label: Some("Render Pass"),
-    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view: &view,
-        resolve_target: None,
-        ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-        },
-    })],
-    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-        view: &depth_view,
-        depth_ops: Some(wgpu::Operations {
-            load: wgpu::LoadOp::Clear(1.0),
-            store: wgpu::StoreOp::Store,
-        }),
-        stencil_ops: None,
-    }),
-    timestamp_writes: None,
-    occlusion_query_set: None,
-});
-```
-
-### Draw Calls
-
-```rust
-// Non-indexed
-render_pass.draw(0..vertex_count, 0..1);
-
-// Indexed
-render_pass.draw_indexed(0..index_count, 0, 0..1);
-
-// Instanced
-render_pass.draw_indexed(0..index_count, 0, 0..instance_count);
-```
-
-## Bovista-Specific
-
-### File Locations
+## Source Map
 
 | Component | File |
 |-----------|------|
-| Renderer | `src/renderer.rs` |
-| Camera | `src/camera.rs` |
-| Scene | `src/scene.rs` |
-| Visual trait | `src/visual.rs` |
-| Shared binding logic | `src/bindings_common.rs` |
-| Points | `src/visuals/points.rs` |
-| Lines | `src/visuals/lines.rs` |
-| Image (slice rendering) | `src/visuals/image.rs` |
-| Volume (ray marching DVR) | `src/visuals/volume.rs` |
-| Virtual texture (atlas + page table + LOD) | `src/visuals/virtual_texture.rs` |
-| Atlas allocator | `src/visuals/atlas.rs` |
-| Page table | `src/visuals/page_table.rs` |
-| Tile types and uniforms | `src/visuals/tile.rs` |
-| Custom shaders | `src/visuals/custom.rs` |
-| Python bindings | `src/python.rs` |
-| WASM bindings | `src/wasm.rs` |
+| Renderer (device, queue, render pass) | `src/renderer.rs` |
+| Camera (orbit, pan, zoom, frustum) | `src/camera.rs` |
+| Scene (visual list, frame loop) | `src/scene.rs` |
+| `Visual` trait | `src/visual.rs` |
+| Shared Python/WASM logic | `src/bindings_common.rs` |
+| `PointsVisual` | `src/visuals/points.rs` |
+| `LinesVisual` | `src/visuals/lines.rs` |
+| `ImageVisual` (slice rendering) | `src/visuals/image.rs` |
+| `VolumeVisual` (ray marching DVR) | `src/visuals/volume.rs` |
+| `VirtualTextureData` (atlas + page table + LOD) | `src/visuals/virtual_texture.rs` |
+| `AtlasAllocator` | `src/visuals/atlas.rs` |
+| `PageTable` | `src/visuals/page_table.rs` |
+| Tile types, `TileKey`, `TileData`, uniforms | `src/visuals/tile.rs` |
+| `CustomVisual` | `src/visuals/custom.rs` |
+| Python bindings (PyO3) | `src/python.rs` |
+| WASM bindings (wasm-bindgen) | `src/wasm.rs` |
+| Proc-macro (`#[visual_methods]`, `#[camera_methods]`) | `bovista-codegen/src/lib.rs` |
 
-### Shaders
+## Shader Map
 
 | Shader | File | Purpose |
 |--------|------|---------|
@@ -281,6 +31,195 @@ render_pass.draw_indexed(0..index_count, 0, 0..instance_count);
 | Point cloud | `src/shaders/point_cloud.wgsl` | Point rendering |
 | Lines | `src/shaders/lines.wgsl` | Line rendering |
 
----
+## Python API Summary
 
-**Next**: [Further Reading →](./further-reading.md)
+```python
+import bovista as bv
+
+# Viewer
+viewer = bv.Viewer(width=800, height=600)
+viewer.initialize_with_window(handle, width, height)  # embed in Qt/Tk
+viewer.run()                                           # standalone winit window
+viewer.render_frame()
+viewer.resize(w, h)
+
+# Camera
+viewer.set_camera_position(x, y, z)
+viewer.set_camera_target(x, y, z)
+viewer.set_camera_up(x, y, z)
+viewer.orbit_camera(dx, dy)
+viewer.pan_camera(dx, dy)
+viewer.zoom_camera(delta)
+viewer.set_camera_clip_planes(near, far)
+viewer.set_camera_projection_mode(bv.ProjectionMode.Perspective)
+viewer.set_camera_projection_mode(bv.ProjectionMode.Orthographic)
+viewer.set_camera_ortho_height(h)
+viewer.get_camera_ortho_height() -> float
+viewer.get_camera_distance() -> float
+
+# Scene
+idx = viewer.add(visual)
+viewer.clear_visuals()
+viewer.visual_count() -> int
+
+# LevelMetadata  (all sizes are (depth/z, height/y, width/x))
+level = bv.LevelMetadata(
+    volume_size=(d, h, w),
+    chunk_size=(cd, ch, cw),
+    voxel_size=(vz, vy, vx),
+    scale_factor=1.0,          # 1.0 for LOD 0, 2.0 for LOD 1, 4.0 for LOD 2, ...
+    translation=(tz, ty, tx),  # optional
+)
+
+# Image (slice rendering)
+image = bv.Image(viewer, levels, max_tiles=500, loader=fn)
+image.set_slice_z(z)
+image.set_slice_y(y)
+image.set_slice_x(x)
+image.set_slice_plane(px, py, pz, nx, ny, nz)
+image.set_contrast(min, max)
+image.set_colormap(rgba_array)    # (256,4) uint8; None = grayscale
+image.set_lod_bias(bias)
+image.set_debug_mode(True)        # LOD tint
+image.get_stats() -> (loaded, visible)
+image.set_chunk_data_u16(lod, z, y, x, array)  # numpy uint16
+
+# Volume (ray marching DVR)
+volume = bv.Volume(viewer, levels, max_tiles=2000, loader=fn)
+volume.set_contrast(min, max)
+volume.set_colormap(rgba_array)
+volume.set_density_scale(scale)
+volume.set_relative_step_size(step)  # 1.0 = Nyquist
+volume.set_lod_bias(bias)
+volume.set_debug_mode(True)          # LOD tint
+volume.set_atlas_debug_mode(True)    # raw atlas
+volume.set_step_debug_mode(True)     # step count heatmap
+volume.get_stats() -> (loaded, visible)
+volume.set_chunk_data_u16(lod, z, y, x, array)
+
+# Points / Lines (static geometry)
+points = bv.Points.from_numpy(viewer, positions, colors)  # (N,1,3) float32
+lines  = bv.Lines.axis_helper(viewer, length=1.0)
+
+# ChunkStatus
+bv.ChunkStatus.Accepted
+bv.ChunkStatus.AlreadyPending
+bv.ChunkStatus.Rejected
+```
+
+## JavaScript API Summary
+
+```javascript
+import init, { JsViewer, JsImageVisual, JsVolumeVisual,
+               JsLevelMetadata, JsChunkStatus } from './pkg/bovista.js';
+await init();
+
+// Viewer
+const viewer = await JsViewer.new('canvas-id');
+viewer.renderFrame();
+viewer.resize(w, h);
+
+// Camera
+viewer.setCameraPosition(x, y, z);   viewer.setCameraTarget(x, y, z);
+viewer.setCameraUp(x, y, z);         viewer.orbitCamera(dx, dy);
+viewer.panCamera(dx, dy);            viewer.zoomCamera(delta);
+viewer.setCameraClipPlanes(near, far);
+viewer.setCameraProjectionMode(JsProjectionMode.Perspective);
+viewer.setCameraOrthoHeight(h);      viewer.getCameraOrthoHeight();
+viewer.getCameraDistance();
+
+// Scene
+viewer.addImage(image);     viewer.addVolume(volume);
+viewer.addPoints(points);   viewer.addLines(lines);
+viewer.clearScene();        viewer.visualCount();
+
+// LevelMetadata  (constructor takes individual numbers)
+const level = new JsLevelMetadata(
+    volumeW, volumeH, volumeD,
+    chunkW,  chunkH,  chunkD,
+    voxelW,  voxelH,  voxelD,
+    scaleFactor,
+    translateX, translateY, translateZ
+);
+// Getters return arrays: level.volume_size, level.chunk_size, level.voxel_size
+
+// JsImageVisual
+const image = new JsImageVisual(viewer, levels, maxTiles, chunkLoader);
+image.setSliceZ(z);  image.setSliceY(y);  image.setSliceX(x);
+image.setSlicePlane(px, py, pz, nx, ny, nz);
+image.setContrast(min, max);
+image.setColormap(uint8Array);       // 1024 bytes (256 RGBA); empty = grayscale
+image.setLodBias(bias);
+image.setDebugMode(true);
+image.getStats();                    // [loaded, visible]
+image.setChunkDataU16(lod, z, y, x, uint16Array, w, h, d);
+
+// JsVolumeVisual
+const volume = new JsVolumeVisual(viewer, levels, maxTiles, chunkLoader);
+volume.setContrast(min, max);        volume.setColormap(uint8Array);
+volume.setDensityScale(scale);       volume.setRelativeStepSize(step);
+volume.setLodBias(bias);
+volume.setDebugMode(true);           // LOD tint
+volume.setAtlasDebugMode(true);      // raw atlas
+volume.setStepDebugMode(true);       // step count heatmap
+volume.getStats();                   // [loaded, visible]
+volume.setChunkDataU16(lod, z, y, x, uint16Array, w, h, d);
+```
+
+## Loader Skeleton (Python)
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
+executor = ThreadPoolExecutor(max_workers=8)
+_pending = set()
+_lock = threading.Lock()
+
+def request_tile(lod, z, y, x):
+    key = (lod, z, y, x)
+    with _lock:
+        if key in _pending:
+            return bv.ChunkStatus.AlreadyPending
+        _pending.add(key)
+    executor.submit(_load, key)
+    return bv.ChunkStatus.Accepted
+
+def _load(key):
+    lod, z, y, x = key
+    # ... fetch data ...
+    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
+    with _lock:
+        _pending.discard(key)
+```
+
+## Loader Skeleton (JavaScript)
+
+```javascript
+const pending = new Set();
+
+function requestTile(lod, z, y, x) {
+    const key = `${lod}_${z}_${y}_${x}`;
+    if (pending.has(key)) return JsChunkStatus.AlreadyPending;
+    pending.add(key);
+    fetchZarrChunk(lod, z, y, x).then(({ data, w, h, d }) => {
+        image.setChunkDataU16(lod, z, y, x, data, w, h, d);
+        pending.delete(key);
+    }).catch(() => pending.delete(key));
+    return JsChunkStatus.Accepted;
+}
+```
+
+## VRAM Budget
+
+```
+VRAM per tile ≈ tile_depth × tile_height × tile_width × 2 bytes  (R16Float)
+e.g. 64³ tile = 524 KB;  max_tiles=2000 ≈ 1 GB
+```
+
+In the web examples:
+
+```javascript
+const tileVram = tileDepth * tileHeight * tileWidth * 2;
+const maxTiles = Math.floor((budgetBytes * 0.8) / tileVram);  // 80% headroom
+```

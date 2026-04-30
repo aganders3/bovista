@@ -113,10 +113,15 @@ src/
   python.rs                 — PyO3 bindings
   wasm.rs                   — wasm-bindgen bindings
 examples/
-  volume_ome_zarr.py        — DVR viewer (Qt, OME-Zarr)
-  remote_ome_zarr.py        — slice viewer (Qt, OME-Zarr)
-web/
-  remote_ome_zarr/          — browser slice viewer
+  slice_viewer/
+    python/                 — PyQt6 + ThreadPoolExecutor
+    web/                    — browser + WebAssembly
+    rust/                   — stub
+  volume_renderer/
+    python/                 — PyQt6 + ThreadPoolExecutor
+    web/                    — browser + WebAssembly
+    rust/                   — stub
+  pkg/                      — WASM build output (generated, not committed)
 kiln-render/                — standalone WebGPU browser DVR renderer (TypeScript)
 ```
 
@@ -169,14 +174,6 @@ viewer.add(volume)
 viewer.render_frame()
 ```
 
-## Who Should Read This Guide?
-
-- **Bovista contributors** — understand the architecture before changing it
-- **Scientists and researchers** — implement custom loaders or visual types
-- **Graphics developers** — learn modern GPU programming patterns with wgpu
-
-Prerequisites: intermediate Rust (ownership, traits, lifetimes), basic 3D graphics (matrices, render pipelines). No prior wgpu or Vulkan experience required.
-
 ---
 
-**Next**: [Overview & Design Philosophy →](./01-philosophy.md)
+**Start here**: [Python API →](./12-python.md) · [WebAssembly / Browser →](./13-wasm.md) · [Architecture →](./01-philosophy.md)

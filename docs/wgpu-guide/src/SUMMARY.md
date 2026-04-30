@@ -2,33 +2,23 @@
 
 [Introduction](./introduction.md)
 
-# Bovista Architecture
+# Using Bovista
 
-- [Overview & Design Philosophy](./01-philosophy.md)
-- [Core Components](./02-components.md)
-- [Renderer & Scene Management](./03-renderer.md)
+- [Python API](./12-python.md)
+- [WebAssembly / Browser](./13-wasm.md)
+
+# Examples
+
+- [Slice Viewer](./examples-slice-viewer.md)
+- [Volume Renderer](./examples-volume-renderer.md)
+
+# Architecture
+
+- [Design & Virtual Textures](./01-philosophy.md)
 - [Visual System](./04-visuals.md)
-
-# Volumetric Rendering
-
-- [3D Textures & Sampling](./05-3d-textures.md)
-- [Dynamic Slice Geometry](./06-dynamic-geometry.md)
-- [Chunked Rendering System](./07-chunked-rendering.md)
-- [Remote Data Loading](./08-remote-data.md)
-
-# WGPU Implementation Details
-
-- [Pipelines & Shaders](./09-pipelines-shaders.md)
-- [Bind Groups & Resources](./10-bind-groups.md)
-- [Render Loop & Command Buffers](./11-render-loop.md)
-
-# Platform Support
-
-- [Python Bindings](./12-python.md)
-- [WebAssembly & Browser](./13-wasm.md)
+- [Chunked Rendering](./07-chunked-rendering.md)
 
 # Reference
 
-- [Code Reference](./reference.md)
-- [WGPU vs OpenGL](./wgpu-vs-opengl.md)
+- [Quick Reference](./reference.md)
 - [Further Reading](./further-reading.md)

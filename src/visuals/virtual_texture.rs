@@ -24,7 +24,12 @@ pub struct LodLevelConfig {
     pub tile_size: (u32, u32, u32),
     /// Physical size of each voxel at this LOD level (Z, Y, X) in world units
     pub voxel_size: (f32, f32, f32),
-    /// Scale factor relative to LOD 0 (1.0, 2.0, 4.0, ...)
+    /// Effective resolution ratio relative to LOD 0 (1.0, 2.0, 4.0, ...).
+    /// For isotropic downsampling this equals the per-axis ratio. For anisotropic
+    /// downsampling (e.g. 2× in XY but not Z) use max(sz_i/sz_0, sy_i/sy_0, sx_i/sx_0).
+    /// TODO: replace with per-axis (f32, f32, f32) and make `select_lod_for_tile`
+    /// weight the axes by the projected viewing direction so LOD selection is
+    /// accurate regardless of orientation.
     pub scale_factor: f32,
     /// Translation offset (Z, Y, X) in world units - for mapping data space to world space
     pub translation: (f32, f32, f32),
