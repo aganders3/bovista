@@ -11,7 +11,7 @@ use crate::{
     Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, VolumeVisual, Renderer, Scene, SlicePlane,
     VertexBufferLayout,
 };
-use bovista_codegen::visual_methods;
+use bovista_codegen::{camera_methods, visual_methods};
 
 /// Python wrapper for ChunkStatus enum
 #[pyclass(name = "ChunkStatus", eq, eq_int)]
@@ -67,6 +67,7 @@ pub struct PyViewer {
     height: u32,
 }
 
+#[camera_methods]
 #[pymethods]
 impl PyViewer {
     #[new]
@@ -316,76 +317,20 @@ impl PyViewer {
         ))
     }
 
-    /// Remove all visuals from the scene
-    fn clear_visuals(&mut self) {
-        self.scene.clear();
-    }
-
-    /// Set camera position
-    fn set_camera_position(&mut self, x: f32, y: f32, z: f32) {
-        self.camera.position = glam::Vec3::new(x, y, z);
-    }
-
-    /// Set camera target (look-at point)
-    fn set_camera_target(&mut self, x: f32, y: f32, z: f32) {
-        self.camera.target = glam::Vec3::new(x, y, z);
-    }
-
-    /// Set camera up vector
-    fn set_camera_up(&mut self, x: f32, y: f32, z: f32) {
-        self.camera.up = glam::Vec3::new(x, y, z);
-    }
-
-    /// Orbit the camera
-    fn orbit_camera(&mut self, delta_x: f32, delta_y: f32) {
-        self.camera.orbit(delta_x, delta_y);
-    }
-
-    /// Pan the camera (move in view plane)
-    fn pan_camera(&mut self, delta_x: f32, delta_y: f32) {
-        self.camera.pan(delta_x, delta_y);
-    }
-
-    /// Zoom the camera
-    fn zoom_camera(&mut self, delta: f32) {
-        self.camera.zoom(delta);
-    }
-
-    /// Set camera near and far clip planes
-    fn set_camera_clip_planes(&mut self, near: f32, far: f32) {
-        self.camera.near = near;
-        self.camera.far = far;
-    }
-
-    /// Set camera projection mode
-    fn set_camera_projection_mode(&mut self, mode: PyProjectionMode) {
-        self.camera.set_projection_mode(mode.into());
-    }
-
-    /// Get camera projection mode
-    fn get_camera_projection_mode(&self) -> PyProjectionMode {
-        self.camera.projection_mode().into()
-    }
-
-    /// Set orthographic camera height
-    fn set_camera_ortho_height(&mut self, height: f32) {
-        self.camera.set_ortho_height(height);
-    }
-
-    /// Get orthographic camera height
-    fn get_camera_ortho_height(&self) -> f32 {
-        self.camera.ortho_height()
-    }
-
-    /// Get the current distance from camera position to target
-    fn get_camera_distance(&self) -> f32 {
-        (self.camera.position - self.camera.target).length()
-    }
-
-    /// Get the number of visuals in the scene
-    fn visual_count(&self) -> usize {
-        self.scene.len()
-    }
+    fn clear_visuals(&mut self) {}
+    fn set_camera_position(&mut self, x: f32, y: f32, z: f32) {}
+    fn set_camera_target(&mut self, x: f32, y: f32, z: f32) {}
+    fn set_camera_up(&mut self, x: f32, y: f32, z: f32) {}
+    fn orbit_camera(&mut self, delta_x: f32, delta_y: f32) {}
+    fn pan_camera(&mut self, delta_x: f32, delta_y: f32) {}
+    fn zoom_camera(&mut self, delta: f32) {}
+    fn set_camera_clip_planes(&mut self, near: f32, far: f32) {}
+    fn set_camera_projection_mode(&mut self, mode: PyProjectionMode) {}
+    fn get_camera_projection_mode(&self) -> PyProjectionMode {}
+    fn set_camera_ortho_height(&mut self, height: f32) {}
+    fn get_camera_ortho_height(&self) -> f32 {}
+    fn get_camera_distance(&self) -> f32 {}
+    fn visual_count(&self) -> usize {}
 
     /// Render a single frame (for use with external event loops like Qt/Tk)
     /// Must call initialize_with_window() first

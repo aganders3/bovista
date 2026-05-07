@@ -16,6 +16,7 @@
 
 - [Design & Virtual Textures](./01-philosophy.md)
 - [Visual System](./04-visuals.md)
+- [Rendering Pipeline](./05-rendering-pipeline.md)
 - [Chunked Rendering](./07-chunked-rendering.md)
 
 # Reference

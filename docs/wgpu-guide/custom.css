@@ -1,5 +1,76 @@
 /* Custom styles for WGPU guide */
 
+/* Live demo iframes — break out of the content column and fill the viewport height */
+.live-demo-container {
+    position: relative;
+    margin: 1.5em -3rem;
+    width: calc(100% + 6rem);
+}
+
+.live-demo-container iframe {
+    height: 75vh;
+    min-height: 500px;
+    width: 100%;
+    display: block;
+    border: none;
+    border-radius: 4px;
+}
+
+.live-demo-links {
+    margin-top: 0.5em;
+    font-size: 0.9em;
+}
+
+/* Expand / collapse button */
+.live-demo-expand-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+    padding: 4px 12px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.8em;
+    cursor: pointer;
+    line-height: 1.5;
+    transition: background 0.15s;
+}
+
+.live-demo-expand-btn:hover {
+    background: rgba(0, 0, 0, 0.82);
+}
+
+/* Fullscreen state */
+.live-demo-container.live-demo-fullscreen {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    margin: 0 !important;
+    z-index: 9999;
+    display: flex !important;
+    flex-direction: column !important;
+    background: #000;
+}
+
+.live-demo-container.live-demo-fullscreen iframe {
+    flex: 1 1 auto !important;
+    height: unset !important;
+    min-height: unset !important;
+    width: 100% !important;
+    border-radius: 0 !important;
+}
+
+.live-demo-container.live-demo-fullscreen .live-demo-links {
+    flex: 0 0 auto !important;
+    margin-top: 0 !important;
+    padding: 0.4em 1em !important;
+    background: var(--bg, #1d1f21) !important;
+}
+
+
 /* Better code block styling */
 pre {
     border-left: 3px solid var(--links);

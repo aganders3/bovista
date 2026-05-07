@@ -4,7 +4,7 @@ set -e
 # Build WASM library for browser deployment
 # Usage: ./build_wasm.sh
 
-OUTPUT_DIR="web/pkg"
+OUTPUT_DIR="examples/pkg"
 OUTPUT_NAME="bovista"
 
 echo "🔨 Building WASM library: bovista"
@@ -43,6 +43,6 @@ echo "📦 Output: $OUTPUT_DIR/${OUTPUT_NAME}.js"
 echo "📦 WASM: $OUTPUT_DIR/${OUTPUT_NAME}_bg.wasm"
 echo ""
 echo "To test locally:"
-echo "  python3 -m http.server 8000 --directory web"
-echo "  open http://localhost:8000/remote_ome_zarr.html"
+echo "  python3 -m http.server 8000 --directory examples"
+echo "  open http://localhost:8000/slice_viewer/  (or volume_renderer/)"
 echo ""

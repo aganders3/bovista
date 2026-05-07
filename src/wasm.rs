@@ -51,11 +51,13 @@ use web_sys::console;
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, ImageVisual, VolumeVisual, Renderer, Scene, SlicePlane,
+    Camera, ImageVisual, LinesVisual, PointsVisual, VolumeVisual, Renderer, Scene, SlicePlane,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus, TileData, TileKey},
+    visuals::points::PointVertex,
+    visuals::lines::LineVertex,
 };
-use bovista_codegen::visual_methods;
+use bovista_codegen::{camera_methods, visual_methods};
 
 /// JavaScript viewer for Bovista
 #[wasm_bindgen]
@@ -68,6 +70,7 @@ pub struct JsViewer {
     depth_texture: wgpu::TextureView,
 }
 
+#[camera_methods]
 #[wasm_bindgen]
 impl JsViewer {
     /// Create a new viewer from a canvas element ID
@@ -235,89 +238,58 @@ impl JsViewer {
         self.scene.add(visual.get_inner())
     }
 
-    /// Set camera position
     #[wasm_bindgen(js_name = setCameraPosition)]
-    pub fn set_camera_position(&mut self, x: f32, y: f32, z: f32) {
-        self.camera.position = glam::Vec3::new(x, y, z);
-    }
+    pub fn set_camera_position(&mut self, x: f32, y: f32, z: f32) {}
 
-    /// Set camera target
     #[wasm_bindgen(js_name = setCameraTarget)]
-    pub fn set_camera_target(&mut self, x: f32, y: f32, z: f32) {
-        self.camera.target = glam::Vec3::new(x, y, z);
-    }
+    pub fn set_camera_target(&mut self, x: f32, y: f32, z: f32) {}
 
-    /// Set camera up vector
     #[wasm_bindgen(js_name = setCameraUp)]
-    pub fn set_camera_up(&mut self, x: f32, y: f32, z: f32) {
-        self.camera.up = glam::Vec3::new(x, y, z);
-    }
+    pub fn set_camera_up(&mut self, x: f32, y: f32, z: f32) {}
 
-    /// Set camera near and far clip planes
     #[wasm_bindgen(js_name = setCameraClipPlanes)]
-    pub fn set_camera_clip_planes(&mut self, near: f32, far: f32) {
-        self.camera.near = near;
-        self.camera.far = far;
-    }
+    pub fn set_camera_clip_planes(&mut self, near: f32, far: f32) {}
 
-    /// Set camera projection mode
     #[wasm_bindgen(js_name = setCameraProjectionMode)]
-    pub fn set_camera_projection_mode(&mut self, mode: JsProjectionMode) {
-        self.camera.set_projection_mode(mode.into());
-    }
+    pub fn set_camera_projection_mode(&mut self, mode: JsProjectionMode) {}
 
-    /// Get camera projection mode
     #[wasm_bindgen(js_name = getCameraProjectionMode)]
-    pub fn get_camera_projection_mode(&self) -> JsProjectionMode {
-        self.camera.projection_mode().into()
-    }
+    pub fn get_camera_projection_mode(&self) -> JsProjectionMode {}
 
-    /// Set orthographic camera height
     #[wasm_bindgen(js_name = setCameraOrthoHeight)]
-    pub fn set_camera_ortho_height(&mut self, height: f32) {
-        self.camera.set_ortho_height(height);
-    }
+    pub fn set_camera_ortho_height(&mut self, height: f32) {}
 
-    /// Get orthographic camera height
     #[wasm_bindgen(js_name = getCameraOrthoHeight)]
-    pub fn get_camera_ortho_height(&self) -> f32 {
-        self.camera.ortho_height()
-    }
+    pub fn get_camera_ortho_height(&self) -> f32 {}
 
-    /// Orbit camera
     #[wasm_bindgen(js_name = orbitCamera)]
-    pub fn orbit_camera(&mut self, delta_x: f32, delta_y: f32) {
-        self.camera.orbit(delta_x, delta_y);
-    }
+    pub fn orbit_camera(&mut self, delta_x: f32, delta_y: f32) {}
 
-    /// Pan camera (move in view plane)
     #[wasm_bindgen(js_name = panCamera)]
-    pub fn pan_camera(&mut self, delta_x: f32, delta_y: f32) {
-        self.camera.pan(delta_x, delta_y);
-    }
+    pub fn pan_camera(&mut self, delta_x: f32, delta_y: f32) {}
 
-    /// Zoom camera
     #[wasm_bindgen(js_name = zoomCamera)]
-    pub fn zoom_camera(&mut self, delta: f32) {
-        self.camera.zoom(delta);
-    }
+    pub fn zoom_camera(&mut self, delta: f32) {}
 
-    /// Get the current distance from camera position to target
     #[wasm_bindgen(js_name = getCameraDistance)]
-    pub fn get_camera_distance(&self) -> f32 {
-        (self.camera.position - self.camera.target).length()
-    }
+    pub fn get_camera_distance(&self) -> f32 {}
 
-    /// Get visual count
     #[wasm_bindgen(js_name = visualCount)]
-    pub fn visual_count(&self) -> usize {
-        self.scene.len()
+    pub fn visual_count(&self) -> usize {}
+
+    #[wasm_bindgen(js_name = clearScene)]
+    pub fn clear_scene(&mut self) {}
+
+    /// Add a points visual to the scene
+    #[wasm_bindgen(js_name = addPoints)]
+    pub fn add_points_visual(&mut self, visual: &JsPointsVisual) -> usize {
+        self.scene.add(visual.inner.clone())
     }
 
-    /// Clear all visuals from the scene
-    #[wasm_bindgen(js_name = clearScene)]
-    pub fn clear_scene(&mut self) {
-        self.scene.clear();
+    /// Add a lines visual to the scene
+    #[wasm_bindgen(js_name = addLines)]
+    pub fn add_lines_visual(&mut self, visual: &JsLinesVisual) -> usize {
+        self.scene.add(visual.inner.clone())
     }
 
     /// Resize the viewer when canvas dimensions change
@@ -795,5 +767,117 @@ impl JsVolumeVisual {
 
     pub(crate) fn get_inner(&self) -> VisualRef {
         self.inner.clone()
+    }
+}
+
+/// JavaScript wrapper for PointsVisual — colored point cloud.
+#[wasm_bindgen]
+pub struct JsPointsVisual {
+    inner: VisualRef,
+}
+
+#[wasm_bindgen]
+impl JsPointsVisual {
+    /// Create a point cloud from flat Float32Arrays.
+    ///
+    /// `positions` is a flat array of XYZ triples; `colors` is a flat array of RGB triples
+    /// (values 0–1). Both must have length 3 × n_points.
+    #[wasm_bindgen(constructor)]
+    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsPointsVisual, JsValue> {
+        let pos = positions.to_vec();
+        let col = colors.to_vec();
+        if pos.len() != col.len() || pos.len() % 3 != 0 {
+            return Err(JsValue::from_str("positions and colors must be flat XYZ/RGB arrays of equal length"));
+        }
+        let n = pos.len() / 3;
+        let vertices: Vec<PointVertex> = (0..n)
+            .map(|i| PointVertex {
+                position: [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]],
+                color:    [col[i * 3], col[i * 3 + 1], col[i * 3 + 2]],
+            })
+            .collect();
+        let renderer = viewer.renderer();
+        let visual = PointsVisual::new(
+            renderer.device(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            vertices,
+        );
+        Ok(Self { inner: Rc::new(RefCell::new(visual)) })
+    }
+
+    /// Create a test cube of points.
+    #[wasm_bindgen(js_name = testCube)]
+    pub fn test_cube(viewer: &JsViewer, size: u32) -> JsPointsVisual {
+        let renderer = viewer.renderer();
+        let visual = PointsVisual::test_cube(
+            renderer.device(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            size,
+        );
+        Self { inner: Rc::new(RefCell::new(visual)) }
+    }
+}
+
+/// JavaScript wrapper for LinesVisual — line segments and wireframes.
+#[wasm_bindgen]
+pub struct JsLinesVisual {
+    inner: VisualRef,
+}
+
+#[wasm_bindgen]
+impl JsLinesVisual {
+    /// Create a lines visual from flat Float32Arrays.
+    ///
+    /// Each consecutive pair of vertices defines one line segment.
+    /// `positions` and `colors` are flat arrays of length 3 × n_vertices.
+    #[wasm_bindgen(constructor)]
+    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsLinesVisual, JsValue> {
+        let pos = positions.to_vec();
+        let col = colors.to_vec();
+        if pos.len() != col.len() || pos.len() % 3 != 0 {
+            return Err(JsValue::from_str("positions and colors must be flat XYZ/RGB arrays of equal length"));
+        }
+        let n = pos.len() / 3;
+        let vertices: Vec<LineVertex> = (0..n)
+            .map(|i| LineVertex {
+                position: [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]],
+                color:    [col[i * 3], col[i * 3 + 1], col[i * 3 + 2]],
+            })
+            .collect();
+        let renderer = viewer.renderer();
+        let visual = LinesVisual::new(
+            renderer.device(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            vertices,
+        );
+        Ok(Self { inner: Rc::new(RefCell::new(visual)) })
+    }
+
+    /// Create a 3-axis helper (X=red, Y=green, Z=blue).
+    #[wasm_bindgen(js_name = axisHelper)]
+    pub fn axis_helper(viewer: &JsViewer, length: f32) -> JsLinesVisual {
+        let renderer = viewer.renderer();
+        let visual = LinesVisual::axis_helper(
+            renderer.device(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+            length,
+        );
+        Self { inner: Rc::new(RefCell::new(visual)) }
+    }
+
+    /// Create a wireframe unit cube.
+    #[wasm_bindgen(js_name = testCube)]
+    pub fn test_cube(viewer: &JsViewer) -> JsLinesVisual {
+        let renderer = viewer.renderer();
+        let visual = LinesVisual::test_cube(
+            renderer.device(),
+            renderer.surface_format(),
+            renderer.camera_bind_group_layout(),
+        );
+        Self { inner: Rc::new(RefCell::new(visual)) }
     }
 }

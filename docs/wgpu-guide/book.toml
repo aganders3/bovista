@@ -3,7 +3,6 @@ title = "Bovista Architecture Guide"
 authors = ["Bovista Team"]
 description = "Understanding Bovista's GPU-accelerated volumetric visualization architecture built with WGPU"
 language = "en"
-multilingual = false
 src = "src"
 
 [build]
@@ -16,8 +15,10 @@ renderer = ["html"]
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/yourusername/bovista"
+git-repository-url = "https://github.com/aganders3/bovista"
 additional-css = ["custom.css"]
+additional-js = ["custom.js"]
+mathjax-support = false
 
 [output.html.fold]
 enable = true

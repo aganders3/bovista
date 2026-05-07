@@ -1,0 +1,67 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install mdBook
+        run: cargo install mdbook mdbook-toc --locked
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked
+
+      - name: Build WASM
+        run: |
+          cargo build --lib --target wasm32-unknown-unknown --release
+          mkdir -p examples/pkg
+          wasm-bindgen \
+            --out-dir examples/pkg \
+            --out-name bovista \
+            --target web \
+            --no-typescript \
+            target/wasm32-unknown-unknown/release/bovista.wasm
+
+      - name: Build docs
+        run: mdbook build docs/wgpu-guide
+
+      - name: Assemble site
+        # mdBook output is at docs/wgpu-guide/book/
+        # Web examples get copied to /examples/live/ under the site root
+        run: |
+          mkdir -p docs/wgpu-guide/book/examples/live
+          # Copy web examples with their WASM pkg
+          cp -r examples/slice_viewer/web    docs/wgpu-guide/book/examples/live/slice_viewer
+          cp -r examples/volume_renderer/web docs/wgpu-guide/book/examples/live/volume_renderer
+          cp -r examples/pkg                 docs/wgpu-guide/book/examples/live/pkg
+          # Hub page
+          cp examples/index.html             docs/wgpu-guide/book/examples/live/index.html
+          # Fix pkg import paths for the deployed location
+          sed -i "s|../../pkg/bovista\.js|../pkg/bovista.js|g" \
+            docs/wgpu-guide/book/examples/live/slice_viewer/main.js \
+            docs/wgpu-guide/book/examples/live/volume_renderer/main.js
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/wgpu-guide/book
+          cname: ""

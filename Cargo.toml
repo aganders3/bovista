@@ -54,9 +54,11 @@ default = []
 python = ["pyo3", "numpy"]
 
 [[example]]
-name = "point_cloud"
-path = "examples/point_cloud.rs"
+name = "slice_viewer"
+path = "examples/slice_viewer/rust/main.rs"
+required-features = []
 
 [[example]]
-name = "image_simple"
-path = "examples/image_simple.rs"
+name = "volume_renderer"
+path = "examples/volume_renderer/rust/main.rs"
+required-features = []
