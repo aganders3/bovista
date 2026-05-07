@@ -20,6 +20,12 @@ const DATASETS = {
         cameraDistance: 400.0,
         zarrVersion: 3,
     },
+    exaspim_844958: {
+        url: 'https://aind-open-data.s3.amazonaws.com/exaSPIM_844958_2026-04-13_12-25-27/SPIM.ome.zarr/tile_000000_ch_561.zarr',
+        description: 'AIND exaSPIM 844958 - tile 000000 ch 561',
+        cameraDistance: 10000.0,
+        zarrVersion: 2,
+    },
 };
 
 const MAX_PENDING_CHUNKS = 64;
@@ -597,7 +603,7 @@ async function init() {
         context.configure({ device, format, alphaMode: 'opaque' });
 
         setStatus('Loading WASM module...');
-        wasmModule = await import('../pkg/bovista.js');
+        wasmModule = await import('../../pkg/bovista.js');
         await wasmModule.default();
 
         viewer = await wasmModule.JsViewer.new('canvas');

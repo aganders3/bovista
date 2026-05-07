@@ -25,6 +25,12 @@ const DATASETS = {
         description: 'Beechnut - High-resolution CT scan',
         cameraDistance: 0.05,  // Very small physical size (~30mm)
         zarrVersion: 3,  // OME-Zarr 0.5 uses Zarr v3
+    },
+    exaspim_844958: {
+        url: 'https://aind-open-data.s3.amazonaws.com/exaSPIM_844958_2026-04-13_12-25-27/SPIM.ome.zarr/tile_000000_ch_561.zarr',
+        description: 'AIND exaSPIM 844958 - tile 000000 ch 561',
+        cameraDistance: 10000.0,
+        zarrVersion: 2,  // AIND exaSPIM tiles are OME-Zarr 0.4 (Zarr v2)
     }
 };
 
@@ -797,7 +803,7 @@ async function init() {
         setStatus('Loading WASM module...', 'status-loading');
 
         // Import and initialize WASM module
-        wasmModule = await import('../pkg/bovista.js');
+        wasmModule = await import('../../pkg/bovista.js');
         await wasmModule.default();
 
         console.log('✓ WASM module loaded');
