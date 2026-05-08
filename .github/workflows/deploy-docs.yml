@@ -27,7 +27,12 @@ jobs:
         run: cargo install mdbook mdbook-toc --locked
 
       - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --locked
+        # Derive the CLI version from Cargo.lock so it always matches the wasm-bindgen
+        # crate the build is linked against — schema versions must match exactly.
+        run: |
+          VERSION=$(awk '/^name = "wasm-bindgen"$/{getline; print}' Cargo.lock | sed 's/.*"\(.*\)"/\1/')
+          echo "Installing wasm-bindgen-cli $VERSION (matched from Cargo.lock)"
+          cargo install wasm-bindgen-cli --version "$VERSION" --locked
 
       - name: Build WASM
         run: |
