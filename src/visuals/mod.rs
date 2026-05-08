@@ -4,7 +4,7 @@ pub mod image;
 pub mod lines;
 pub mod page_table;
 pub mod points;
-pub mod tile;
+pub mod gpu_structs;
 pub mod virtual_texture;
 pub mod volume;
 

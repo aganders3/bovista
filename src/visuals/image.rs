@@ -3,8 +3,8 @@ const _SHADER_HASH: &str = env!("SHADER_HASH");
 
 use crate::visual::{Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
-use crate::visuals::tile::{TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
-use crate::visuals::tile::TileLoaderFn;
+use crate::visuals::gpu_structs::{TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
+use crate::visuals::gpu_structs::TileLoaderFn;
 use wgpu::RenderPass;
 
 /// Slice plane defined by position and normal vector
@@ -523,14 +523,14 @@ impl Visual for ImageVisual {
             lod0.volume_size.1 as f32 * lod0.voxel_size.1,
             lod0.volume_size.0 as f32 * lod0.voxel_size.0,
         );
-        let vol_aabb = crate::visuals::tile::AABB::new(vol_min, vol_max);
-        let tile_plane = crate::visuals::tile::SlicePlane {
+        let vol_aabb = crate::visuals::gpu_structs::AABB::new(vol_min, vol_max);
+        let tile_plane = crate::visuals::gpu_structs::SlicePlane {
             position: self.slice_plane.position,
             normal: self.slice_plane.normal,
         };
 
         if let Some((vertices, indices)) =
-            crate::visuals::tile::compute_plane_aabb_intersection(&tile_plane, &vol_aabb)
+            crate::visuals::gpu_structs::compute_plane_aabb_intersection(&tile_plane, &vol_aabb)
         {
             use wgpu::util::DeviceExt;
             self.vt_vertex_buffer =

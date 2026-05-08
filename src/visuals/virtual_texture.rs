@@ -1,6 +1,6 @@
 //! Virtual-texture rendering data: atlas, page table, LOD selection, tile streaming.
 
-use crate::visuals::tile::{
+use crate::visuals::gpu_structs::{
     ChunkStatus, TileData, TileKey, TileLoaderFn, TileRequest, AABB,
 };
 use crate::visuals::image::SlicePlane;

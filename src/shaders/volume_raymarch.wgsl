@@ -73,7 +73,9 @@ struct VolumeUniforms {
     /// Adjust together with colormap alpha to control volume density.
     density_scale: f32,
     camera_pos: vec3<f32>,
-    _pad: f32,
+    /// Stop accumulating once alpha exceeds this (front-to-back early exit).
+    /// 0.95 is a good default; lower saves steps in dense regions, higher is more accurate.
+    early_exit_alpha: f32,
     /// Full-volume voxel dimensions at LOD 0 (x, y, z).
     lod0_dims: vec3<u32>,
     /// 0=normal DVR, 1=LOD tint + tile wireframe, 2=atlas direct
@@ -193,13 +195,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let voxel_world = vol_extent / vec3f(vol.lod0_dims);
     let step_size   = vol.relative_step_size / length(ray_dir / voxel_world);
 
+    // tile_scale[lod_i].x / tile_scale[0].x is the LOD-0→LOD-i spatial ratio used
+    // to scale `advance` per step. Hoist the division out of the inner loop.
+    let inv_tile0_scale_x = 1.0 / vt.lods[0].tile_scale.x;
+
     var accum_color = vec3f(0.0);
     var accum_alpha = 0.0;
     var step_count  = 0u;
     var t = t_start;
 
     loop {
-        if t >= t_exit || accum_alpha >= 0.95 { break; }
+        if t >= t_exit || accum_alpha >= vol.early_exit_alpha { break; }
         step_count += 1u;
 
         let world_p = ray_origin + ray_dir * t;
@@ -211,8 +217,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if vol.debug_mode == 2u {
             let raw      = textureSampleLevel(atlas, atlas_sampler, vol_uv, 0.0).r;
             let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-            let cs       = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
             if adjusted > 0.01 {
+                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
                 let extinction = cs.a * vol.density_scale * step_size;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;
@@ -235,7 +241,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var advance: f32;
         if lod_f >= 0.0 {
             let lod_i = i32(lod_f);
-            advance = step_size * vt.lods[lod_i].tile_scale.x / vt.lods[0].tile_scale.x;
+            advance = step_size * vt.lods[lod_i].tile_scale.x * inv_tile0_scale_x;
         } else {
             let coarsest    = i32(vt.lod_count) - 1;
             let coarse_scale = vt.lods[coarsest].tile_scale;
@@ -289,14 +295,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else {
             // ── Mode 0: normal DVR ──────────────────────────────────────────
             let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-            let cs       = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
             // Beer-Lambert extinction: cs.a alone controls opacity (TF already encodes
             // density-dependent opacity; multiplying by adjusted would double-penalize
             // low-density regions, making the volume appear too transparent).
             // Guard: skip voxels below the contrast window (adjusted ≈ 0) so they remain
             // fully transparent — without this, zero-density regions pick up any non-zero
             // alpha from the colormap's low end and render as opaque black.
+            // Also skips the colormap fetch in sparse/below-threshold regions.
             if adjusted > 0.01 {
+                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
                 let extinction = cs.a * vol.density_scale * advance;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;

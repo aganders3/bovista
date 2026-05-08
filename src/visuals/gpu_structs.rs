@@ -354,7 +354,9 @@ pub struct VolumeUniforms {
     pub vol_max: [f32; 3],
     pub density_scale: f32,
     pub camera_pos: [f32; 3],
-    pub _pad: f32,
+    /// Stop accumulating once front-to-back alpha exceeds this. 0.95 is a good default;
+    /// lower saves steps in dense regions, higher is more accurate.
+    pub early_exit_alpha: f32,
     /// Voxel dimensions of the full volume at LOD 0 (x, y, z).
     pub lod0_dims: [u32; 3],
     /// 0=normal DVR, 1=LOD tint + tile wireframe, 2=atlas direct

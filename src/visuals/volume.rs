@@ -3,8 +3,8 @@ const _SHADER_HASH: &str = env!("SHADER_HASH");
 
 use crate::visual::{Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
-use crate::visuals::tile::{VolumeVertex, VolumeUniforms, VTUniforms, VTLodInfo, VT_MAX_LODS};
-use crate::visuals::tile::TileLoaderFn;
+use crate::visuals::gpu_structs::{VolumeVertex, VolumeUniforms, VTUniforms, VTLodInfo, VT_MAX_LODS};
+use crate::visuals::gpu_structs::TileLoaderFn;
 use wgpu::RenderPass;
 
 /// Visual for direct volume rendering via ray marching.
@@ -36,6 +36,7 @@ pub struct VolumeVisual {
     contrast_limits: (f32, f32),
     relative_step_size: f32,
     density_scale: f32,
+    early_exit_alpha: f32,
     debug_mode: u32,
     frame_number: u64,
 
@@ -364,6 +365,7 @@ impl VolumeVisual {
             contrast_limits: (0.0, 1.0),
             relative_step_size: 1.0,
             density_scale: 0.01,
+            early_exit_alpha: 0.95,
             debug_mode: 0,
             frame_number: 0,
             transform: Transform::identity(),
@@ -386,6 +388,13 @@ impl VolumeVisual {
     /// Overall opacity multiplier applied per step.
     pub fn set_density_scale(&mut self, scale: f32) {
         self.density_scale = scale;
+    }
+
+    /// Front-to-back accumulation cutoff. Default 0.95.
+    /// Lower (e.g. 0.85) terminates rays sooner in dense regions for a small accuracy cost;
+    /// raise toward 1.0 for higher accuracy at the cost of more steps.
+    pub fn set_early_exit_alpha(&mut self, alpha: f32) {
+        self.early_exit_alpha = alpha.clamp(0.0, 1.0);
     }
 
     /// Set display contrast window [min, max] in normalised voxel units.
@@ -530,7 +539,7 @@ impl Visual for VolumeVisual {
             vol_max,
             density_scale: self.density_scale,
             camera_pos: camera_info.position.into(),
-            _pad: 0.0,
+            early_exit_alpha: self.early_exit_alpha,
             lod0_dims,
             debug_mode: self.debug_mode,
         };

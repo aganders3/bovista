@@ -53,7 +53,7 @@ use crate::{
     bindings_common::{self, VisualRef},
     Camera, ImageVisual, LinesVisual, PointsVisual, VolumeVisual, Renderer, Scene, SlicePlane,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
-    visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus, TileData, TileKey},
+    visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus, TileData, TileKey},
     visuals::points::PointVertex,
     visuals::lines::LineVertex,
 };
@@ -683,6 +683,15 @@ impl JsVolumeVisual {
         bindings_common::with_visual_mut::<VolumeVisual, _, _>(
             &self.inner,
             |v| v.set_density_scale(scale)
+        ).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Set the front-to-back early-exit alpha cutoff (default 0.95).
+    #[wasm_bindgen(js_name = setEarlyExitAlpha)]
+    pub fn set_early_exit_alpha(&self, alpha: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_early_exit_alpha(alpha)
         ).map_err(|e| JsValue::from_str(&e))
     }
 

@@ -825,7 +825,7 @@ impl PyImageVisual {
             })
             .collect();
 
-        use crate::visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus};
+        use crate::visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus};
         let loader_arc = Arc::new(loader);
         let loader_clone = loader_arc.clone();
         let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
@@ -925,7 +925,7 @@ impl PyImageVisual {
         x: u32,
         data: PyReadonlyArray3<u16>,
     ) -> PyResult<()> {
-        use crate::visuals::tile::{TileData, TileKey};
+        use crate::visuals::gpu_structs::{TileData, TileKey};
         let a = data.as_array();
         let tile_data = TileData {
             data: a.iter()
@@ -1184,7 +1184,7 @@ impl PyVolumeVisual {
             })
             .collect();
 
-        use crate::visuals::tile::{TileRequest, TileLoaderFn, ChunkStatus};
+        use crate::visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus};
         let loader_arc = Arc::new(loader);
         let loader_clone = loader_arc.clone();
         let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
@@ -1293,6 +1293,14 @@ impl PyVolumeVisual {
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 
+    /// Set the front-to-back early-exit alpha cutoff (default 0.95).
+    fn set_early_exit_alpha(&self, alpha: f32) -> PyResult<()> {
+        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
+            &self.inner,
+            |v| v.set_early_exit_alpha(alpha)
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+    }
+
     /// Provide uint16 tile data (R16Float in the atlas).
     fn set_chunk_data_u16(
         &self,
@@ -1302,7 +1310,7 @@ impl PyVolumeVisual {
         x: u32,
         data: PyReadonlyArray3<u16>,
     ) -> PyResult<()> {
-        use crate::visuals::tile::{TileData, TileKey};
+        use crate::visuals::gpu_structs::{TileData, TileKey};
         let a = data.as_array();
         let tile_data = TileData {
             data: a.iter()

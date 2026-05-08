@@ -93,7 +93,7 @@ where
 }
 
 // Chunked loading helpers
-use crate::visuals::tile::{TileRequest, ChunkStatus};
+use crate::visuals::gpu_structs::{TileRequest, ChunkStatus};
 
 /// Helper struct to extract coordinates from TileRequest
 ///
