@@ -1,0 +1,262 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    overflow: hidden;
+}
+
+#app-container {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+#header {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
+    z-index: 200;
+}
+
+#header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #58a6ff;
+    margin: 0;
+}
+
+.header-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.header-section label {
+    font-size: 12px;
+    color: #8b949e;
+}
+
+select, button {
+    padding: 5px 10px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #c9d1d9;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+button {
+    background: #238636;
+    border: none;
+    color: white;
+    font-weight: 500;
+}
+
+button:hover:not(:disabled) {
+    background: #2ea043;
+}
+
+button:disabled {
+    background: #21262d;
+    color: #6e7681;
+    cursor: not-allowed;
+}
+
+select:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+#canvas-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    cursor: grab;
+}
+
+canvas:active {
+    cursor: grabbing;
+}
+
+/* Control Panel */
+#controls {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    background: rgba(22, 27, 34, 0.95);
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 15px;
+    min-width: 280px;
+    max-width: 320px;
+    backdrop-filter: blur(10px);
+}
+
+.control-group {
+    margin: 12px 0;
+}
+
+.control-group label {
+    display: block;
+    font-size: 12px;
+    margin-bottom: 6px;
+    color: #8b949e;
+    display: flex;
+    justify-content: space-between;
+}
+
+.value-display {
+    color: #58a6ff;
+    font-weight: 500;
+    min-width: 60px;
+    display: inline-block;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+input[type="range"] {
+    width: 100%;
+    height: 4px;
+    background: #21262d;
+    border-radius: 2px;
+    outline: none;
+    -webkit-appearance: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #58a6ff;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: #58a6ff;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+input[type="range"]:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+/* Statistics Panel */
+#stats {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    background: rgba(22, 27, 34, 0.95);
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 15px;
+    min-width: 200px;
+    backdrop-filter: blur(10px);
+}
+
+#stats h3 {
+    margin: 0 0 10px 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #58a6ff;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    margin: 6px 0;
+    font-size: 12px;
+}
+
+.stat-label {
+    color: #8b949e;
+}
+
+.stat-value {
+    color: #3fb950;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Status Bar */
+#status {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    background: rgba(22, 27, 34, 0.95);
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 10px 15px;
+    font-size: 12px;
+    backdrop-filter: blur(10px);
+}
+
+.status-loading { color: #f0883e; }
+.status-ready { color: #3fb950; }
+.status-error { color: #f85149; }
+
+/* Help Panel */
+#help {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(22, 27, 34, 0.95);
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 12px 15px;
+    font-size: 11px;
+    backdrop-filter: blur(10px);
+}
+
+#help h4 {
+    margin: 0 0 8px 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: #58a6ff;
+}
+
+#help p {
+    margin: 4px 0;
+    color: #8b949e;
+    line-height: 1.4;
+}
+
+kbd {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 3px;
+    padding: 2px 5px;
+    font-size: 10px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+}
+
+.divider {
+    width: 1px;
+    height: 24px;
+    background: #30363d;
+    margin: 0 8px;
+}

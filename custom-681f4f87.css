@@ -1,0 +1,167 @@
+/* Custom styles for WGPU guide */
+
+/* Live demo iframes — break out of the content column and fill the viewport height */
+.live-demo-container {
+    position: relative;
+    margin: 1.5em -3rem;
+    width: calc(100% + 6rem);
+}
+
+.live-demo-container iframe {
+    height: 75vh;
+    min-height: 500px;
+    width: 100%;
+    display: block;
+    border: none;
+    border-radius: 4px;
+}
+
+.live-demo-links {
+    margin-top: 0.5em;
+    font-size: 0.9em;
+}
+
+/* Expand / collapse button */
+.live-demo-expand-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+    padding: 4px 12px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.8em;
+    cursor: pointer;
+    line-height: 1.5;
+    transition: background 0.15s;
+}
+
+.live-demo-expand-btn:hover {
+    background: rgba(0, 0, 0, 0.82);
+}
+
+/* Fullscreen state */
+.live-demo-container.live-demo-fullscreen {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    margin: 0 !important;
+    z-index: 9999;
+    display: flex !important;
+    flex-direction: column !important;
+    background: #000;
+}
+
+.live-demo-container.live-demo-fullscreen iframe {
+    flex: 1 1 auto !important;
+    height: unset !important;
+    min-height: unset !important;
+    width: 100% !important;
+    border-radius: 0 !important;
+}
+
+.live-demo-container.live-demo-fullscreen .live-demo-links {
+    flex: 0 0 auto !important;
+    margin-top: 0 !important;
+    padding: 0.4em 1em !important;
+    background: var(--bg, #1d1f21) !important;
+}
+
+
+/* Better code block styling */
+pre {
+    border-left: 3px solid var(--links);
+    padding-left: 1em !important;
+}
+
+/* Highlight important sections */
+.warning, .important {
+    padding: 1em;
+    margin: 1em 0;
+    border-left: 4px solid #f0ad4e;
+    background-color: rgba(240, 173, 78, 0.1);
+}
+
+/* Better table styling */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+}
+
+table th {
+    background-color: var(--table-header-bg);
+    padding: 0.75em;
+    text-align: left;
+    font-weight: bold;
+}
+
+table td {
+    padding: 0.75em;
+    border-top: 1px solid var(--table-border-color);
+}
+
+/* Comparison tables */
+table th:first-child {
+    width: 20%;
+}
+
+/* Better spacing for lists */
+ul, ol {
+    margin: 0.5em 0;
+    padding-left: 2em;
+}
+
+li {
+    margin: 0.25em 0;
+}
+
+/* Checkmarks for benefits */
+li:has(> .checkmark)::marker {
+    content: "✅ ";
+}
+
+li:has(> .crossmark)::marker {
+    content: "❌ ";
+}
+
+/* Code inline highlights */
+code {
+    background-color: var(--inline-code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+/* Better heading spacing */
+h2 {
+    margin-top: 2em;
+    margin-bottom: 0.5em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--border-color);
+}
+
+h3 {
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+}
+
+/* Info boxes */
+.info-box {
+    padding: 1em;
+    margin: 1em 0;
+    border-radius: 4px;
+    background-color: var(--quote-bg);
+    border-left: 4px solid var(--links);
+}
+
+/* Next chapter link styling */
+p:has(> strong:contains("Next")) {
+    margin-top: 2em;
+    padding-top: 1em;
+    border-top: 2px solid var(--border-color);
+    text-align: right;
+}

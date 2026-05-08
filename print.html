@@ -1,0 +1,2437 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Bovista Architecture Guide</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Understanding Bovista&#x27;s GPU-accelerated volumetric visualization architecture built with WGPU">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="custom-681f4f87.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "rust";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-6a6c8c20.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-4cd89307.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Bovista Architecture Guide</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/aganders3/bovista" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p>Welcome to the <strong>Bovista Architecture Guide</strong>. This guide explains how Bovista works under the hood: how it renders massive volumetric datasets interactively, how the virtual texture system streams tiles on demand, and how the same Rust core runs in Python and in a browser.</p>
+<h2 id="what-is-bovista"><a class="header" href="#what-is-bovista">What is Bovista?</a></h2>
+<p>Bovista is a visualization library for large 3D imaging datasets. Its thesis is that the core rendering engine should be written once in Rust and run anywhere — as a Python extension, as a WebAssembly module in the browser, or as a native binary.</p>
+<p>Concretely, it provides:</p>
+<ul>
+<li><strong>Slice rendering</strong> — arbitrary-orientation plane intersections through 3D volumes, rendered via 3D texture sampling</li>
+<li><strong>Volume ray marching</strong> — direct volume rendering (DVR) with per-pixel ray casting and transfer function compositing</li>
+<li><strong>Virtual texture streaming</strong> — an atlas + page table architecture that keeps only the visible tiles resident in VRAM, regardless of dataset size</li>
+<li><strong>Multi-resolution LOD</strong> — coarse-to-fine pyramid; LOD selection is based on screen-space voxel error</li>
+<li><strong>Remote OME-Zarr</strong> — tiles are fetched from S3/HTTP by a user-supplied async callback; Zarr chunking maps directly to atlas tiles</li>
+<li><strong>Points, lines, custom visuals</strong> — for annotations and user-defined shaders</li>
+</ul>
+<h3 id="real-world-use-cases"><a class="header" href="#real-world-use-cases">Real-World Use Cases</a></h3>
+<ul>
+<li><strong>Microscopy</strong>: Exploring 32,000³ voxel images from light-sheet or electron microscopes</li>
+<li><strong>Medical Imaging</strong>: Navigating CT/MRI volumes without loading the full dataset</li>
+<li><strong>Scientific Visualization</strong>: Analyzing simulation data stored in remote Zarr stores</li>
+<li><strong>Browser Sharing</strong>: Viewing multi-gigabyte datasets directly in Chrome or Safari without installing software</li>
+</ul>
+<h2 id="architecture-at-a-glance"><a class="header" href="#architecture-at-a-glance">Architecture at a Glance</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────┐
+│                     Bovista Library                      │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  Bindings                                                │
+│  ├─ Python (PyO3 — Viewer, Image, Volume, Lines, ...)   │
+│  └─ WebAssembly (wasm-bindgen — JsViewer, ...)          │
+│                                                          │
+│  Rendering Engine                                        │
+│  ├─ Renderer: wgpu device/queue, render pass            │
+│  ├─ Scene: visual list, per-frame prepare + render       │
+│  └─ Camera: orbit controls, projection, frustum          │
+│                                                          │
+│  Visual Types                                            │
+│  ├─ ImageVisual: slice-plane rendering                  │
+│  ├─ VolumeVisual: ray marching DVR                      │
+│  ├─ PointsVisual / LinesVisual                          │
+│  └─ CustomVisual: user-defined WGSL shaders             │
+│                                                          │
+│  Virtual Texture System (shared by Image + Volume)       │
+│  ├─ VirtualTextureData: LOD selection, tile requests    │
+│  ├─ AtlasAllocator: 3D texture atlas (LRU eviction)     │
+│  └─ PageTable: 2D-array indirection texture             │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                    wgpu-rs                               │
+├─────────────────────────────────────────────────────────┤
+│  Cross-platform GPU abstraction                         │
+│  ├─ Native: Vulkan, Metal, DirectX 12                  │
+│  └─ Web: WebGPU                                         │
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="key-concepts"><a class="header" href="#key-concepts">Key Concepts</a></h2>
+<h3 id="virtual-texture-streaming"><a class="header" href="#virtual-texture-streaming">Virtual Texture Streaming</a></h3>
+<p>Both <code>ImageVisual</code> and <code>VolumeVisual</code> share the same streaming back-end. The volume is divided into uniformly-sized tiles. A 3D texture <strong>atlas</strong> holds the physically resident tiles. A <strong>page table</strong> (a small 2D-array texture indexed by LOD + tile grid coordinates) maps each virtual tile address to its atlas slot. The fragment shader looks up the page table at runtime to find each tile’s atlas location; if a tile is missing it falls back to the nearest loaded coarser LOD.</p>
+<p>This means the entire volume can be rendered in a <strong>single draw call</strong> — no per-tile state changes.</p>
+<h3 id="callback-based-loading"><a class="header" href="#callback-based-loading">Callback-Based Loading</a></h3>
+<p>Data loading is decoupled from rendering via a callback:</p>
+<pre><code class="language-python">def request(lod, z, y, x):
+    # Submit async load; call volume.set_chunk_data_u16() when done
+    return bv.ChunkStatus.Accepted
+</code></pre>
+<p>The rendering engine calls <code>request()</code> each frame for tiles it needs. The implementation can use Python thread pools, <code>asyncio</code>, JS <code>fetch()</code>, or any other mechanism. Arrived data is pushed back via <code>set_chunk_data_u16()</code>, which queues it for upload on the next <code>prepare()</code> pass.</p>
+<h3 id="one-codebase-multiple-targets"><a class="header" href="#one-codebase-multiple-targets">One Codebase, Multiple Targets</a></h3>
+<p>The core library has no Python or browser dependencies. Target-specific code lives in <code>src/python.rs</code> and <code>src/wasm.rs</code>, which are thin wrappers around <code>src/bindings_common.rs</code>. Conditional compilation (<code>#[cfg(feature = "python")]</code>, <code>#[cfg(target_arch = "wasm32")]</code>) keeps them isolated.</p>
+<h2 id="project-structure"><a class="header" href="#project-structure">Project Structure</a></h2>
+<pre><code>src/
+  lib.rs                    — crate root, public API
+  renderer.rs               — wgpu device/queue, render pass
+  camera.rs                 — orbit controls, frustum, projection
+  scene.rs                  — visual list
+  visual.rs                 — Visual trait
+  bindings_common.rs        — shared Python/WASM logic
+  visuals/
+    image.rs                — ImageVisual (slice rendering)
+    volume.rs               — VolumeVisual (ray marching)
+    virtual_texture.rs      — VirtualTextureData: atlas, page table, LOD
+    atlas.rs                — AtlasAllocator
+    page_table.rs           — PageTable
+    tile.rs                 — TileKey, TileData, uniforms
+    points.rs               — PointsVisual
+    lines.rs                — LinesVisual
+    custom.rs               — CustomVisual
+  shaders/
+    virtual_tile.wgsl       — slice shader
+    volume_raymarch.wgsl    — ray marching shader
+    point_cloud.wgsl
+    lines.wgsl
+  python.rs                 — PyO3 bindings
+  wasm.rs                   — wasm-bindgen bindings
+examples/
+  slice_viewer/
+    python/                 — PyQt6 + ThreadPoolExecutor
+    web/                    — browser + WebAssembly
+    rust/                   — stub
+  volume_renderer/
+    python/                 — PyQt6 + ThreadPoolExecutor
+    web/                    — browser + WebAssembly
+    rust/                   — stub
+  pkg/                      — WASM build output (generated, not committed)
+kiln-render/                — standalone WebGPU browser DVR renderer (TypeScript)
+</code></pre>
+<h2 id="example-volume-ray-marching"><a class="header" href="#example-volume-ray-marching">Example: Volume Ray Marching</a></h2>
+<pre><code class="language-python">import bovista as bv
+import zarr
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+
+store = zarr.open_group("https://s3.../dataset.ome.zarr", mode="r")
+
+# Build LevelMetadata for each LOD in the OME-Zarr pyramid
+lod_levels = [
+    bv.LevelMetadata(
+        volume_size=(depth, height, width),
+        chunk_size=(cz, cy, cx),
+        voxel_size=(sz, sy, sx),
+        scale_factor=2.0**i,
+        translation=(0.0, 0.0, 0.0),
+    )
+    for i, (depth, height, width, cz, cy, cx, sz, sy, sx) in enumerate(...)
+]
+
+executor = ThreadPoolExecutor(max_workers=8)
+pending = {}
+lock = Lock()
+
+def request(lod, z, y, x):
+    key = (lod, z, y, x)
+    with lock:
+        if key in pending:
+            return bv.ChunkStatus.AlreadyPending
+        future = executor.submit(load_tile, lod, z, y, x)
+        future.add_done_callback(lambda f: volume.set_chunk_data_u16(lod, z, y, x, f.result()))
+        pending[key] = future
+    return bv.ChunkStatus.Accepted
+
+viewer = bv.Viewer(800, 600)
+viewer.initialize_with_window(window_handle, 800, 600)
+
+volume = bv.Volume(viewer, lod_levels, max_tiles=2000, loader=request)
+volume.set_contrast(0.0, 1.0)
+volume.set_density_scale(0.01)
+viewer.add(volume)
+
+# In render loop:
+viewer.render_frame()
+</code></pre>
+<hr>
+<p><strong>Start here</strong>: <a href="#python-bindings">Python API →</a> · <a href="#webassembly--browser">WebAssembly / Browser →</a> · <a href="#overview--design-philosophy">Architecture →</a></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="python-bindings"><a class="header" href="#python-bindings">Python Bindings</a></h1>
+<p>Bovista exposes a Python API via <a href="https://pyo3.rs/">PyO3</a>. The binding layer is thin: it translates Python types to Rust types, bridges the async chunk-loading pattern, and otherwise delegates directly to the core library.</p>
+<ul>
+<li><a href="#installation">Installation</a></li>
+<li><a href="#viewer"><code>Viewer</code></a></li>
+<li><a href="#levelmetadata"><code>LevelMetadata</code></a></li>
+<li><a href="#image"><code>Image</code></a></li>
+<li><a href="#volume"><code>Volume</code></a></li>
+<li><a href="#points"><code>Points</code></a></li>
+<li><a href="#lines"><code>Lines</code></a></li>
+<li><a href="#custom"><code>Custom</code></a></li>
+<li><a href="#chunkstatus"><code>ChunkStatus</code></a></li>
+<li><a href="#projectionmode"><code>ProjectionMode</code></a></li>
+<li><a href="#loader-pattern-full-example">Loader Pattern (full example)</a></li>
+<li><a href="#binding-structure">Binding Structure</a></li>
+</ul>
+<h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
+<pre><code class="language-bash">uv sync   # builds the Rust extension and installs Python dependencies
+</code></pre>
+<p>or with maturin directly:</p>
+<pre><code class="language-bash">maturin develop --features python --release
+</code></pre>
+<p>Import as:</p>
+<pre><code class="language-python">import bovista as bv
+</code></pre>
+<h2 id="viewer"><a class="header" href="#viewer"><code>Viewer</code></a></h2>
+<p>The top-level object that owns the GPU device, renderer, camera, and scene.</p>
+<pre><code class="language-python">viewer = bv.Viewer(width=800, height=600)
+</code></pre>
+<p><strong>Initialization:</strong></p>
+<ul>
+<li><code>viewer.initialize()</code> — headless / offscreen initialization (no window)</li>
+<li><code>viewer.initialize_with_window(handle, width, height)</code> — attach to an existing native window handle (NSView on macOS, HWND on Windows, X11 Window on Linux); used when embedding in Qt or other GUI toolkits</li>
+<li><code>viewer.run()</code> — open a standalone winit window and block until closed</li>
+</ul>
+<p><strong>Camera:</strong></p>
+<pre><code class="language-python">viewer.set_camera_position(x, y, z)
+viewer.set_camera_target(x, y, z)
+viewer.set_camera_up(x, y, z)
+viewer.orbit_camera(delta_x, delta_y)       # drag-to-orbit
+viewer.pan_camera(delta_x, delta_y)         # drag-to-pan
+viewer.zoom_camera(delta)                    # scroll zoom
+viewer.set_camera_clip_planes(near, far)
+viewer.set_camera_projection_mode(bv.ProjectionMode.Perspective)
+viewer.set_camera_projection_mode(bv.ProjectionMode.Orthographic)
+viewer.set_camera_ortho_height(height)
+viewer.get_camera_ortho_height() -&gt; float
+viewer.get_camera_distance() -&gt; float
+</code></pre>
+<p><strong>Scene management:</strong></p>
+<pre><code class="language-python">idx = viewer.add(visual)          # add any visual; returns index
+viewer.clear_visuals()            # remove all
+viewer.visual_count() -&gt; int
+</code></pre>
+<p><strong>Render loop (embedded mode):</strong></p>
+<pre><code class="language-python">viewer.render_frame()   # render one frame to the attached window surface
+viewer.resize(w, h)     # call when the window is resized
+</code></pre>
+<h2 id="levelmetadata"><a class="header" href="#levelmetadata"><code>LevelMetadata</code></a></h2>
+<p>Describes one resolution level in a multi-resolution pyramid.</p>
+<pre><code class="language-python">level = bv.LevelMetadata(
+    volume_size=(depth, height, width),   # voxels at this LOD
+    chunk_size=(cd, ch, cw),              # tile size at this LOD
+    voxel_size=(vz, vy, vx),             # physical size per voxel (e.g. µm)
+    scale_factor=1.0,                     # relative to level 0 (finest)
+    translation=(tz, ty, tx),            # optional origin offset
+)
+</code></pre>
+<p>All sizes use <code>(depth/z, height/y, width/x)</code> ordering to match OME-Zarr / NumPy convention.</p>
+<p><strong><code>scale_factor</code> for anisotropic datasets:</strong> <code>scale_factor</code> is a single scalar used by the LOD
+selection to estimate how many screen pixels a voxel covers at this level. For isotropic 2×
+downsampling use <code>2.0</code>, <code>4.0</code>, etc. For anisotropic downsampling (e.g. 2× in XY but not Z), use
+<code>max(vz_i/vz_0, vy_i/vy_0, vx_i/vx_0)</code> — the largest downsampling factor across any axis. This is
+a conservative approximation: it biases toward finer LODs, which is correct for a viewer where the
+user can rotate freely. A future improvement would make LOD selection view-direction-aware so the
+relevant axis is weighted automatically.</p>
+<h2 id="image"><a class="header" href="#image"><code>Image</code></a></h2>
+<p>Renders arbitrary-orientation slice planes through a multi-resolution volume.</p>
+<pre><code class="language-python">image = bv.Image(
+    viewer,           # must be initialized first
+    levels,           # list[LevelMetadata], finest first
+    max_tiles=500,    # VRAM budget in tiles
+    loader=request,   # callback: (lod, z, y, x) -&gt; ChunkStatus
+)
+viewer.add(image)
+</code></pre>
+<p><strong>Slice control:</strong></p>
+<pre><code class="language-python">image.set_slice_z(z)                              # axis-aligned Z slice
+image.set_slice_y(y)
+image.set_slice_x(x)
+image.set_slice_plane(px, py, pz, nx, ny, nz)     # arbitrary plane
+</code></pre>
+<p><strong>Appearance:</strong></p>
+<pre><code class="language-python">image.set_contrast(min_val, max_val)              # 0.0–1.0 normalized
+image.set_colormap(rgba_array)                    # numpy (256, 4) uint8; None = grayscale
+image.set_lod_bias(bias)                          # positive = finer LOD
+</code></pre>
+<p><strong>Diagnostics:</strong></p>
+<pre><code class="language-python">image.set_debug_mode(True)                        # LOD tint visualization
+loaded, visible = image.get_stats()               # tile counts
+</code></pre>
+<p><strong>Push tile data</strong> (called from loader background thread):</p>
+<pre><code class="language-python">image.set_chunk_data_u16(lod, z, y, x, array)    # numpy uint16 array
+</code></pre>
+<h2 id="volume"><a class="header" href="#volume"><code>Volume</code></a></h2>
+<p>Direct volume rendering via GPU ray marching. Shares the same virtual-texture back-end as <code>Image</code>.</p>
+<pre><code class="language-python">volume = bv.Volume(
+    viewer,
+    levels,
+    max_tiles=2000,
+    loader=request,
+)
+viewer.add(volume)
+</code></pre>
+<p><strong>Controls:</strong></p>
+<pre><code class="language-python">volume.set_contrast(min_val, max_val)
+volume.set_colormap(rgba_array)
+volume.set_density_scale(scale)          # opacity multiplier per step
+volume.set_relative_step_size(step)      # 1.0 = Nyquist; larger = faster, coarser
+volume.set_lod_bias(bias)
+</code></pre>
+<p><strong>Debug modes:</strong></p>
+<pre><code class="language-python">volume.set_debug_mode(True)              # LOD tint (mode 1)
+volume.set_atlas_debug_mode(True)        # raw atlas visualization (mode 2)
+volume.set_step_debug_mode(True)         # ray-march step count heatmap (mode 3)
+</code></pre>
+<p><strong>Stats / data:</strong></p>
+<pre><code class="language-python">loaded, visible = volume.get_stats()
+volume.set_chunk_data_u16(lod, z, y, x, array)
+</code></pre>
+<h2 id="points"><a class="header" href="#points"><code>Points</code></a></h2>
+<p>Point cloud rendering. Static geometry — no streaming.</p>
+<pre><code class="language-python">points = bv.Points.from_numpy(viewer, positions, colors)
+# positions: numpy (N, 1, 3) float32
+# colors:    numpy (N, 1, 3) float32  (RGB 0-1)
+viewer.add(points)
+
+# or a quick test shape:
+viewer.add(bv.Points.test_cube(viewer, size=10))
+</code></pre>
+<h2 id="lines"><a class="header" href="#lines"><code>Lines</code></a></h2>
+<p>Line segment rendering. Each pair of vertices forms one segment.</p>
+<pre><code class="language-python">viewer.add(bv.Lines.axis_helper(viewer, length=1.0))   # RGB axis gizmo
+viewer.add(bv.Lines.test_cube(viewer))
+</code></pre>
+<h2 id="custom"><a class="header" href="#custom"><code>Custom</code></a></h2>
+<p>User-defined WGSL shader. The shader must expose <code>vs_main</code> / <code>fs_main</code> entry points and declare the camera uniforms at <code>@group(0) @binding(0)</code>.</p>
+<pre><code class="language-python">shader = """
+struct Uniforms { view_proj: mat4x4&lt;f32&gt; }
+@group(0) @binding(0) var&lt;uniform&gt; uniforms: Uniforms;
+
+@vertex
+fn vs_main(@location(0) pos: vec3&lt;f32&gt;) -&gt; @builtin(position) vec4&lt;f32&gt; {
+    return uniforms.view_proj * vec4&lt;f32&gt;(pos, 1.0);
+}
+@fragment
+fn fs_main() -&gt; @location(0) vec4&lt;f32&gt; { return vec4&lt;f32&gt;(1.0, 0.5, 0.0, 1.0); }
+"""
+
+layout = bv.VertexBufferLayout(
+    12,                          # stride in bytes
+    [(0, "Float32x3", 0)]       # (location, format, byte_offset)
+)
+
+custom = bv.Custom.new(viewer, shader, vertices.tobytes(), layout, "triangle_list")
+viewer.add(custom)
+</code></pre>
+<h2 id="chunkstatus"><a class="header" href="#chunkstatus"><code>ChunkStatus</code></a></h2>
+<p>Returned by loader callbacks:</p>
+<pre><code class="language-python">bv.ChunkStatus.Accepted       # load started; data will arrive via set_chunk_data_u16
+bv.ChunkStatus.AlreadyPending # already loading; skip
+bv.ChunkStatus.Rejected       # can't accept; Bovista will retry next frame
+</code></pre>
+<h2 id="projectionmode"><a class="header" href="#projectionmode"><code>ProjectionMode</code></a></h2>
+<pre><code class="language-python">bv.ProjectionMode.Perspective
+bv.ProjectionMode.Orthographic
+</code></pre>
+<h2 id="loader-pattern-full-example"><a class="header" href="#loader-pattern-full-example">Loader Pattern (full example)</a></h2>
+<pre><code class="language-python">from concurrent.futures import ThreadPoolExecutor
+import threading
+import numpy as np
+
+executor = ThreadPoolExecutor(max_workers=8)
+_pending = set()
+_lock = threading.Lock()
+
+def request_tile(lod, z, y, x):
+    key = (lod, z, y, x)
+    with _lock:
+        if key in _pending:
+            return bv.ChunkStatus.AlreadyPending
+        _pending.add(key)
+
+    executor.submit(_load, key)
+    return bv.ChunkStatus.Accepted
+
+def _load(key):
+    lod, z, y, x = key
+    level = zarr_levels[lod]
+    cd, ch, cw = level.chunks
+    data = level[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw]
+    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
+    with _lock:
+        _pending.discard(key)
+</code></pre>
+<h2 id="binding-structure"><a class="header" href="#binding-structure">Binding Structure</a></h2>
+<p>The Python bindings live in <code>src/python.rs</code>. The <code>#[visual_methods(VisualType)]</code> procedural macro (in <code>bovista-codegen/</code>) generates the boilerplate downcast + error mapping for methods with empty bodies — keeping the binding file focused on constructors and type-conversion logic.</p>
+<p>The <code>Arc&lt;Mutex&lt;dyn Visual&gt;&gt;</code> reference type (<code>VisualRef</code>) is shared between the Python wrapper and the <code>Scene</code>, so the viewer can call <code>prepare()</code> and <code>render()</code> on visuals without the Python wrapper holding the lock.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="webassembly--browser"><a class="header" href="#webassembly--browser">WebAssembly &amp; Browser</a></h1>
+<p>Bovista compiles to WebAssembly via <a href="https://rustwasm.github.io/wasm-bindgen/">wasm-bindgen</a>. The resulting module loads directly in any browser with WebGPU support (Chrome 113+, Edge 113+, Safari 18+) with no server-side component.</p>
+<ul>
+<li><a href="#building">Building</a></li>
+<li><a href="#javascript-api">JavaScript API</a></li>
+<li><a href="#jsviewer"><code>JsViewer</code></a></li>
+<li><a href="#jslevelmetadata"><code>JsLevelMetadata</code></a></li>
+<li><a href="#jsimagevisual"><code>JsImageVisual</code></a></li>
+<li><a href="#jsvolumevisual"><code>JsVolumeVisual</code></a></li>
+<li><a href="#loader-pattern-full-example-1">Loader Pattern (full example)</a></li>
+<li><a href="#differences-from-the-python-api">Differences from the Python API</a></li>
+<li><a href="#binding-structure-1">Binding Structure</a></li>
+<li><a href="#browser-requirements">Browser Requirements</a></li>
+</ul>
+<h2 id="building"><a class="header" href="#building">Building</a></h2>
+<pre><code class="language-bash">./build_wasm.sh       # compiles Rust → WASM, generates JS bindings to examples/pkg/
+</code></pre>
+<p>The script installs <code>wasm32-unknown-unknown</code> if needed and invokes <code>wasm-bindgen</code>.</p>
+<p>To serve locally:</p>
+<pre><code class="language-bash">python3 -m http.server 8000 --directory examples
+# open http://localhost:8000/slice_viewer/
+</code></pre>
+<h2 id="javascript-api"><a class="header" href="#javascript-api">JavaScript API</a></h2>
+<p>The WASM module exposes camelCase JavaScript names. The correspondence to the Python API is intentional:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Python</th><th>JavaScript</th></tr>
+</thead>
+<tbody>
+<tr><td><code>bv.Viewer(w, h)</code></td><td><code>await JsViewer.new("canvas-id")</code></td></tr>
+<tr><td><code>bv.Image(viewer, ...)</code></td><td><code>new JsImageVisual(viewer, ...)</code></td></tr>
+<tr><td><code>bv.Volume(viewer, ...)</code></td><td><code>new JsVolumeVisual(viewer, ...)</code></td></tr>
+<tr><td><code>bv.LevelMetadata(...)</code></td><td><code>new JsLevelMetadata(...)</code></td></tr>
+<tr><td><code>bv.ChunkStatus</code></td><td><code>JsChunkStatus</code></td></tr>
+<tr><td><code>viewer.add(image)</code></td><td><code>viewer.addImage(image)</code></td></tr>
+<tr><td><code>viewer.add(volume)</code></td><td><code>viewer.addVolume(volume)</code></td></tr>
+<tr><td><code>viewer.add(points)</code></td><td><code>viewer.addPoints(points)</code></td></tr>
+<tr><td><code>viewer.add(lines)</code></td><td><code>viewer.addLines(lines)</code></td></tr>
+<tr><td><code>viewer.render_frame()</code></td><td><code>viewer.renderFrame()</code></td></tr>
+<tr><td><code>visual.set_contrast(...)</code></td><td><code>visual.setContrast(...)</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="jsviewer"><a class="header" href="#jsviewer"><code>JsViewer</code></a></h2>
+<pre><code class="language-javascript">import init, { JsViewer, JsImageVisual, JsVolumeVisual,
+               JsLevelMetadata, JsChunkStatus } from './pkg/bovista.js';
+
+await init();
+
+const viewer = await JsViewer.new('canvas');  // canvas element ID
+
+// Camera
+viewer.setCameraPosition(x, y, z);
+viewer.setCameraTarget(x, y, z);
+viewer.setCameraUp(x, y, z);
+viewer.orbitCamera(dx, dy);
+viewer.panCamera(dx, dy);
+viewer.zoomCamera(delta);
+viewer.setCameraClipPlanes(near, far);
+viewer.setCameraProjectionMode(JsProjectionMode.Perspective);
+viewer.setCameraOrthoHeight(h);
+viewer.getCameraOrthoHeight();
+viewer.getCameraDistance();
+
+// Scene
+viewer.addImage(imageVisual);   // returns index
+viewer.addVolume(volumeVisual);
+viewer.clearScene();
+viewer.visualCount();
+
+// Render loop (call from requestAnimationFrame)
+viewer.renderFrame();
+viewer.resize(w, h);            // call on canvas resize
+</code></pre>
+<h2 id="jslevelmetadata"><a class="header" href="#jslevelmetadata"><code>JsLevelMetadata</code></a></h2>
+<pre><code class="language-javascript">const level = new JsLevelMetadata(
+    width, height, depth,        // volume dimensions at this LOD
+    chunkW, chunkH, chunkD,      // tile size
+    voxelW, voxelH, voxelD,      // physical voxel size
+    scaleFactor,                  // relative to level 0
+    translateX, translateY, translateZ
+);
+</code></pre>
+<p>Note: the constructor takes individual numbers (no objects). Getters return arrays:</p>
+<pre><code class="language-javascript">level.volume_size  // [depth, height, width]
+level.chunk_size   // [depth, height, width]
+level.voxel_size   // [depth, height, width]
+level.scale_factor // number
+</code></pre>
+<p>For anisotropic datasets (e.g. 2× downsampling in XY but not Z), pass <code>Math.max(vxI/vx0, vyI/vy0, vzI/vz0)</code> as <code>scaleFactor</code> — the largest downsampling factor across any axis. See the Python API docs for details.</p>
+<h2 id="jsimagevisual"><a class="header" href="#jsimagevisual"><code>JsImageVisual</code></a></h2>
+<pre><code class="language-javascript">const image = new JsImageVisual(viewer, levels, maxTiles, chunkLoader);
+// levels:      Array&lt;JsLevelMetadata&gt;
+// maxTiles:    number
+// chunkLoader: (lod, z, y, x) =&gt; JsChunkStatus
+
+viewer.addImage(image);
+
+// Slice control
+image.setSliceZ(z);
+image.setSliceY(y);
+image.setSliceX(x);
+image.setSlicePlane(px, py, pz, nx, ny, nz);
+
+// Appearance
+image.setContrast(min, max);       // 0.0–1.0
+image.setColormap(uint8Array);     // Uint8Array of 1024 bytes (256 RGBA); empty = grayscale
+image.setLodBias(bias);
+
+// Diagnostics
+image.setDebugMode(true);
+image.getStats();                  // [loaded, visible]
+
+// Push tile data
+image.setChunkDataU16(lod, z, y, x, uint16Array, width, height, depth);
+</code></pre>
+<h2 id="jsvolumevisual"><a class="header" href="#jsvolumevisual"><code>JsVolumeVisual</code></a></h2>
+<pre><code class="language-javascript">const volume = new JsVolumeVisual(viewer, levels, maxTiles, chunkLoader);
+viewer.addVolume(volume);
+
+volume.setContrast(min, max);
+volume.setColormap(uint8Array);
+volume.setDensityScale(scale);
+volume.setRelativeStepSize(step);   // 1.0 = Nyquist
+volume.setLodBias(bias);
+
+// Debug
+volume.setDebugMode(true);          // LOD tint
+volume.setAtlasDebugMode(true);     // raw atlas
+volume.setStepDebugMode(true);      // step count heatmap
+
+volume.getStats();                  // [loaded, visible]
+volume.setChunkDataU16(lod, z, y, x, uint16Array, width, height, depth);
+</code></pre>
+<h2 id="loader-pattern-full-example-1"><a class="header" href="#loader-pattern-full-example-1">Loader Pattern (full example)</a></h2>
+<pre><code class="language-javascript">const pending = new Set();
+const cache = new Map();
+
+function requestTile(lod, z, y, x) {
+    const key = `${lod}_${z}_${y}_${x}`;
+    if (pending.has(key)) return JsChunkStatus.AlreadyPending;
+    pending.add(key);
+
+    fetchZarrChunk(lod, z, y, x).then(({ data, w, h, d }) =&gt; {
+        image.setChunkDataU16(lod, z, y, x, data, w, h, d);
+        pending.delete(key);
+    }).catch(() =&gt; pending.delete(key));
+
+    return JsChunkStatus.Accepted;
+}
+
+// Render loop
+function frame() {
+    viewer.renderFrame();
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</code></pre>
+<h2 id="differences-from-the-python-api"><a class="header" href="#differences-from-the-python-api">Differences from the Python API</a></h2>
+<p><strong>Initialization:</strong> <code>JsViewer.new()</code> is async (returns a Promise) and takes a canvas element ID; Python’s <code>Viewer()</code> is sync and initialization is a separate call.</p>
+<p><strong><code>add*</code> methods:</strong> JavaScript has <code>addImage()</code> and <code>addVolume()</code> as distinct methods since wasm-bindgen doesn’t support overloading via <code>PyAny</code>. Python uses a single polymorphic <code>add()</code>.</p>
+<p><strong>Error handling:</strong> JavaScript methods return <code>Result&lt;T, JsValue&gt;</code> which becomes a thrown exception on error. Python methods return <code>PyResult&lt;T&gt;</code> which becomes a Python exception.</p>
+<p><strong><code>getStats()</code> return type:</strong> JavaScript returns <code>number[]</code> (array); Python returns <code>(int, int)</code> tuple.</p>
+<p><strong><code>setChunkDataU16</code> signature:</strong> JavaScript takes explicit <code>width, height, depth</code> parameters after the data array. Python infers dimensions from the numpy array shape.</p>
+<p><strong>Thread safety:</strong> JavaScript is single-threaded — <code>Rc&lt;RefCell&lt;&gt;&gt;</code> instead of <code>Arc&lt;Mutex&lt;&gt;&gt;</code>. No locking overhead, but the visual must only be accessed from the main thread.</p>
+<h2 id="binding-structure-1"><a class="header" href="#binding-structure-1">Binding Structure</a></h2>
+<p>The WASM bindings live in <code>src/wasm.rs</code>. Like the Python bindings, the <code>#[visual_methods(VisualType)]</code> proc-macro generates the downcast + error-mapping boilerplate for empty-body methods.</p>
+<p><code>bindings_common.rs</code> provides <code>with_visual_ref</code> and <code>with_visual_mut</code> helpers that work with either <code>Arc&lt;Mutex&lt;&gt;&gt;</code> (native) or <code>Rc&lt;RefCell&lt;&gt;&gt;</code> (WASM) via a conditional type alias.</p>
+<h2 id="browser-requirements"><a class="header" href="#browser-requirements">Browser Requirements</a></h2>
+<ul>
+<li>Chrome 113+ or Edge 113+ (WebGPU enabled by default)</li>
+<li>Safari 18+ (requires WebGPU feature flag in earlier versions)</li>
+<li>Firefox: behind <code>dom.webgpu.enabled</code> flag</li>
+<li>Check browser support: <a href="https://webgpureport.org/">webgpureport.org</a></li>
+</ul>
+<p>WebGPU is required; WebGL is not supported. If a user’s browser lacks WebGPU, the examples display a fallback message.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="example-slice-viewer"><a class="header" href="#example-slice-viewer">Example: Slice Viewer</a></h1>
+<p>The slice viewer renders an arbitrary-orientation cross-section through a remote OME-Zarr volume. It demonstrates the <code>ImageVisual</code> rendering path, the virtual texture streaming system, and the cross-platform loader pattern.</p>
+<ul>
+<li><a href="#live-demo">Live Demo</a></li>
+<li><a href="#what-it-demonstrates">What It Demonstrates</a></li>
+<li><a href="#running">Running</a></li>
+<li><a href="#key-controls">Key Controls</a></li>
+<li><a href="#architecture">Architecture</a></li>
+<li><a href="#datasets">Datasets</a></li>
+<li><a href="#code-walkthrough">Code Walkthrough</a>
+<ul>
+<li><a href="#1-build-level-metadata">1. Build level metadata</a></li>
+<li><a href="#2-create-the-visual">2. Create the visual</a></li>
+<li><a href="#3-loader-callback">3. Loader callback</a></li>
+<li><a href="#4-render-loop-qt-timer">4. Render loop (Qt timer)</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="live-demo"><a class="header" href="#live-demo">Live Demo</a></h2>
+<div class="live-demo-container">
+<iframe src="examples/live/slice_viewer/" title="Slice Viewer — live demo"></iframe>
+<div class="live-demo-links">
+Source:
+<a href="https://github.com/aganders3/bovista/tree/main/examples/slice_viewer/web">Web (JS)</a> ·
+<a href="https://github.com/aganders3/bovista/tree/main/examples/slice_viewer/python">Python</a> ·
+<a href="https://github.com/aganders3/bovista/tree/main/examples/slice_viewer/rust">Rust (stub)</a>
+</div>
+
+</div>
+
+<h2 id="what-it-demonstrates"><a class="header" href="#what-it-demonstrates">What It Demonstrates</a></h2>
+<ul>
+<li>Loading multi-resolution OME-Zarr data from public S3 buckets</li>
+<li><code>ImageVisual</code>: single-draw-call slice plane with virtual texture streaming</li>
+<li>Asynchronous tile loading (Python <code>ThreadPoolExecutor</code> / JS <code>fetch()</code>)</li>
+<li>LOD selection and debug visualization</li>
+<li>Camera controls: orbit, pan, zoom, orthographic/perspective toggle</li>
+<li>Window/level contrast adjustment</li>
+</ul>
+<h2 id="running"><a class="header" href="#running">Running</a></h2>
+<p><strong>Python:</strong></p>
+<pre><code class="language-bash">uv sync
+uv run python examples/slice_viewer/python/remote_ome_zarr.py
+</code></pre>
+<p><strong>Web:</strong></p>
+<pre><code class="language-bash">./build_wasm.sh
+python3 -m http.server 8000 --directory examples
+# open http://localhost:8000/slice_viewer/
+</code></pre>
+<h2 id="key-controls"><a class="header" href="#key-controls">Key Controls</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Input</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>Left-drag</td><td>Orbit camera</td></tr>
+<tr><td>Right-drag</td><td>Pan camera</td></tr>
+<tr><td>Scroll / pinch</td><td>Zoom</td></tr>
+<tr><td>Middle-drag</td><td>Adjust contrast</td></tr>
+<tr><td>P</td><td>Toggle perspective / orthographic</td></tr>
+<tr><td>D</td><td>Toggle LOD debug tint</td></tr>
+<tr><td>↑ / ↓</td><td>Move slice plane along normal</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
+<pre><code>OME-Zarr (S3)
+     ↓ fetch/read
+ThreadPoolExecutor / JS fetch
+     ↓ set_chunk_data_u16()
+PendingChunks queue
+     ↓ VirtualTextureData::prepare()
+Atlas 3D texture + Page table
+     ↓ single draw call
+ImageVisual → virtual_tile.wgsl → screen
+</code></pre>
+<p>The slice plane is a flat polygon whose vertices are the intersection of the current plane with each tile’s bounding box. The fragment shader resolves the atlas address for each fragment via the page table and samples the 3D atlas.</p>
+<h2 id="datasets"><a class="header" href="#datasets">Datasets</a></h2>
+<p>All datasets are publicly accessible — no credentials needed.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Dataset</th><th>Format</th><th>Levels</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Marmoset neurons</td><td>OME-Zarr 0.5 (v3)</td><td>8</td><td>3D fluorescence microscopy</td></tr>
+<tr><td>Pawpawsaurus fossil</td><td>OME-Zarr 0.5 (v3)</td><td>4</td><td>Micro-CT scan</td></tr>
+<tr><td>Beechnut CT</td><td>OME-Zarr 0.5 (v3)</td><td>6</td><td>High-res CT</td></tr>
+<tr><td>Platybrowser embryo</td><td>OME-Zarr 0.4 (v2)</td><td>10</td><td>EMBL, large pyramid</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="code-walkthrough"><a class="header" href="#code-walkthrough">Code Walkthrough</a></h2>
+<h3 id="1-build-level-metadata"><a class="header" href="#1-build-level-metadata">1. Build level metadata</a></h3>
+<pre><code class="language-python">multiscales = zarr_group.attrs['multiscales'][0]
+datasets = multiscales['datasets']
+
+levels = []
+for i, ds in enumerate(datasets):
+    arr = zarr_group[ds['path']]
+    transform = ds.get('coordinateTransformations', [{}])
+    # ... parse voxel size, translation from OME metadata
+    levels.append(bv.LevelMetadata(
+        volume_size=(arr.shape[0], arr.shape[1], arr.shape[2]),
+        chunk_size=tuple(arr.chunks),
+        voxel_size=voxel_size,
+        scale_factor=1.0 / (2.0 ** i),
+    ))
+</code></pre>
+<h3 id="2-create-the-visual"><a class="header" href="#2-create-the-visual">2. Create the visual</a></h3>
+<pre><code class="language-python">image = bv.Image(
+    viewer,
+    levels,
+    max_tiles=500,
+    loader=request_tile,
+)
+viewer.add(image)
+
+# Position slice at volume center
+cx, cy, cz = compute_center(levels[0])
+image.set_slice_plane(cx, cy, cz, 0.0, 0.0, 1.0)  # Z-normal (XY slice)
+</code></pre>
+<h3 id="3-loader-callback"><a class="header" href="#3-loader-callback">3. Loader callback</a></h3>
+<pre><code class="language-python">executor = ThreadPoolExecutor(max_workers=8)
+
+def request_tile(lod, z, y, x):
+    key = (lod, z, y, x)
+    if key in pending: return bv.ChunkStatus.AlreadyPending
+    pending.add(key)
+    executor.submit(load_tile, key)
+    return bv.ChunkStatus.Accepted
+
+def load_tile(key):
+    lod, z, y, x = key
+    arr = zarr_levels[lod]
+    cd, ch, cw = arr.chunks
+    data = arr[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw]
+    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
+    pending.discard(key)
+</code></pre>
+<h3 id="4-render-loop-qt-timer"><a class="header" href="#4-render-loop-qt-timer">4. Render loop (Qt timer)</a></h3>
+<pre><code class="language-python">def on_timer():
+    viewer.render_frame()
+
+timer = QTimer()
+timer.timeout.connect(on_timer)
+timer.start(16)   # ~60 fps
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="example-volume-renderer"><a class="header" href="#example-volume-renderer">Example: Volume Renderer</a></h1>
+<p>The volume renderer performs direct volume rendering (DVR) via GPU ray marching. It uses the same virtual texture back-end as the slice viewer but fires a ray per pixel through the volume rather than intersecting a plane.</p>
+<ul>
+<li><a href="#live-demo-1">Live Demo</a></li>
+<li><a href="#what-it-demonstrates-1">What It Demonstrates</a></li>
+<li><a href="#running-1">Running</a></li>
+<li><a href="#key-controls-1">Key Controls</a></li>
+<li><a href="#architecture-1">Architecture</a></li>
+<li><a href="#parameters">Parameters</a></li>
+<li><a href="#code-walkthrough-1">Code Walkthrough</a>
+<ul>
+<li><a href="#1-build-level-metadata-same-as-slice-viewer">1. Build level metadata (same as slice viewer)</a></li>
+<li><a href="#2-create-the-visual-1">2. Create the visual</a></li>
+<li><a href="#3-loader-callback-identical-pattern-to-slice-viewer">3. Loader callback (identical pattern to slice viewer)</a></li>
+<li><a href="#4-density-scale-calculation">4. Density scale calculation</a></li>
+</ul>
+</li>
+<li><a href="#web-specific-vram-budget">Web-Specific: VRAM Budget</a></li>
+<li><a href="#datasets-1">Datasets</a></li>
+</ul>
+<h2 id="live-demo-1"><a class="header" href="#live-demo-1">Live Demo</a></h2>
+<div class="live-demo-container">
+<iframe src="examples/live/volume_renderer/" title="Volume Renderer — live demo"></iframe>
+<div class="live-demo-links">
+Source:
+<a href="https://github.com/aganders3/bovista/tree/main/examples/volume_renderer/web">Web (JS)</a> ·
+<a href="https://github.com/aganders3/bovista/tree/main/examples/volume_renderer/python">Python</a> ·
+<a href="https://github.com/aganders3/bovista/tree/main/examples/volume_renderer/rust">Rust (stub)</a>
+</div>
+
+</div>
+
+<h2 id="what-it-demonstrates-1"><a class="header" href="#what-it-demonstrates-1">What It Demonstrates</a></h2>
+<ul>
+<li><code>VolumeVisual</code>: direct volume rendering with front-to-back alpha compositing</li>
+<li>Transfer functions via colormap LUT</li>
+<li>Ray marching step size and density controls</li>
+<li>Same streaming back-end as the slice viewer (atlas + page table)</li>
+<li>Three debug modes: LOD tint, atlas visualization, step-count heatmap</li>
+</ul>
+<h2 id="running-1"><a class="header" href="#running-1">Running</a></h2>
+<p><strong>Python:</strong></p>
+<pre><code class="language-bash">uv sync
+uv run python examples/volume_renderer/python/volume_ome_zarr.py
+</code></pre>
+<p><strong>Web:</strong></p>
+<pre><code class="language-bash">./build_wasm.sh
+python3 -m http.server 8000 --directory examples
+# open http://localhost:8000/volume_renderer/
+</code></pre>
+<h2 id="key-controls-1"><a class="header" href="#key-controls-1">Key Controls</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Input</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>Left-drag</td><td>Orbit camera</td></tr>
+<tr><td>Right-drag</td><td>Pan camera</td></tr>
+<tr><td>Scroll / pinch</td><td>Zoom</td></tr>
+<tr><td>Middle-drag</td><td>Adjust contrast</td></tr>
+<tr><td>D</td><td>LOD tint debug mode</td></tr>
+<tr><td>A</td><td>Atlas debug mode</td></tr>
+<tr><td>S</td><td>Step count heatmap</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="architecture-1"><a class="header" href="#architecture-1">Architecture</a></h2>
+<pre><code>OME-Zarr (S3)
+     ↓ fetch/read
+ThreadPoolExecutor / JS fetch
+     ↓ set_chunk_data_u16()
+PendingChunks queue
+     ↓ VirtualTextureData::prepare()
+Atlas 3D texture + Page table
+     ↓ single draw call
+VolumeVisual → volume_raymarch.wgsl → screen
+</code></pre>
+<p><code>VolumeVisual</code> renders a unit-cube bounding box with back-face culling inverted (the box is inward-wound, so back faces are rendered — these are the ray exit points). The fragment shader:</p>
+<ol>
+<li>Reconstructs the ray entry point from the clip position and camera</li>
+<li>Marches from entry to exit in world space, one voxel per step at the current LOD</li>
+<li>At each step, looks up the page table to find the atlas tile, samples the atlas, applies the contrast window and colormap LUT</li>
+<li>Composites front-to-back with premultiplied alpha; terminates when opacity saturates</li>
+</ol>
+<p>Because the page table records the actual LOD at which each tile was loaded, the shader falls back to coarser tiles mid-ray for regions that haven’t streamed in yet.</p>
+<h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Parameter</th><th>Method</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>Contrast</td><td><code>set_contrast(min, max)</code></td><td>Normalized 0–1 window</td></tr>
+<tr><td>Colormap</td><td><code>set_colormap(rgba)</code></td><td>256-entry RGBA LUT; <code>None</code> = grayscale</td></tr>
+<tr><td>Density scale</td><td><code>set_density_scale(scale)</code></td><td>Per-step opacity multiplier</td></tr>
+<tr><td>Step size</td><td><code>set_relative_step_size(step)</code></td><td>1.0 = Nyquist at finest LOD</td></tr>
+<tr><td>LOD bias</td><td><code>set_lod_bias(bias)</code></td><td>Positive = prefer finer; negative = coarser</td></tr>
+<tr><td>Max tiles</td><td>at construction</td><td>VRAM budget; ~2 bytes × tile_size³ each</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="code-walkthrough-1"><a class="header" href="#code-walkthrough-1">Code Walkthrough</a></h2>
+<h3 id="1-build-level-metadata-same-as-slice-viewer"><a class="header" href="#1-build-level-metadata-same-as-slice-viewer">1. Build level metadata (same as slice viewer)</a></h3>
+<pre><code class="language-python">levels = build_levels_from_ome_zarr(zarr_group)
+</code></pre>
+<h3 id="2-create-the-visual-1"><a class="header" href="#2-create-the-visual-1">2. Create the visual</a></h3>
+<pre><code class="language-python">volume = bv.Volume(
+    viewer,
+    levels,
+    max_tiles=2000,
+    loader=request_tile,
+)
+viewer.add(volume)
+
+# Initial parameters
+volume.set_contrast(0.0, 0.3)
+volume.set_density_scale(0.01)
+volume.set_relative_step_size(1.0)
+</code></pre>
+<h3 id="3-loader-callback-identical-pattern-to-slice-viewer"><a class="header" href="#3-loader-callback-identical-pattern-to-slice-viewer">3. Loader callback (identical pattern to slice viewer)</a></h3>
+<pre><code class="language-python">def request_tile(lod, z, y, x):
+    key = (lod, z, y, x)
+    if key in pending: return bv.ChunkStatus.AlreadyPending
+    pending.add(key)
+    executor.submit(load_tile, key)
+    return bv.ChunkStatus.Accepted
+</code></pre>
+<h3 id="4-density-scale-calculation"><a class="header" href="#4-density-scale-calculation">4. Density scale calculation</a></h3>
+<p>The examples compute a reasonable initial density scale based on the dataset’s physical extent:</p>
+<pre><code class="language-python">extent = max(
+    vol_depth  * voxel_z,
+    vol_height * voxel_y,
+    vol_width  * voxel_x,
+)
+# Target: ~200 steps across the widest dimension at step_size=1.0
+base_density = 1.0 / 200.0
+volume.set_density_scale(base_density)
+</code></pre>
+<h2 id="web-specific-vram-budget"><a class="header" href="#web-specific-vram-budget">Web-Specific: VRAM Budget</a></h2>
+<p>The web example includes a VRAM budget selector that converts a GB target into <code>max_tiles</code>:</p>
+<pre><code class="language-javascript">const tileVram = tileDepth * tileHeight * tileWidth * 2; // R16Float = 2 bytes/voxel
+const maxTiles = Math.floor((budgetBytes * 0.8) / tileVram); // 80% headroom
+const volume = new JsVolumeVisual(viewer, levels, maxTiles, requestTile);
+</code></pre>
+<h2 id="datasets-1"><a class="header" href="#datasets-1">Datasets</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Dataset</th><th>Format</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Marmoset neurons</td><td>OME-Zarr 0.5</td><td>Dense 3D fluorescence</td></tr>
+<tr><td>Pawpawsaurus fossil</td><td>OME-Zarr 0.5</td><td>Micro-CT, good for DVR</td></tr>
+<tr><td>Beechnut CT</td><td>OME-Zarr 0.5</td><td>High-resolution CT scan</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="overview--design-philosophy"><a class="header" href="#overview--design-philosophy">Overview &amp; Design Philosophy</a></h1>
+<p>Bovista is designed around three core principles: <strong>handle massive datasets</strong>, <strong>work everywhere</strong>, and <strong>be fast</strong>. This chapter explains the design decisions that make this possible.</p>
+<h2 id="the-problem-massive-volumetric-data"><a class="header" href="#the-problem-massive-volumetric-data">The Problem: Massive Volumetric Data</a></h2>
+<p>Modern microscopy and medical imaging produce enormous datasets:</p>
+<ul>
+<li><strong>Light-sheet microscopy</strong>: 32,000 × 32,000 × 32,000 voxels (~32 TB uncompressed)</li>
+<li><strong>Whole-brain imaging</strong>: 50,000 × 40,000 × 10,000 voxels (~20 TB)</li>
+<li><strong>4D time-series</strong>: Multiple 3D volumes over time (100+ TB)</li>
+</ul>
+<p><strong>Traditional approaches don’t work:</strong></p>
+<p>❌ <strong>Load entire volume</strong>: 32 TB won’t fit in 64 GB RAM
+❌ <strong>Downsample</strong>: Lose critical detail
+❌ <strong>Pre-slice</strong>: Can’t explore interactively
+❌ <strong>Server-side rendering</strong>: High latency, expensive infrastructure</p>
+<h2 id="bovistas-solution-virtual-texture-streaming"><a class="header" href="#bovistas-solution-virtual-texture-streaming">Bovista’s Solution: Virtual Texture Streaming</a></h2>
+<p>Instead, Bovista:</p>
+<p>✅ <strong>Divides volumes into tiles</strong> at multiple LOD resolutions
+✅ <strong>Loads only visible tiles</strong> (typically 10-50 resident out of millions virtual)
+✅ <strong>Streams from remote storage</strong> (S3, Zarr, HTTP)
+✅ <strong>Renders on the client</strong> (Python desktop or web browser) — slice or full DVR
+✅ <strong>Manages VRAM automatically</strong> (atlas LRU eviction when tile budget is exceeded)</p>
+<p><strong>Result</strong>: Interactive slice or volumetric rendering of terabyte-scale data with a fixed VRAM footprint (~500 MB - 1 GB for a typical atlas).</p>
+<h2 id="design-decision-why-wgpu"><a class="header" href="#design-decision-why-wgpu">Design Decision: Why WGPU?</a></h2>
+<p>Bovista needs to handle highly variable chunk sizes and data layouts. Why WGPU instead of OpenGL/WebGL?</p>
+<h3 id="cross-platform-requirements"><a class="header" href="#cross-platform-requirements">Cross-Platform Requirements</a></h3>
+<p>Bovista needs to work in:</p>
+<ul>
+<li><strong>Python desktop apps</strong> (Windows, macOS, Linux)</li>
+<li><strong>Web browsers</strong> (via WebAssembly)</li>
+<li><strong>Jupyter notebooks</strong> (future goal)</li>
+</ul>
+<p><strong>OpenGL</strong>: Would require separate OpenGL (desktop) and WebGL (browser) implementations
+<strong>WGPU</strong>: Single codebase targets native (Vulkan/Metal/DX12) and web (WebGPU)</p>
+<h3 id="type-safety--memory-safety"><a class="header" href="#type-safety--memory-safety">Type Safety &amp; Memory Safety</a></h3>
+<p>Volumetric visualization involves complex state:</p>
+<ul>
+<li>Dynamic geometry generation</li>
+<li>Async chunk loading</li>
+<li>Resource lifecycle management</li>
+</ul>
+<p><strong>OpenGL</strong>: Runtime errors, manual resource tracking, easy to leak memory
+<strong>WGPU + Rust</strong>: Compile-time validation, automatic resource cleanup, ownership prevents leaks</p>
+<h3 id="performance-for-streaming-rendering"><a class="header" href="#performance-for-streaming-rendering">Performance for Streaming Rendering</a></h3>
+<p>Bovista’s virtual texture streaming requires:</p>
+<ul>
+<li>Uploading tile data into the atlas texture each frame (<code>queue.write_texture</code>)</li>
+<li>Dynamic vertex buffer updates for slice geometry each frame</li>
+<li>Single draw call per visual — no per-tile state changes</li>
+</ul>
+<p><strong>WGPU advantages:</strong></p>
+<ul>
+<li>✅ <strong>Explicit resource lifecycle</strong>: Precise control over when the atlas and page-table memory are allocated and freed</li>
+<li>✅ <strong>Bind groups</strong>: Atlas texture, page table, and camera uniforms bundled once; no per-tile rebinding</li>
+<li>✅ <strong>Efficient pipelines</strong>: Pre-compiled; both slice and ray-march paths use one pipeline per visual</li>
+<li>✅ <strong>Queue</strong>: <code>write_texture</code> / <code>write_buffer</code> allow background threads to push tile data without blocking the render loop</li>
+</ul>
+<h2 id="architecture-layers"><a class="header" href="#architecture-layers">Architecture Layers</a></h2>
+<p>Bovista is organized into clear layers:</p>
+<pre><code>┌─────────────────────────────────────────────────────┐
+│  Application Layer (Python/JS)                      │
+│  - Load data from Zarr/S3                           │
+│  - Handle UI events                                 │
+│  - Call Bovista API                                 │
+└─────────────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  Bindings Layer (PyO3 / wasm-bindgen)               │
+│  - Type conversion (NumPy ↔ Rust)                   │
+│  - Callback handling                                │
+│  - Platform abstractions                            │
+└─────────────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  Visualization Layer (Bovista Core)                 │
+│  - Renderer: GPU management                         │
+│  - Scene: Visual organization                       │
+│  - Visuals: Points, Lines, ImageVisual, VolumeVisual │
+│  - Camera: Orbit controls                           │
+└─────────────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  GPU Layer (WGPU)                                   │
+│  - Resource management (buffers, textures)          │
+│  - Pipeline compilation                             │
+│  - Command encoding                                 │
+│  - Native/Web abstraction                           │
+└─────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="separation-of-concerns"><a class="header" href="#separation-of-concerns">Separation of Concerns</a></h3>
+<p><strong>Application Layer</strong> doesn’t know about:</p>
+<ul>
+<li>GPU resources</li>
+<li>Shader compilation</li>
+<li>Vertex layouts</li>
+</ul>
+<p><strong>Visualization Layer</strong> doesn’t know about:</p>
+<ul>
+<li>Zarr file format</li>
+<li>Network protocols</li>
+<li>Platform-specific UI</li>
+</ul>
+<p><strong>GPU Layer</strong> doesn’t know about:</p>
+<ul>
+<li>Volume chunking</li>
+<li>Data loading</li>
+<li>Coordinate systems</li>
+</ul>
+<p><strong>Benefit</strong>: Each layer can be developed and tested independently.</p>
+<h2 id="key-design-patterns"><a class="header" href="#key-design-patterns">Key Design Patterns</a></h2>
+<h3 id="1-the-visual-trait"><a class="header" href="#1-the-visual-trait">1. The Visual Trait</a></h3>
+<p>All renderable objects implement the <code>Visual</code> trait:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait Visual: Send + Sync {
+    fn prepare(&amp;mut self, device: &amp;Device, queue: &amp;Queue);
+    fn render(&amp;self, render_pass: &amp;mut RenderPass);
+    fn set_transform(&amp;mut self, transform: Transform);
+    // ...
+}
+<span class="boring">}</span></code></pre>
+<p><strong>Why this works:</strong></p>
+<ul>
+<li><strong>Polymorphism</strong>: Scene renders any <code>Visual</code> without knowing its type</li>
+<li><strong>Encapsulation</strong>: Each visual manages its own GPU resources</li>
+<li><strong>Flexibility</strong>: Easy to add new visual types</li>
+</ul>
+<h3 id="2-callback-based-loading"><a class="header" href="#2-callback-based-loading">2. Callback-Based Loading</a></h3>
+<p>Data loading uses callbacks, not inheritance. The loader is called by the rendering engine each frame for tiles it needs; it returns a <code>ChunkStatus</code> immediately and pushes data back asynchronously via <code>set_chunk_data_u16()</code>:</p>
+<pre><code class="language-python">def request_tile(lod, z, y, x):
+    key = (lod, z, y, x)
+    if key in pending:
+        return bv.ChunkStatus.AlreadyPending
+    pending.add(key)
+    executor.submit(load_tile, key)
+    return bv.ChunkStatus.Accepted
+
+volume = bv.Volume(viewer, levels, max_tiles=2000, loader=request_tile)
+</code></pre>
+<p><strong>Why this works:</strong></p>
+<ul>
+<li><strong>Flexibility</strong>: Any data source (Zarr, HDF5, HTTP, custom)</li>
+<li><strong>No subclassing</strong>: Simple function, not class hierarchy</li>
+<li><strong>Non-blocking</strong>: Rendering never stalls waiting for data</li>
+</ul>
+<h3 id="3-shared-bind-group-pattern"><a class="header" href="#3-shared-bind-group-pattern">3. Shared Bind Group Pattern</a></h3>
+<p>All visuals share the camera bind group:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Renderer sets once per frame
+render_pass.set_bind_group(0, &amp;camera_bind_group, &amp;[]);
+
+// Each visual provides its own resources
+impl Visual for MyVisual {
+    fn render(&amp;self, render_pass: &amp;mut RenderPass) {
+        render_pass.set_bind_group(1, &amp;self.bind_group, &amp;[]);
+        render_pass.draw(...);
+    }
+}
+<span class="boring">}</span></code></pre>
+<p><strong>Benefit</strong>: Camera updated once, all visuals use it automatically.</p>
+<h3 id="4-platform-abstractions"><a class="header" href="#4-platform-abstractions">4. Platform Abstractions</a></h3>
+<p>Rust code uses conditional compilation:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(not(target_arch = "wasm32"))]
+pub type VisualRef = Arc&lt;Mutex&lt;dyn Visual&gt;&gt;;  // Native: thread-safe
+
+#[cfg(target_arch = "wasm32")]
+pub type VisualRef = Rc&lt;RefCell&lt;dyn Visual&gt;&gt;;  // WASM: single-threaded
+<span class="boring">}</span></code></pre>
+<p><strong>Benefit</strong>: One codebase, optimal for each platform.</p>
+<h2 id="trade-offs--limitations"><a class="header" href="#trade-offs--limitations">Trade-offs &amp; Limitations</a></h2>
+<h3 id="what-bovista-is-good-at"><a class="header" href="#what-bovista-is-good-at">What Bovista Is Good At</a></h3>
+<p>✅ <strong>Slice rendering</strong>: Real-time, arbitrary orientations (<code>ImageVisual</code>)
+✅ <strong>Volume ray marching</strong>: Direct volume rendering with transfer functions (<code>VolumeVisual</code>)
+✅ <strong>Remote data</strong>: Efficient streaming from S3/Zarr via virtual textures
+✅ <strong>Large volumes</strong>: Terabyte-scale with atlas LRU eviction
+✅ <strong>Cross-platform</strong>: Native + web from one codebase</p>
+<h3 id="what-bovista-is-not-optimized-for"><a class="header" href="#what-bovista-is-not-optimized-for">What Bovista Is Not Optimized For</a></h3>
+<p>❌ <strong>Real-time editing</strong>: Read-only visualization
+❌ <strong>Small volumes</strong>: Virtual texture overhead unnecessary for &lt;1 GB
+❌ <strong>Non-volumetric data</strong>: Meshes, graphs need custom visuals</p>
+<h3 id="design-choices"><a class="header" href="#design-choices">Design Choices</a></h3>
+<p><strong>Virtual textures (atlas + page table) vs per-tile draw calls:</strong></p>
+<ul>
+<li>Chose virtual textures: Single draw call regardless of tile count; shader resolves indirection</li>
+<li>Per-tile draws: Simpler shader but O(n) state changes per frame</li>
+</ul>
+<p><strong>Slice rendering vs ray marching:</strong></p>
+<ul>
+<li>Bovista supports both; <code>ImageVisual</code> uses slice geometry for speed, <code>VolumeVisual</code> uses ray marching for full semi-transparent DVR</li>
+</ul>
+<p><strong>LRU atlas eviction vs fixed budget:</strong></p>
+<ul>
+<li>Chose LRU: Automatic, adapts to view changes</li>
+<li>Fixed budget: More predictable but less flexible</li>
+</ul>
+<p><strong>Callback-based loading vs async Rust:</strong></p>
+<ul>
+<li>Chose callbacks: Simpler Python/WASM integration; any async runtime can back it</li>
+<li>Async: More Rust-idiomatic but complex cross-language interop</li>
+</ul>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
+<p>Bovista’s architecture is driven by its goal: <strong>write the core visualization once in Rust, run it anywhere</strong>.</p>
+<p><strong>Key decisions:</strong></p>
+<ol>
+<li><strong>WGPU</strong>: Cross-platform, type-safe, modern GPU API (Vulkan/Metal/DX12 + WebGPU)</li>
+<li><strong>Virtual textures</strong>: Atlas + page table; single draw call; only visible tiles resident</li>
+<li><strong>Visual trait</strong>: Polymorphic rendering system (slice, ray march, points, custom)</li>
+<li><strong>Callback loaders</strong>: Flexible data sources (thread pool, JS fetch, or anything else)</li>
+<li><strong>LRU atlas eviction</strong>: Automatic memory management regardless of dataset size</li>
+</ol>
+<p><strong>Result</strong>: View terabyte-scale volumes in Python or a web browser from a single Rust codebase.</p>
+<hr>
+<p><strong>Next</strong>: <a href="#visual-system">Visual System →</a></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="visual-system"><a class="header" href="#visual-system">Visual System</a></h1>
+<p>The visual system in Bovista provides a unified interface for rendering different types of 3D content. All visuals implement the <code>Visual</code> trait, which defines the core rendering lifecycle and provides common functionality for transforms, visibility, and naming.</p>
+<ul>
+<li><a href="#the-visual-trait">The Visual Trait</a></li>
+<li><a href="#built-in-visual-types">Built-in Visual Types</a></li>
+<li><a href="#adding-a-new-visual-type">Adding a New Visual Type</a></li>
+</ul>
+<h2 id="the-visual-trait"><a class="header" href="#the-visual-trait">The Visual Trait</a></h2>
+<p>Every visual in Bovista implements this trait:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait Visual: Send {
+    fn prepare(&amp;mut self, device: &amp;wgpu::Device, queue: &amp;wgpu::Queue);
+    fn render(&amp;self, render_pass: &amp;mut RenderPass);
+
+    fn set_transform(&amp;mut self, transform: Transform);
+    fn transform(&amp;self) -&gt; &amp;Transform;
+
+    fn is_visible(&amp;self) -&gt; bool;
+    fn set_visible(&amp;mut self, visible: bool);
+
+    fn name(&amp;self) -&gt; &amp;str;
+}
+<span class="boring">}</span></code></pre>
+<p>The <strong>prepare</strong> phase updates GPU resources (buffers, uniforms) before the frame. The <strong>render</strong> phase emits draw commands into the active render pass.</p>
+<h2 id="built-in-visual-types"><a class="header" href="#built-in-visual-types">Built-in Visual Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Visual</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>PointsVisual</code></td><td>Colored point cloud; vertices uploaded once at construction</td></tr>
+<tr><td><code>LinesVisual</code></td><td>Line segments and wireframes; same pattern as points</td></tr>
+<tr><td><code>ImageVisual</code></td><td>Arbitrary-orientation slice plane through a 3D volume; virtual texture streaming</td></tr>
+<tr><td><code>VolumeVisual</code></td><td>Direct volume rendering via GPU ray marching; same streaming back-end as <code>ImageVisual</code></td></tr>
+<tr><td><code>CustomVisual</code></td><td>User-supplied WGSL shader; Bovista provides the camera bind group and depth buffer</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>ImageVisual</code> and <code>VolumeVisual</code> share the virtual texture system — see <a href="#chunked-rendering-virtual-texture-architecture">Chunked Rendering</a> for how that works.</p>
+<h2 id="adding-a-new-visual-type"><a class="header" href="#adding-a-new-visual-type">Adding a New Visual Type</a></h2>
+<p>Implement the <code>Visual</code> trait for your struct. Construct it with a <code>wgpu::Device</code> reference from <code>viewer.renderer()</code>. <code>src/visuals/points.rs</code> and <code>src/visuals/lines.rs</code> are the simplest concrete examples; <code>src/visuals/image.rs</code> shows a more complex case with per-frame GPU updates.</p>
+<p>All visuals automatically share the camera bind group (<code>@group(0)</code>), which <code>Renderer</code> sets once per frame before iterating the scene.</p>
+<hr>
+<p><strong>Next</strong>: <a href="#chunked-rendering-virtual-texture-architecture">Chunked Rendering →</a></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-wgpu-rendering-pipeline"><a class="header" href="#the-wgpu-rendering-pipeline">The wgpu Rendering Pipeline</a></h1>
+<p>This chapter is a ground-up walkthrough of how Bovista actually draws pixels — from GPU initialization through shader execution. If you’re new to wgpu or WebGPU, start here.</p>
+<ul>
+<li><a href="#what-wgpu-is-and-isnt">What wgpu Is (and Isn’t)</a></li>
+<li><a href="#core-concepts-before-we-start">Core Concepts Before We Start</a>
+<ul>
+<li><a href="#the-gpu-rendering-model">The GPU Rendering Model</a></li>
+<li><a href="#bind-groups">Bind Groups</a></li>
+<li><a href="#buffers-vs-textures">Buffers vs Textures</a></li>
+</ul>
+</li>
+<li><a href="#the-renderer-setting-up-the-gpu">The Renderer: Setting Up the GPU</a>
+<ul>
+<li><a href="#device-and-queue">Device and Queue</a></li>
+<li><a href="#camera-uniform-buffer">Camera Uniform Buffer</a></li>
+<li><a href="#the-depth-buffer">The Depth Buffer</a></li>
+<li><a href="#the-render-loop">The Render Loop</a></li>
+</ul>
+</li>
+<li><a href="#simple-visuals-points-and-lines">Simple Visuals: Points and Lines</a>
+<ul>
+<li><a href="#vertex-layout">Vertex Layout</a></li>
+<li><a href="#pipeline-creation">Pipeline Creation</a></li>
+<li><a href="#shader-point_cloudwgsl">Shader: point_cloud.wgsl</a></li>
+<li><a href="#the-prepare--render-split">The <code>prepare</code> / <code>render</code> Split</a></li>
+</ul>
+</li>
+<li><a href="#the-slice-pipeline-imagevisual">The Slice Pipeline: ImageVisual</a>
+<ul>
+<li><a href="#how-it-works-overview">How It Works (Overview)</a></li>
+<li><a href="#vertex-layout-tilevertex">Vertex Layout: TileVertex</a></li>
+<li><a href="#geometry-plane-aabb-intersection">Geometry: Plane-AABB Intersection</a></li>
+<li><a href="#bind-group-layout-groups-1-and-2">Bind Group Layout (Groups 1 and 2)</a></li>
+<li><a href="#shader-virtual_tilewgsl">Shader: virtual_tile.wgsl</a></li>
+<li><a href="#virtual-texture-lookup-sample_vvt">Virtual Texture Lookup: sample_vvt</a></li>
+<li><a href="#the-render-call">The Render Call</a></li>
+</ul>
+</li>
+<li><a href="#the-volume-pipeline-volumevisual">The Volume Pipeline: VolumeVisual</a>
+<ul>
+<li><a href="#the-box-geometry-trick">The Box Geometry Trick</a></li>
+<li><a href="#ray-marching-the-fragment-shader">Ray Marching: The Fragment Shader</a></li>
+<li><a href="#lod-adaptive-step-size">LOD-Adaptive Step Size</a></li>
+<li><a href="#blending-pre-multiplied-alpha">Blending: Pre-multiplied Alpha</a></li>
+<li><a href="#depth-write-disabled">Depth Write Disabled</a></li>
+</ul>
+</li>
+<li><a href="#vt-uniforms-the-cpu-gpu-contract">VT Uniforms: The CPU-GPU Contract</a></li>
+<li><a href="#shader-selection-summary">Shader Selection Summary</a></li>
+<li><a href="#putting-it-all-together">Putting It All Together</a></li>
+</ul>
+<hr>
+<h2 id="what-wgpu-is-and-isnt"><a class="header" href="#what-wgpu-is-and-isnt">What wgpu Is (and Isn’t)</a></h2>
+<p>wgpu is a Rust library that exposes the <strong>WebGPU API</strong>, a modern, explicit graphics API. “Explicit” means you, the programmer, are responsible for:</p>
+<ul>
+<li>Describing memory layouts to the GPU in advance</li>
+<li>Binding resources (textures, buffers) before drawing</li>
+<li>Specifying exactly how vertices flow into fragments</li>
+</ul>
+<p>You get a lot of control — and a lot of upfront setup. In exchange you get predictable performance and the same code running on Vulkan, Metal, DirectX 12, and WebGPU in the browser.</p>
+<hr>
+<h2 id="core-concepts-before-we-start"><a class="header" href="#core-concepts-before-we-start">Core Concepts Before We Start</a></h2>
+<h3 id="the-gpu-rendering-model"><a class="header" href="#the-gpu-rendering-model">The GPU Rendering Model</a></h3>
+<p>The GPU executes a <strong>render pipeline</strong> for each draw call:</p>
+<pre><code>CPU uploads vertex data + uniforms
+        │
+        ▼
+  [ Vertex Stage ]      ← runs once per vertex; outputs clip-space position
+        │
+        ▼
+  [ Rasterization ]     ← GPU converts triangles to fragments (pixels)
+        │
+        ▼
+  [ Fragment Stage ]    ← runs once per fragment; outputs a color
+        │
+        ▼
+  [ Output Merging ]    ← depth test, blending, write to texture
+</code></pre>
+<p>Shaders are small programs written in WGSL (WebGPU Shading Language) that run on the GPU. Each pipeline has one vertex shader and one fragment shader.</p>
+<h3 id="bind-groups"><a class="header" href="#bind-groups">Bind Groups</a></h3>
+<p>Rather than setting individual texture or buffer pointers before every draw, wgpu groups related resources into <strong>bind groups</strong>. A bind group is a bundle of GPU resources (buffers, textures, samplers) with a fixed layout that you attach to the pipeline once.</p>
+<p>Bovista uses a consistent three-group layout across all its visual pipelines:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Group</th><th>Who owns it</th><th>Contents</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@group(0)</code></td><td><code>Renderer</code> (set once per frame for all visuals)</td><td>Camera view-projection matrix</td></tr>
+<tr><td><code>@group(1)</code></td><td>Each visual (VT visuals)</td><td>Atlas texture, page table, VT uniforms</td></tr>
+<tr><td><code>@group(2)</code></td><td>Each visual</td><td>Per-visual uniforms and colormap</td></tr>
+</tbody>
+</table>
+</div>
+<p>Simple visuals (points, lines) only use group 0.</p>
+<h3 id="buffers-vs-textures"><a class="header" href="#buffers-vs-textures">Buffers vs Textures</a></h3>
+<ul>
+<li><strong>Buffer</strong>: raw bytes. Used for vertex data, index data, and uniform structs.</li>
+<li><strong>Texture</strong>: sampled image data with filtering support. Used for the atlas, the page table, and the colormap LUT.</li>
+<li><strong>Sampler</strong>: describes how to filter a texture (bilinear? clamp to edge?). Bound alongside textures.</li>
+</ul>
+<hr>
+<h2 id="the-renderer-setting-up-the-gpu"><a class="header" href="#the-renderer-setting-up-the-gpu">The Renderer: Setting Up the GPU</a></h2>
+<p><code>src/renderer.rs</code> owns the GPU device, queue, and the shared camera bind group.</p>
+<h3 id="device-and-queue"><a class="header" href="#device-and-queue">Device and Queue</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// In practice, these come from wgpu surface setup (not shown here).
+// The device is used to create GPU objects (buffers, textures, pipelines).
+// The queue is used to submit commands and write data to GPU memory.
+pub struct Renderer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p><code>Device</code> creates GPU objects; <code>Queue</code> sends data and commands to the GPU.</p>
+<h3 id="camera-uniform-buffer"><a class="header" href="#camera-uniform-buffer">Camera Uniform Buffer</a></h3>
+<p>Every shader needs to transform vertices from world space to screen space. The renderer creates a 64-byte uniform buffer that holds a single 4×4 matrix and updates it every frame:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let camera_uniform_buffer = device.create_buffer(&amp;wgpu::BufferDescriptor {
+    size: std::mem::size_of::&lt;CameraUniforms&gt;() as u64,  // 64 bytes
+    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    ...
+});
+<span class="boring">}</span></code></pre>
+<p><code>UNIFORM</code> means the shader can read it. <code>COPY_DST</code> means the CPU can write to it each frame via <code>queue.write_buffer</code>.</p>
+<p>The bind group layout tells the GPU “binding 0 is a uniform buffer, visible only in the vertex stage”:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>wgpu::BindGroupLayoutEntry {
+    binding: 0,
+    visibility: wgpu::ShaderStages::VERTEX,
+    ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        ...
+    },
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p>The matching WGSL declaration:</p>
+<pre><code class="language-wgsl">// virtual_tile.wgsl, group 0
+struct CameraUniforms {
+    view_proj: mat4x4&lt;f32&gt;,
+}
+@group(0) @binding(0)
+var&lt;uniform&gt; camera: CameraUniforms;
+</code></pre>
+<p>Every frame, <code>Renderer::update_camera</code> computes the view-projection matrix and sends it to the GPU:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn update_camera(&amp;self, camera: &amp;Camera) {
+    let uniforms = CameraUniforms {
+        view_proj: camera.view_projection_matrix().to_cols_array_2d(),
+    };
+    self.queue.write_buffer(&amp;self.camera_uniform_buffer, 0,
+        bytemuck::cast_slice(&amp;[uniforms]));
+}
+<span class="boring">}</span></code></pre>
+<p><code>bytemuck::cast_slice</code> safely reinterprets the Rust struct as raw bytes for the GPU.</p>
+<h3 id="the-depth-buffer"><a class="header" href="#the-depth-buffer">The Depth Buffer</a></h3>
+<p>Bovista creates a depth texture at startup and recreates it on resize:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let depth_texture = device.create_texture(&amp;wgpu::TextureDescriptor {
+    format: wgpu::TextureFormat::Depth24PlusStencil8,
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+    ...
+});
+<span class="boring">}</span></code></pre>
+<p>The depth buffer stores the depth of the closest fragment seen so far at each pixel. When a new fragment arrives, it’s compared against the stored depth — if it’s further away, it’s discarded (the depth test). This is what makes closer objects correctly occlude farther ones without sorting draw calls.</p>
+<h3 id="the-render-loop"><a class="header" href="#the-render-loop">The Render Loop</a></h3>
+<p>Each frame, <code>Renderer::render</code>:</p>
+<ol>
+<li>Creates a <strong>command encoder</strong> — a recorder for GPU commands</li>
+<li>Begins a <strong>render pass</strong> — declares what texture to draw into and how to clear it</li>
+<li>Sets the camera bind group at <code>@group(0)</code> <strong>once</strong>, for all visuals</li>
+<li>Calls <code>scene.render()</code> which iterates each visible <code>impl Visual</code> and calls its <code>render()</code></li>
+<li>Finishes and submits the command buffer to the queue</li>
+</ol>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From renderer.rs
+let mut render_pass = encoder.begin_render_pass(&amp;wgpu::RenderPassDescriptor {
+    color_attachments: &amp;[Some(wgpu::RenderPassColorAttachment {
+        view,  // the surface texture we're drawing into
+        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear_color), ... },
+    })],
+    depth_stencil_attachment: Some(...),
+    ...
+});
+
+render_pass.set_bind_group(0, &amp;self.camera_bind_group, &amp;[]);
+scene.render(&amp;mut render_pass);  // each visual sets groups 1, 2 and draws
+<span class="boring">}</span></code></pre>
+<hr>
+<h2 id="simple-visuals-points-and-lines"><a class="header" href="#simple-visuals-points-and-lines">Simple Visuals: Points and Lines</a></h2>
+<p><code>src/visuals/points.rs</code> and <code>src/visuals/lines.rs</code> show the minimal pipeline pattern.</p>
+<h3 id="vertex-layout"><a class="header" href="#vertex-layout">Vertex Layout</a></h3>
+<p>A point has a world-space position and an RGB color:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct PointVertex {
+    pub position: [f32; 3],  // 12 bytes
+    pub color:    [f32; 3],  // 12 bytes — total: 24 bytes/vertex
+}
+<span class="boring">}</span></code></pre>
+<p>The <code>wgpu::VertexBufferLayout</code> tells the pipeline what this struct looks like:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>wgpu::VertexBufferLayout {
+    array_stride: 24,  // advance 24 bytes per vertex
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &amp;wgpu::vertex_attr_array![
+        0 =&gt; Float32x3,  // location 0: 3 floats = position
+        1 =&gt; Float32x3,  // location 1: 3 floats = color
+    ],
+}
+<span class="boring">}</span></code></pre>
+<p>The numbers here (<code>0 =&gt;</code>, <code>1 =&gt;</code>) match the <code>@location(0)</code> and <code>@location(1)</code> annotations in the WGSL vertex input struct.</p>
+<h3 id="pipeline-creation"><a class="header" href="#pipeline-creation">Pipeline Creation</a></h3>
+<p><code>device.create_render_pipeline</code> is the big upfront declaration:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>device.create_render_pipeline(&amp;wgpu::RenderPipelineDescriptor {
+    layout: Some(&amp;pipeline_layout),  // which bind group layouts this pipeline uses
+
+    vertex: wgpu::VertexState {
+        module: &amp;shader,         // compiled WGSL module
+        entry_point: Some("vs_main"),  // the function to call
+        buffers: &amp;[PointVertex::desc()],  // vertex buffer layout
+    },
+
+    fragment: Some(wgpu::FragmentState {
+        module: &amp;shader,
+        entry_point: Some("fs_main"),
+        targets: &amp;[Some(wgpu::ColorTargetState {
+            format: surface_format,  // must match the render pass target
+            blend: Some(wgpu::BlendState::REPLACE),  // no transparency
+            ...
+        })],
+    }),
+
+    primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::PointList,  // draw points, not triangles
+        cull_mode: None,
+        ...
+    },
+
+    depth_stencil: Some(wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: true,
+        depth_compare: wgpu::CompareFunction::LessEqual,
+        ...
+    }),
+})
+<span class="boring">}</span></code></pre>
+<p>A pipeline is <strong>immutable</strong> once created. The topology, shader, and vertex layout are all baked in. This is intentional — the GPU driver compiles the pipeline to native GPU code at creation time, making draw calls very fast.</p>
+<h3 id="shader-point_cloudwgsl"><a class="header" href="#shader-point_cloudwgsl">Shader: point_cloud.wgsl</a></h3>
+<pre><code class="language-wgsl">struct Uniforms { view_proj: mat4x4&lt;f32&gt; }
+@group(0) @binding(0) var&lt;uniform&gt; uniforms: Uniforms;
+
+struct VertexInput {
+    @location(0) position: vec3&lt;f32&gt;,
+    @location(1) color: vec3&lt;f32&gt;,
+}
+struct VertexOutput {
+    @builtin(position) clip_position: vec4&lt;f32&gt;,  // built-in: goes to rasterizer
+    @location(0) color: vec3&lt;f32&gt;,
+}
+
+@vertex
+fn vs_main(input: VertexInput) -&gt; VertexOutput {
+    var out: VertexOutput;
+    // Multiply world position by view-projection matrix to get clip space position.
+    out.clip_position = uniforms.view_proj * vec4&lt;f32&gt;(input.position, 1.0);
+    out.color = input.color;
+    return out;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
+    return vec4&lt;f32&gt;(input.color, 1.0);  // RGBA; alpha=1 = opaque
+}
+</code></pre>
+<p><code>@builtin(position)</code> is a special output understood by the rasterizer as the clip-space position. The other outputs (like <code>color</code>) are interpolated across the triangle/point by the hardware and handed to the fragment shader.</p>
+<h3 id="the-prepare--render-split"><a class="header" href="#the-prepare--render-split">The <code>prepare</code> / <code>render</code> Split</a></h3>
+<p>The <code>Visual</code> trait separates work into two phases:</p>
+<ul>
+<li><strong><code>prepare()</code></strong> — called before the render pass begins. Can write to GPU buffers (<code>queue.write_buffer</code>), create new textures, compute geometry. For points and lines this is a no-op because vertex data never changes.</li>
+<li><strong><code>render()</code></strong> — called inside the render pass. Can only issue draw commands (<code>set_pipeline</code>, <code>set_bind_group</code>, <code>draw</code>). No CPU work here.</li>
+</ul>
+<p>This split exists because <code>queue.write_buffer</code> and render pass recording are incompatible — you can’t upload data mid-pass.</p>
+<hr>
+<h2 id="the-slice-pipeline-imagevisual"><a class="header" href="#the-slice-pipeline-imagevisual">The Slice Pipeline: ImageVisual</a></h2>
+<p><code>src/visuals/image.rs</code> renders a planar cross-section through a 3D volume using the virtual texture system.</p>
+<h3 id="how-it-works-overview"><a class="header" href="#how-it-works-overview">How It Works (Overview)</a></h3>
+<ol>
+<li>Each frame, <code>prepare()</code> computes where the slice plane intersects the volume AABB and generates a polygon mesh for that cross-section (3–6 vertices, depending on the slice angle).</li>
+<li>Each vertex carries a <strong>3D volume UV</strong> (<code>texcoord: vec3&lt;f32&gt;</code>) — the normalized position within the volume at that point.</li>
+<li>In the fragment shader, those UVs are used to look up the voxel value via the virtual texture page table.</li>
+<li>The voxel value is passed through a contrast window and then into a colormap LUT to produce the final color.</li>
+</ol>
+<h3 id="vertex-layout-tilevertex"><a class="header" href="#vertex-layout-tilevertex">Vertex Layout: TileVertex</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[repr(C)]
+pub struct TileVertex {
+    pub position: [f32; 3],   // world-space position (on the slice plane)
+    pub texcoord: [f32; 3],   // volume UV in [0,1]^3
+}
+<span class="boring">}</span></code></pre>
+<p>The hardware interpolates <code>texcoord</code> across the polygon — every fragment knows where in the volume it sits.</p>
+<h3 id="geometry-plane-aabb-intersection"><a class="header" href="#geometry-plane-aabb-intersection">Geometry: Plane-AABB Intersection</a></h3>
+<p><code>compute_plane_aabb_intersection</code> (in <code>src/visuals/tile.rs</code>) tests the slice plane against all 12 edges of the volume bounding box. Each edge that the plane intersects yields one vertex. The result is a convex polygon with 3–6 vertices, triangulated as a fan and uploaded to the GPU as a fresh vertex/index buffer every frame:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From ImageVisual::prepare()
+if let Some((vertices, indices)) =
+    compute_plane_aabb_intersection(&amp;tile_plane, &amp;vol_aabb)
+{
+    self.vt_vertex_buffer = Some(device.create_buffer_init(&amp;wgpu::util::BufferInitDescriptor {
+        contents: bytemuck::cast_slice(&amp;vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+        ...
+    }));
+    // ... also creates index buffer
+}
+<span class="boring">}</span></code></pre>
+<h3 id="bind-group-layout-groups-1-and-2"><a class="header" href="#bind-group-layout-groups-1-and-2">Bind Group Layout (Groups 1 and 2)</a></h3>
+<p>Group 1 (VT resources) is declared in <code>ImageVisual::new</code> with four entries:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Binding</th><th>Type</th><th>Shader access</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td><code>texture_3d&lt;f32&gt;</code></td><td>Fragment</td><td>Physical atlas (packed tile data)</td></tr>
+<tr><td>1</td><td><code>sampler</code></td><td>Fragment</td><td>How to filter the atlas</td></tr>
+<tr><td>2</td><td><code>texture_2d_array&lt;u32&gt;</code></td><td>Fragment</td><td>Page table (tile → atlas slot mapping)</td></tr>
+<tr><td>3</td><td>uniform buffer</td><td>Fragment</td><td>VT uniforms: atlas layout, LOD info, contrast</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Entry for the page table (binding 2)
+wgpu::BindGroupLayoutEntry {
+    binding: 2,
+    visibility: wgpu::ShaderStages::FRAGMENT,
+    ty: wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Uint,  // integer texture, not float
+        view_dimension: wgpu::TextureViewDimension::D2Array,  // one layer per LOD
+        multisampled: false,
+    },
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p>The page table is a <code>texture_2d_array</code> where each array layer is one LOD level. Using <code>TextureSampleType::Uint</code> instead of <code>Float</code> means you read raw 32-bit integers with <code>textureLoad</code> (no filtering — you want exact values, not interpolated ones).</p>
+<p>Group 2 (colormap) has two entries:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Binding</th><th>Type</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td><code>texture_1d&lt;f32&gt;</code></td><td>256-entry RGBA colormap LUT</td></tr>
+<tr><td>1</td><td><code>sampler</code></td><td>Linear filter for smooth colormap interpolation</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="shader-virtual_tilewgsl"><a class="header" href="#shader-virtual_tilewgsl">Shader: virtual_tile.wgsl</a></h3>
+<p><strong>Vertex stage</strong> is trivial — multiply world position by view-projection:</p>
+<pre><code class="language-wgsl">@vertex
+fn vs_main(input: VertexInput) -&gt; VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = camera.view_proj * vec4f(input.position, 1.0);
+    out.vol_uv = input.texcoord;  // passed through to fragment stage
+    return out;
+}
+</code></pre>
+<p><strong>Fragment stage</strong> is where the work happens. For each pixel:</p>
+<pre><code class="language-wgsl">@fragment
+fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
+    // 1. Find the best resident tile for this volume UV
+    let result  = sample_vvt(input.vol_uv);
+    let raw     = result.x;      // voxel value (R16Float)
+    let lod_idx = result.y;      // which LOD level was found (-1 if none)
+
+    // 2. Apply contrast window: remap [contrast_min, contrast_max] → [0, 1]
+    let adjusted = clamp(
+        (raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min),
+        0.0, 1.0
+    );
+
+    // 3. Colormap lookup: 1D texture indexed by adjusted intensity
+    let color = textureSample(colormap, colormap_sampler, adjusted);
+
+    return encode_srgb(color);  // manual sRGB encoding for linear-format surfaces
+}
+</code></pre>
+<h3 id="virtual-texture-lookup-sample_vvt"><a class="header" href="#virtual-texture-lookup-sample_vvt">Virtual Texture Lookup: sample_vvt</a></h3>
+<p>The key function is <code>sample_vvt(vol_uv)</code>. It walks the LOD pyramid looking for a resident tile:</p>
+<pre><code class="language-wgsl">fn sample_vvt(vol_uv: vec3f) -&gt; vec2f {
+    let ideal_lod = i32(vt.target_lod);  // CPU-computed based on camera distance
+    let max_lod   = i32(vt.lod_count) - 1;
+
+    // First try: ideal_lod up to coarsest (normal fallback while tiles load)
+    for (var lod = ideal_lod; lod &lt;= max_lod; lod++) {
+        let r = try_lod(vol_uv, lod);
+        if r.y &gt;= 0.0 { return r; }  // r.y &gt;= 0 means tile was resident
+    }
+    // Second try: finer than ideal (stale fine data beats black)
+    for (var lod = ideal_lod - 1; lod &gt;= 0; lod--) {
+        let r = try_lod(vol_uv, lod);
+        if r.y &gt;= 0.0 { return r; }
+    }
+    return vec2f(0.0, -1.0);  // nothing resident
+}
+</code></pre>
+<p>And <code>try_lod</code> maps from volume UV → page table address → atlas slot → texture sample:</p>
+<pre><code class="language-wgsl">fn try_lod(vol_uv: vec3f, lod: i32) -&gt; vec2f {
+    // 1. Which tile grid cell does this UV fall in?
+    let grid = vt.lods[lod].grid_dims;
+    let vol_in_tiles = min(vol_uv / vt.lods[lod].tile_scale, vec3f(grid) - vec3f(1e-5));
+    let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
+
+    // 2. Linearize 3D tile coordinate to a 1D page table index
+    let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
+    let pt_x = i32(linear % vt.page_table_width);
+    let pt_y = i32(linear / vt.page_table_width);
+
+    // 3. Read the page table entry (integer texture, so textureLoad not textureSample)
+    let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
+
+    // Bit 24 is the "resident" flag; bits 0-15 are the atlas slot index
+    if (entry &gt;&gt; 24u) == 0u { return vec2f(0.0, -1.0); }  // not resident
+
+    // 4. Decode atlas slot → (col, row, layer) in the 3D atlas texture
+    let slot      = entry &amp; 0xFFFFu;
+    let atlas_col   = slot % vt.atlas_cols;
+    let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
+    let atlas_layer = slot / (vt.atlas_cols * vt.atlas_rows);
+
+    // 5. Compute UV within this atlas slot, then scale to full-atlas UV
+    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * vt.lods[lod].data_scale;
+    let u = (f32(atlas_col)   + within_tile.x) * vt.atlas_tile_pitch_x;
+    let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
+    let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
+
+    // 6. Sample the 3D atlas texture
+    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
+                 f32(lod));
+}
+</code></pre>
+<p><code>tile_scale</code> is <code>tile_size / volume_size</code> per axis — it tells you what fraction of the full volume UV one tile spans. <code>data_scale</code> handles the case where a coarser LOD tile has fewer voxels than the atlas slot is sized for (the extra space in the slot is unused padding; <code>data_scale</code> clamps sampling to the populated region).</p>
+<h3 id="the-render-call"><a class="header" href="#the-render-call">The Render Call</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From ImageVisual::render()
+fn render(&amp;self, render_pass: &amp;mut RenderPass) {
+    if self.vt_index_count == 0 { return; }  // slice missed the volume
+    if let (Some(vb), Some(ib)) = (&amp;self.vt_vertex_buffer, &amp;self.vt_index_buffer) {
+        render_pass.set_pipeline(&amp;self.vt_render_pipeline);
+        render_pass.set_bind_group(1, &amp;self.vt_bind_group, &amp;[]);    // atlas, page table, uniforms
+        render_pass.set_bind_group(2, &amp;self.colormap_bind_group, &amp;[]);
+        render_pass.set_vertex_buffer(0, vb.slice(..));
+        render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(0..self.vt_index_count, 0, 0..1);
+        // Note: group 0 (camera) is already set by Renderer before this is called.
+    }
+}
+<span class="boring">}</span></code></pre>
+<p><code>draw_indexed</code> draws triangles using the index buffer. The index buffer contains u16 offsets into the vertex buffer — this lets you reuse vertices across triangles (important for the fan triangulation of the polygon).</p>
+<hr>
+<h2 id="the-volume-pipeline-volumevisual"><a class="header" href="#the-volume-pipeline-volumevisual">The Volume Pipeline: VolumeVisual</a></h2>
+<p><code>src/visuals/volume.rs</code> renders the entire 3D volume via GPU ray marching. The virtual texture back-end (atlas, page table, LOD streaming) is identical to <code>ImageVisual</code>.</p>
+<h3 id="the-box-geometry-trick"><a class="header" href="#the-box-geometry-trick">The Box Geometry Trick</a></h3>
+<p>Instead of rasterizing every voxel, the volume is rendered using a <strong>proxy geometry</strong> approach:</p>
+<ol>
+<li>Draw the back faces of a unit cube that covers the volume AABB</li>
+<li>In the fragment shader, reconstruct the ray from the camera through each fragment’s world-space position</li>
+<li>March that ray through the volume, sampling voxels front-to-back</li>
+</ol>
+<p>Why back faces? The rasterizer fires a fragment for each pixel where the cube’s surface is visible. Using back faces means a fragment fires for every pixel that the volume occupies in screen space, even when the camera is inside the volume (at which point the front faces would be clipped by the near plane):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Volume box: 12 triangles, CW winding = inward-facing normals
+const BOX_INDICES: &amp;[u16] = &amp;[ /* 36 indices for all 6 faces */ ];
+
+primitive: wgpu::PrimitiveState {
+    cull_mode: Some(wgpu::Face::Front),  // cull front-facing = keep back-facing
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p>The volume shader’s vertex stage positions the cube:</p>
+<pre><code class="language-wgsl">@vertex
+fn vs_main(in: VertexInput) -&gt; VertexOutput {
+    // BOX_VERTICES are in [0,1]^3; scale them to the actual AABB in world space.
+    let world = vol.vol_min + in.position * (vol.vol_max - vol.vol_min);
+    out.clip_position = camera.view_proj * vec4f(world, 1.0);
+    out.world_pos = world;  // pass world position for ray reconstruction in fragment
+    return out;
+}
+</code></pre>
+<h3 id="ray-marching-the-fragment-shader"><a class="header" href="#ray-marching-the-fragment-shader">Ray Marching: The Fragment Shader</a></h3>
+<p>The fragment shader (<code>volume_raymarch.wgsl</code>) does the heavy lifting:</p>
+<pre><code class="language-wgsl">@fragment
+fn fs_main(in: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
+    // Ray from camera through this fragment's world position (on the back face of the box)
+    let ray_origin = vol.camera_pos;
+    let ray_dir    = normalize(in.world_pos - vol.camera_pos);
+
+    // AABB slab test: find where the ray enters and exits the volume
+    let inv_dir = 1.0 / ray_dir;
+    let t_min_v = (vol.vol_min - ray_origin) * inv_dir;
+    let t_max_v = (vol.vol_max - ray_origin) * inv_dir;
+    let t1 = min(t_min_v, t_max_v);
+    let t2 = max(t_min_v, t_max_v);
+    let t_enter = max(max(t1.x, t1.y), t1.z);  // ray enters volume here
+    let t_exit  = min(min(t2.x, t2.y), t2.z);  // ray exits volume here
+
+    if t_exit &lt;= max(t_enter, 0.0) { discard; }  // ray misses or is behind camera
+    ...
+</code></pre>
+<p>Then it steps along the ray, accumulating color front-to-back (a technique called <strong>alpha compositing</strong>):</p>
+<pre><code class="language-wgsl">    var accum_color = vec3f(0.0);
+    var accum_alpha = 0.0;
+    var t = max(t_enter, 0.0);
+
+    loop {
+        if t &gt;= t_exit || accum_alpha &gt;= 0.95 { break; }
+
+        let world_p = ray_origin + ray_dir * t;
+        let vol_uv  = (world_p - vol.vol_min) / (vol.vol_max - vol.vol_min);
+
+        // Same page-table lookup as the slice shader
+        let result = sample_vvt(vol_uv);
+        let raw    = result.x;
+        let lod_f  = result.y;
+
+        let adjusted = clamp(
+            (raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min),
+            0.0, 1.0
+        );
+        let cs = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+
+        // Beer-Lambert opacity: alpha = 1 - exp(-extinction)
+        if adjusted &gt; 0.01 {
+            let extinction = cs.a * vol.density_scale * advance;
+            let alpha      = 1.0 - exp(-extinction);
+            accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;  // front-to-back
+            accum_alpha += (1.0 - accum_alpha) * alpha;
+        }
+
+        t += advance;  // advance is LOD-adaptive (larger steps in coarser regions)
+    }
+</code></pre>
+<p>The early-out <code>accum_alpha &gt;= 0.95</code> is an optimization — once the ray is 95% opaque, continuing adds less than 5% contribution to the final color.</p>
+<h3 id="lod-adaptive-step-size"><a class="header" href="#lod-adaptive-step-size">LOD-Adaptive Step Size</a></h3>
+<p>In unloaded regions, the shader jumps to the next tile boundary instead of crawling one LOD-0 voxel at a time:</p>
+<pre><code class="language-wgsl">if lod_f &gt;= 0.0 {
+    // Resident tile: step size proportional to the LOD scale ratio
+    advance = step_size * vt.lods[lod_i].tile_scale.x / vt.lods[0].tile_scale.x;
+} else {
+    // Not resident: compute distance to the nearest coarsest-LOD tile boundary and jump
+    let coarse_scale = vt.lods[coarsest].tile_scale;
+    // ... (slab test against tile grid boundaries)
+    advance = max(min(dt_to_bound.x, min(dt_to_bound.y, dt_to_bound.z)), step_size);
+}
+</code></pre>
+<h3 id="blending-pre-multiplied-alpha"><a class="header" href="#blending-pre-multiplied-alpha">Blending: Pre-multiplied Alpha</a></h3>
+<p><code>VolumeVisual</code> uses <code>wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING</code> (not the simple alpha blending used by <code>ImageVisual</code>). The ray marcher outputs pre-multiplied alpha: <code>out = (accum_color * accum_alpha, accum_alpha)</code>. Pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices are rendered together.</p>
+<h3 id="depth-write-disabled"><a class="header" href="#depth-write-disabled">Depth Write Disabled</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>depth_stencil: Some(wgpu::DepthStencilState {
+    depth_write_enabled: false,  // transparent volume: don't block other visuals
+    depth_compare: wgpu::CompareFunction::LessEqual,
+    ...
+})
+<span class="boring">}</span></code></pre>
+<p>The volume reads the depth buffer (so it’s occluded by opaque geometry) but doesn’t write to it. If it wrote, its back-face fragments would prevent any geometry behind the volume from rendering.</p>
+<hr>
+<h2 id="vt-uniforms-the-cpu-gpu-contract"><a class="header" href="#vt-uniforms-the-cpu-gpu-contract">VT Uniforms: The CPU-GPU Contract</a></h2>
+<p><code>VTUniforms</code> (defined in <code>src/visuals/tile.rs</code>) is the main data structure shared between the CPU and the VT shaders. Every field must match between Rust and WGSL exactly, including padding:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[repr(C)]  // C-compatible layout — field order is preserved
+#[derive(Pod, Zeroable)]  // bytemuck: safe to cast to/from bytes
+pub struct VTUniforms {
+    pub atlas_cols: u32,
+    pub atlas_rows: u32,
+    pub atlas_tile_pitch_x: f32,  // 1/atlas_cols
+    pub atlas_tile_pitch_y: f32,  // 1/atlas_rows
+    pub atlas_tile_pitch_z: f32,  // 1/atlas_layers
+    pub lod_count: u32,
+    pub contrast_min: f32,
+    pub contrast_max: f32,
+    pub debug_mode: u32,
+    pub page_table_width: u32,
+    pub target_lod: u32,
+    pub _pad_c: u32,          // explicit padding to reach 48-byte offset
+    pub lods: [VTLodInfo; 16],  // per-LOD data (grid dims, tile scale, data scale)
+}
+<span class="boring">}</span></code></pre>
+<p>WGSL uniform structs require 16-byte alignment for sub-structs (<code>VTLodInfo</code>). The <code>_pad_c</code> field ensures <code>lods</code> starts at offset 48 (a multiple of 16). Getting this wrong produces subtle visual corruption with no error message — the GPU silently reads the wrong bytes.</p>
+<hr>
+<h2 id="shader-selection-summary"><a class="header" href="#shader-selection-summary">Shader Selection Summary</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Visual</th><th>Shader</th><th>Topology</th><th>Cull mode</th><th>Depth write</th><th>Blend</th></tr>
+</thead>
+<tbody>
+<tr><td><code>PointsVisual</code></td><td><code>point_cloud.wgsl</code></td><td>PointList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
+<tr><td><code>LinesVisual</code></td><td><code>lines.wgsl</code></td><td>LineList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
+<tr><td><code>ImageVisual</code></td><td><code>virtual_tile.wgsl</code></td><td>TriangleList</td><td>None</td><td>Yes</td><td>Alpha</td></tr>
+<tr><td><code>VolumeVisual</code></td><td><code>volume_raymarch.wgsl</code></td><td>TriangleList</td><td>Front</td><td>No</td><td>Pre-multiplied Alpha</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="putting-it-all-together"><a class="header" href="#putting-it-all-together">Putting It All Together</a></h2>
+<p>One frame, step by step:</p>
+<pre><code>1. CPU: camera.view_projection_matrix() → queue.write_buffer(camera_uniform)
+
+2. CPU (each visual's prepare()):
+   - ImageVisual: recompute slice polygon geometry, upload vertex/index buffers,
+                  write VTUniforms to vt_uniform_buffer
+   - VolumeVisual: write VTUniforms + VolumeUniforms to GPU buffers
+   - PointsVisual: no-op (geometry is static)
+
+3. GPU: begin_render_pass (clears color and depth)
+   render_pass.set_bind_group(0, camera_bind_group)  ← once for all visuals
+
+4. GPU (each visual's render()):
+   - PointsVisual:
+       set_pipeline(point_pipeline)
+       set_vertex_buffer(point_vb)
+       draw(0..N)
+
+   - ImageVisual:
+       set_pipeline(vt_pipeline)
+       set_bind_group(1, vt_bind_group)    ← atlas, page table, uniforms
+       set_bind_group(2, colormap_bind_group)
+       set_vertex_buffer(0, slice_polygon_vb)
+       set_index_buffer(slice_polygon_ib)
+       draw_indexed(0..index_count)
+
+   - VolumeVisual:
+       set_pipeline(volume_pipeline)
+       set_bind_group(1, vt_bind_group)
+       set_bind_group(2, vol_bind_group)   ← vol uniforms + colormap
+       set_vertex_buffer(0, box_vb)
+       set_index_buffer(box_ib)
+       draw_indexed(0..36)  ← 12 triangles, back faces only
+
+5. GPU: end render pass → submit → present to screen
+</code></pre>
+<p>The entire visible result — slice planes, volume, overlaid point clouds — comes from this single render pass.</p>
+<hr>
+<p><strong>Next</strong>: <a href="#chunked-rendering-virtual-texture-architecture">Chunked Rendering →</a></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="chunked-rendering-virtual-texture-architecture"><a class="header" href="#chunked-rendering-virtual-texture-architecture">Chunked Rendering: Virtual Texture Architecture</a></h1>
+<p>Both <code>ImageVisual</code> (slice rendering) and <code>VolumeVisual</code> (ray marching) share a single back-end for streaming large multi-resolution volumes: <code>VirtualTextureData</code>. This chapter explains how it works.</p>
+<ul>
+<li><a href="#the-problem">The Problem</a></li>
+<li><a href="#virtual-texture-architecture">Virtual Texture Architecture</a>
+<ul>
+<li><a href="#atlas-atlasallocator--3d-wgputexture">Atlas (<code>AtlasAllocator</code> + 3D <code>wgpu::Texture</code>)</a></li>
+<li><a href="#page-table-pagetable--2d-array-wgputexture">Page Table (<code>PageTable</code> + 2D-array <code>wgpu::Texture</code>)</a></li>
+</ul>
+</li>
+<li><a href="#per-frame-streaming-loop">Per-Frame Streaming Loop</a></li>
+<li><a href="#the-loader-callback">The Loader Callback</a>
+<ul>
+<li><a href="#python-implementation">Python Implementation</a></li>
+<li><a href="#javascript-implementation">JavaScript Implementation</a></li>
+</ul>
+</li>
+<li><a href="#multi-resolution-lod-pyramid">Multi-Resolution (LOD) Pyramid</a></li>
+<li><a href="#lod-fallback-in-the-shader">LOD Fallback in the Shader</a></li>
+<li><a href="#memory-budget">Memory Budget</a></li>
+<li><a href="#debug-modes">Debug Modes</a></li>
+<li><a href="#summary-1">Summary</a></li>
+</ul>
+<h2 id="the-problem"><a class="header" href="#the-problem">The Problem</a></h2>
+<p>A typical OME-Zarr dataset might be 32,000³ voxels at the finest resolution — tens of terabytes uncompressed. Even at the coarsest level, it won’t fit in GPU memory. The system needs to:</p>
+<ul>
+<li>Keep only the currently-visible tiles resident in VRAM</li>
+<li>Load tiles asynchronously from a remote source (S3, HTTP) without blocking the render loop</li>
+<li>Fall back gracefully to coarser-resolution tiles when fine-resolution ones haven’t arrived yet</li>
+<li>Issue as few GPU draw calls as possible (ideally one per visual per frame)</li>
+</ul>
+<h2 id="virtual-texture-architecture"><a class="header" href="#virtual-texture-architecture">Virtual Texture Architecture</a></h2>
+<p>Bovista uses a virtual texture approach: the full volume is logically divided into a grid of uniformly-sized tiles at each LOD level, but only resident tiles are stored on the GPU. Two GPU textures implement the indirection:</p>
+<h3 id="atlas-atlasallocator--3d-wgputexture"><a class="header" href="#atlas-atlasallocator--3d-wgputexture">Atlas (<code>AtlasAllocator</code> + 3D <code>wgpu::Texture</code>)</a></h3>
+<p>A fixed-size 3D texture that holds all physically resident tiles, packed into a uniform grid of slots. The atlas dimensions are chosen at creation time based on <code>max_tiles</code> (user-configurable) and the tile size for the finest LOD level.</p>
+<p>When a new tile arrives and the atlas is full, the least-recently-used slot is evicted.</p>
+<h3 id="page-table-pagetable--2d-array-wgputexture"><a class="header" href="#page-table-pagetable--2d-array-wgputexture">Page Table (<code>PageTable</code> + 2D-array <code>wgpu::Texture</code>)</a></h3>
+<p>A small integer texture with one layer per LOD level. Each texel stores either an atlas slot index for that tile (if resident) or a sentinel value (if absent). The shader looks up this indirection table at runtime to find where a tile lives in the atlas — or learns it’s absent and falls back to a coarser LOD.</p>
+<pre><code>Virtual address:  (lod, z_tile, y_tile, x_tile)
+           ↓
+     page table lookup
+           ↓
+Atlas slot index → 3D atlas sample
+</code></pre>
+<p>Because the indirection is resolved in the shader, <strong>both <code>ImageVisual</code> and <code>VolumeVisual</code> issue a single draw call per frame</strong> regardless of how many tiles are resident. There are no per-tile state changes.</p>
+<h2 id="per-frame-streaming-loop"><a class="header" href="#per-frame-streaming-loop">Per-Frame Streaming Loop</a></h2>
+<p><code>VirtualTextureData::prepare()</code> runs every frame:</p>
+<ol>
+<li><strong>LOD selection</strong> — calculates screen-space voxel error from the camera frustum and current view geometry; selects the ideal LOD level (biased by <code>lod_bias</code>)</li>
+<li><strong>Tile visibility</strong> — determines which tile addresses at the selected LOD intersect the visible region (slice plane footprint for <code>ImageVisual</code>, view frustum for <code>VolumeVisual</code>)</li>
+<li><strong>Request missing tiles</strong> — for any tile not resident, calls the user-supplied loader callback with <code>(lod, z, y, x)</code></li>
+<li><strong>Upload arrived tiles</strong> — drains the <code>PendingChunks</code> queue (tiles pushed by the loader since last frame), uploads each into an atlas slot, updates the page table</li>
+</ol>
+<h2 id="the-loader-callback"><a class="header" href="#the-loader-callback">The Loader Callback</a></h2>
+<p>The loader is a synchronous callback that Bovista calls when it needs a tile. The loader’s job is to <strong>initiate</strong> the load (kick off a background thread or async task) and return a status immediately. It must not block.</p>
+<pre><code>Signature: (lod: u32, z: u32, y: u32, x: u32) → ChunkStatus
+</code></pre>
+<p><code>ChunkStatus</code> values:</p>
+<ul>
+<li><code>Accepted</code> — the request was accepted; data will arrive via <code>set_chunk_data_u16()</code> soon</li>
+<li><code>AlreadyPending</code> — already loading this tile; skip it</li>
+<li><code>Rejected</code> — unable to accept (e.g. at capacity); try again next frame</li>
+</ul>
+<p>When the data is ready, the loader (or its background task) calls <code>set_chunk_data_u16(lod, z, y, x, data)</code> to push the tile into the <code>PendingChunks</code> queue. Bovista drains this queue during the next <code>prepare()</code> call and uploads the tile to the atlas.</p>
+<h3 id="python-implementation"><a class="header" href="#python-implementation">Python Implementation</a></h3>
+<p>The Python examples use a <code>ThreadPoolExecutor</code> for background loading:</p>
+<pre><code class="language-python">from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=8)
+pending = {}
+cache = {}
+
+def request_tile(lod, z, y, x):
+    key = (lod, z, y, x)
+    if key in cache:
+        # Already loaded — push data again (Bovista may have evicted it)
+        image.set_chunk_data_u16(lod, z, y, x, cache[key])
+        return bv.ChunkStatus.Accepted
+    if key in pending:
+        return bv.ChunkStatus.AlreadyPending
+    pending.add(key)
+    executor.submit(load_and_push, key)
+    return bv.ChunkStatus.Accepted
+
+def load_and_push(key):
+    lod, z, y, x = key
+    data = zarr_array[lod][z*cz:(z+1)*cz, y*cy:(y+1)*cy, x*cx:(x+1)*cx]
+    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
+    pending.discard(key)
+    cache[key] = data  # optional local cache
+</code></pre>
+<h3 id="javascript-implementation"><a class="header" href="#javascript-implementation">JavaScript Implementation</a></h3>
+<p>The web examples use <code>fetch()</code> and an <code>async</code> pipeline:</p>
+<pre><code class="language-javascript">const pending = new Set();
+const cache = new Map();
+
+function requestTile(lod, z, y, x) {
+    const key = `${lod}_${z}_${y}_${x}`;
+    if (cache.has(key)) {
+        image.setChunkDataU16(lod, z, y, x, cache.get(key), width, height, depth);
+        return ChunkStatus.Accepted;
+    }
+    if (pending.has(key)) return ChunkStatus.AlreadyPending;
+    pending.add(key);
+    fetchTile(lod, z, y, x).then(data =&gt; {
+        image.setChunkDataU16(lod, z, y, x, data, width, height, depth);
+        cache.set(key, data);
+        pending.delete(key);
+    });
+    return ChunkStatus.Accepted;
+}
+</code></pre>
+<h2 id="multi-resolution-lod-pyramid"><a class="header" href="#multi-resolution-lod-pyramid">Multi-Resolution (LOD) Pyramid</a></h2>
+<p>Volumes are described as an array of <code>LevelMetadata</code>, one per resolution level. Level 0 is the finest.</p>
+<pre><code class="language-python">levels = [
+    bv.LevelMetadata(
+        volume_size=(depth, height, width),    # voxels at this level
+        chunk_size=(cdepth, cheight, cwidth),  # tile size
+        voxel_size=(vz, vy, vx),              # physical size in µm
+        scale_factor=1.0,                      # LOD 0 is the reference
+    ),
+    bv.LevelMetadata(
+        volume_size=(depth//2, height//2, width//2),
+        chunk_size=(cdepth, cheight, cwidth),
+        voxel_size=(vz, vy*2, vx*2),
+        scale_factor=2.0,                      # voxels 2× larger than LOD 0
+    ),
+    # ... more levels (4.0, 8.0, ...)
+]
+</code></pre>
+<p>LOD selection is screen-space: Bovista calculates how many voxels map to a single pixel at the current zoom, and selects the finest LOD where that ratio is close to 1:1.</p>
+<h2 id="lod-fallback-in-the-shader"><a class="header" href="#lod-fallback-in-the-shader">LOD Fallback in the Shader</a></h2>
+<p>The page table stores the actual LOD at which a tile was loaded, not just whether it’s present. When the fragment shader samples a tile that’s absent at the ideal LOD, it climbs up the page table to find the coarsest available ancestor:</p>
+<pre><code class="language-wgsl">// Simplified virtual texture lookup (virtual_tile.wgsl)
+var lod = ideal_lod;
+var slot = page_table_lookup(lod, tile_addr);
+while slot == ABSENT &amp;&amp; lod &lt; max_lod {
+    lod += 1u;
+    slot = page_table_lookup(lod, tile_addr &gt;&gt; lod_shift);
+}
+// sample atlas at slot
+</code></pre>
+<p>This means coarse tiles fill in immediately while finer tiles stream in, giving smooth progressive refinement.</p>
+<h2 id="memory-budget"><a class="header" href="#memory-budget">Memory Budget</a></h2>
+<p>The atlas size (and therefore VRAM use) is controlled by <code>max_tiles</code> at visual construction time:</p>
+<pre><code class="language-python"># Each tile is tile_depth × tile_height × tile_width × 2 bytes (R16Float)
+# e.g. 64³ tile = 524 KB; 2000 tiles ≈ 1 GB
+image = bv.Image(viewer, levels, max_tiles=2000, loader=request_tile)
+</code></pre>
+<p>In the web examples, the VRAM budget selector converts a GB budget into a <code>max_tiles</code> count:</p>
+<pre><code class="language-javascript">const tileVram = tileDepth * tileHeight * tileWidth * 2; // R16Float
+const maxTiles = Math.floor((budgetBytes * 0.8) / tileVram); // 80% headroom
+</code></pre>
+<h2 id="debug-modes"><a class="header" href="#debug-modes">Debug Modes</a></h2>
+<p>Both <code>ImageVisual</code> and <code>VolumeVisual</code> support debug visualizations:</p>
+<ul>
+<li><strong>LOD tint</strong> (<code>set_debug_mode(true)</code>) — colors tiles by their loaded LOD: green = finest, red = coarsest. Useful for verifying LOD selection and tile streaming.</li>
+<li><strong>Atlas debug</strong> (<code>set_atlas_debug_mode(true)</code>, volume only) — bypasses page-table indirection and samples the raw atlas texture directly. Shows the packing of tiles.</li>
+<li><strong>Step count heatmap</strong> (<code>set_step_debug_mode(true)</code>, volume only) — colors pixels by ray-march step count. Blue = few steps (coarse LOD or short ray), red = many.</li>
+</ul>
+<h2 id="summary-1"><a class="header" href="#summary-1">Summary</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Component</th><th>Role</th></tr>
+</thead>
+<tbody>
+<tr><td><code>VirtualTextureData</code></td><td>Orchestrates streaming, atlas, page table, LOD selection</td></tr>
+<tr><td><code>AtlasAllocator</code></td><td>Manages slot assignment and LRU eviction in the 3D atlas texture</td></tr>
+<tr><td><code>PageTable</code></td><td>GPU indirection texture: maps <code>(lod, z, y, x)</code> → atlas slot</td></tr>
+<tr><td><code>PendingChunks</code></td><td>Lock-protected queue for pushing tile data from background threads</td></tr>
+<tr><td>Loader callback</td><td>User code; kicks off async loads and returns <code>ChunkStatus</code></td></tr>
+<tr><td><code>set_chunk_data_u16()</code></td><td>Called by user when data arrives; pushes into <code>PendingChunks</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The key architectural win: by resolving tile addresses in the shader, both <code>ImageVisual</code> and <code>VolumeVisual</code> render in a single draw call per frame regardless of how many tiles are resident or loading.</p>
+<hr>
+<p><strong>Next</strong>: <a href="#python-bindings">Python API →</a></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="quick-reference"><a class="header" href="#quick-reference">Quick Reference</a></h1>
+<h2 id="source-map"><a class="header" href="#source-map">Source Map</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Component</th><th>File</th></tr>
+</thead>
+<tbody>
+<tr><td>Renderer (device, queue, render pass)</td><td><code>src/renderer.rs</code></td></tr>
+<tr><td>Camera (orbit, pan, zoom, frustum)</td><td><code>src/camera.rs</code></td></tr>
+<tr><td>Scene (visual list, frame loop)</td><td><code>src/scene.rs</code></td></tr>
+<tr><td><code>Visual</code> trait</td><td><code>src/visual.rs</code></td></tr>
+<tr><td>Shared Python/WASM logic</td><td><code>src/bindings_common.rs</code></td></tr>
+<tr><td><code>PointsVisual</code></td><td><code>src/visuals/points.rs</code></td></tr>
+<tr><td><code>LinesVisual</code></td><td><code>src/visuals/lines.rs</code></td></tr>
+<tr><td><code>ImageVisual</code> (slice rendering)</td><td><code>src/visuals/image.rs</code></td></tr>
+<tr><td><code>VolumeVisual</code> (ray marching DVR)</td><td><code>src/visuals/volume.rs</code></td></tr>
+<tr><td><code>VirtualTextureData</code> (atlas + page table + LOD)</td><td><code>src/visuals/virtual_texture.rs</code></td></tr>
+<tr><td><code>AtlasAllocator</code></td><td><code>src/visuals/atlas.rs</code></td></tr>
+<tr><td><code>PageTable</code></td><td><code>src/visuals/page_table.rs</code></td></tr>
+<tr><td>Tile types, <code>TileKey</code>, <code>TileData</code>, uniforms</td><td><code>src/visuals/tile.rs</code></td></tr>
+<tr><td><code>CustomVisual</code></td><td><code>src/visuals/custom.rs</code></td></tr>
+<tr><td>Python bindings (PyO3)</td><td><code>src/python.rs</code></td></tr>
+<tr><td>WASM bindings (wasm-bindgen)</td><td><code>src/wasm.rs</code></td></tr>
+<tr><td>Proc-macro (<code>#[visual_methods]</code>, <code>#[camera_methods]</code>)</td><td><code>bovista-codegen/src/lib.rs</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="shader-map"><a class="header" href="#shader-map">Shader Map</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Shader</th><th>File</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>Virtual tile</td><td><code>src/shaders/virtual_tile.wgsl</code></td><td>Slice rendering via atlas + page table</td></tr>
+<tr><td>Volume ray march</td><td><code>src/shaders/volume_raymarch.wgsl</code></td><td>DVR ray marching via atlas + page table</td></tr>
+<tr><td>Point cloud</td><td><code>src/shaders/point_cloud.wgsl</code></td><td>Point rendering</td></tr>
+<tr><td>Lines</td><td><code>src/shaders/lines.wgsl</code></td><td>Line rendering</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="python-api-summary"><a class="header" href="#python-api-summary">Python API Summary</a></h2>
+<pre><code class="language-python">import bovista as bv
+
+# Viewer
+viewer = bv.Viewer(width=800, height=600)
+viewer.initialize_with_window(handle, width, height)  # embed in Qt/Tk
+viewer.run()                                           # standalone winit window
+viewer.render_frame()
+viewer.resize(w, h)
+
+# Camera
+viewer.set_camera_position(x, y, z)
+viewer.set_camera_target(x, y, z)
+viewer.set_camera_up(x, y, z)
+viewer.orbit_camera(dx, dy)
+viewer.pan_camera(dx, dy)
+viewer.zoom_camera(delta)
+viewer.set_camera_clip_planes(near, far)
+viewer.set_camera_projection_mode(bv.ProjectionMode.Perspective)
+viewer.set_camera_projection_mode(bv.ProjectionMode.Orthographic)
+viewer.set_camera_ortho_height(h)
+viewer.get_camera_ortho_height() -&gt; float
+viewer.get_camera_distance() -&gt; float
+
+# Scene
+idx = viewer.add(visual)
+viewer.clear_visuals()
+viewer.visual_count() -&gt; int
+
+# LevelMetadata  (all sizes are (depth/z, height/y, width/x))
+level = bv.LevelMetadata(
+    volume_size=(d, h, w),
+    chunk_size=(cd, ch, cw),
+    voxel_size=(vz, vy, vx),
+    scale_factor=1.0,          # 1.0 for LOD 0, 2.0 for LOD 1, 4.0 for LOD 2, ...
+    translation=(tz, ty, tx),  # optional
+)
+
+# Image (slice rendering)
+image = bv.Image(viewer, levels, max_tiles=500, loader=fn)
+image.set_slice_z(z)
+image.set_slice_y(y)
+image.set_slice_x(x)
+image.set_slice_plane(px, py, pz, nx, ny, nz)
+image.set_contrast(min, max)
+image.set_colormap(rgba_array)    # (256,4) uint8; None = grayscale
+image.set_lod_bias(bias)
+image.set_debug_mode(True)        # LOD tint
+image.get_stats() -&gt; (loaded, visible)
+image.set_chunk_data_u16(lod, z, y, x, array)  # numpy uint16
+
+# Volume (ray marching DVR)
+volume = bv.Volume(viewer, levels, max_tiles=2000, loader=fn)
+volume.set_contrast(min, max)
+volume.set_colormap(rgba_array)
+volume.set_density_scale(scale)
+volume.set_relative_step_size(step)  # 1.0 = Nyquist
+volume.set_lod_bias(bias)
+volume.set_debug_mode(True)          # LOD tint
+volume.set_atlas_debug_mode(True)    # raw atlas
+volume.set_step_debug_mode(True)     # step count heatmap
+volume.get_stats() -&gt; (loaded, visible)
+volume.set_chunk_data_u16(lod, z, y, x, array)
+
+# Points / Lines (static geometry)
+points = bv.Points.from_numpy(viewer, positions, colors)  # (N,1,3) float32
+lines  = bv.Lines.axis_helper(viewer, length=1.0)
+
+# ChunkStatus
+bv.ChunkStatus.Accepted
+bv.ChunkStatus.AlreadyPending
+bv.ChunkStatus.Rejected
+</code></pre>
+<h2 id="javascript-api-summary"><a class="header" href="#javascript-api-summary">JavaScript API Summary</a></h2>
+<pre><code class="language-javascript">import init, { JsViewer, JsImageVisual, JsVolumeVisual,
+               JsLevelMetadata, JsChunkStatus } from './pkg/bovista.js';
+await init();
+
+// Viewer
+const viewer = await JsViewer.new('canvas-id');
+viewer.renderFrame();
+viewer.resize(w, h);
+
+// Camera
+viewer.setCameraPosition(x, y, z);   viewer.setCameraTarget(x, y, z);
+viewer.setCameraUp(x, y, z);         viewer.orbitCamera(dx, dy);
+viewer.panCamera(dx, dy);            viewer.zoomCamera(delta);
+viewer.setCameraClipPlanes(near, far);
+viewer.setCameraProjectionMode(JsProjectionMode.Perspective);
+viewer.setCameraOrthoHeight(h);      viewer.getCameraOrthoHeight();
+viewer.getCameraDistance();
+
+// Scene
+viewer.addImage(image);     viewer.addVolume(volume);
+viewer.addPoints(points);   viewer.addLines(lines);
+viewer.clearScene();        viewer.visualCount();
+
+// LevelMetadata  (constructor takes individual numbers)
+const level = new JsLevelMetadata(
+    volumeW, volumeH, volumeD,
+    chunkW,  chunkH,  chunkD,
+    voxelW,  voxelH,  voxelD,
+    scaleFactor,
+    translateX, translateY, translateZ
+);
+// Getters return arrays: level.volume_size, level.chunk_size, level.voxel_size
+
+// JsImageVisual
+const image = new JsImageVisual(viewer, levels, maxTiles, chunkLoader);
+image.setSliceZ(z);  image.setSliceY(y);  image.setSliceX(x);
+image.setSlicePlane(px, py, pz, nx, ny, nz);
+image.setContrast(min, max);
+image.setColormap(uint8Array);       // 1024 bytes (256 RGBA); empty = grayscale
+image.setLodBias(bias);
+image.setDebugMode(true);
+image.getStats();                    // [loaded, visible]
+image.setChunkDataU16(lod, z, y, x, uint16Array, w, h, d);
+
+// JsVolumeVisual
+const volume = new JsVolumeVisual(viewer, levels, maxTiles, chunkLoader);
+volume.setContrast(min, max);        volume.setColormap(uint8Array);
+volume.setDensityScale(scale);       volume.setRelativeStepSize(step);
+volume.setLodBias(bias);
+volume.setDebugMode(true);           // LOD tint
+volume.setAtlasDebugMode(true);      // raw atlas
+volume.setStepDebugMode(true);       // step count heatmap
+volume.getStats();                   // [loaded, visible]
+volume.setChunkDataU16(lod, z, y, x, uint16Array, w, h, d);
+</code></pre>
+<h2 id="loader-skeleton-python"><a class="header" href="#loader-skeleton-python">Loader Skeleton (Python)</a></h2>
+<pre><code class="language-python">from concurrent.futures import ThreadPoolExecutor
+import threading
+
+executor = ThreadPoolExecutor(max_workers=8)
+_pending = set()
+_lock = threading.Lock()
+
+def request_tile(lod, z, y, x):
+    key = (lod, z, y, x)
+    with _lock:
+        if key in _pending:
+            return bv.ChunkStatus.AlreadyPending
+        _pending.add(key)
+    executor.submit(_load, key)
+    return bv.ChunkStatus.Accepted
+
+def _load(key):
+    lod, z, y, x = key
+    # ... fetch data ...
+    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
+    with _lock:
+        _pending.discard(key)
+</code></pre>
+<h2 id="loader-skeleton-javascript"><a class="header" href="#loader-skeleton-javascript">Loader Skeleton (JavaScript)</a></h2>
+<pre><code class="language-javascript">const pending = new Set();
+
+function requestTile(lod, z, y, x) {
+    const key = `${lod}_${z}_${y}_${x}`;
+    if (pending.has(key)) return JsChunkStatus.AlreadyPending;
+    pending.add(key);
+    fetchZarrChunk(lod, z, y, x).then(({ data, w, h, d }) =&gt; {
+        image.setChunkDataU16(lod, z, y, x, data, w, h, d);
+        pending.delete(key);
+    }).catch(() =&gt; pending.delete(key));
+    return JsChunkStatus.Accepted;
+}
+</code></pre>
+<h2 id="vram-budget"><a class="header" href="#vram-budget">VRAM Budget</a></h2>
+<pre><code>VRAM per tile ≈ tile_depth × tile_height × tile_width × 2 bytes  (R16Float)
+e.g. 64³ tile = 524 KB;  max_tiles=2000 ≈ 1 GB
+</code></pre>
+<p>In the web examples:</p>
+<pre><code class="language-javascript">const tileVram = tileDepth * tileHeight * tileWidth * 2;
+const maxTiles = Math.floor((budgetBytes * 0.8) / tileVram);  // 80% headroom
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="further-reading"><a class="header" href="#further-reading">Further Reading</a></h1>
+<h2 id="wgpu"><a class="header" href="#wgpu">WGPU</a></h2>
+<ul>
+<li><strong>wgpu.rs</strong>: <a href="https://wgpu.rs">https://wgpu.rs</a> — API reference and overview</li>
+<li><strong>Learn WGPU</strong>: <a href="https://sotrh.github.io/learn-wgpu/">https://sotrh.github.io/learn-wgpu/</a> — step-by-step Rust tutorial</li>
+<li><strong>WebGPU Fundamentals</strong>: <a href="https://webgpufundamentals.org/">https://webgpufundamentals.org/</a> — conceptual explanations (JS-focused but transferable)</li>
+</ul>
+<h2 id="zarr--ome-zarr"><a class="header" href="#zarr--ome-zarr">Zarr &amp; OME-Zarr</a></h2>
+<ul>
+<li><strong>Zarr Python</strong>: <a href="https://zarr.readthedocs.io/">https://zarr.readthedocs.io/</a> — chunked array format used by Bovista’s examples</li>
+<li><strong>OME-Zarr Spec</strong>: <a href="https://ngff.openmicroscopy.org/">https://ngff.openmicroscopy.org/</a> — multiscale microscopy image format</li>
+<li><strong>Zarrita (JS)</strong>: <a href="https://github.com/manzt/zarrita.js">https://github.com/manzt/zarrita.js</a> — Zarr v2/v3 reader used by the web examples</li>
+</ul>
+<h2 id="volume-rendering"><a class="header" href="#volume-rendering">Volume Rendering</a></h2>
+<ul>
+<li><strong>Neuroglancer</strong>: <a href="https://github.com/google/neuroglancer">https://github.com/google/neuroglancer</a> — WebGL-based volume viewer with similar streaming goals</li>
+<li><strong>Real-Time Volume Graphics</strong> (book) — foundational DVR techniques (ray marching, compositing, transfer functions)</li>
+</ul>
+<h2 id="debugging-gpu-code"><a class="header" href="#debugging-gpu-code">Debugging GPU Code</a></h2>
+<ul>
+<li><strong>RenderDoc</strong>: <a href="https://renderdoc.org/">https://renderdoc.org/</a> — frame capture and GPU state inspector; works with wgpu on native targets</li>
+<li><strong>Xcode GPU Debugger</strong> (macOS) — built into Xcode; useful for Metal frames</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="custom-53791975.js"></script>
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>

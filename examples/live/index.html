@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bovista - WebGPU 3D Visualization</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 2rem;
+        }
+        .header {
+            max-width: 1200px;
+            margin: 0 auto 3rem;
+        }
+        h1 {
+            color: #58a6ff;
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .subtitle {
+            color: #8b949e;
+            font-size: 1.125rem;
+        }
+        .examples {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 1.5rem;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: #58a6ff;
+        }
+        .card h2 {
+            color: #58a6ff;
+            margin-bottom: 0.5rem;
+            font-size: 1.5rem;
+        }
+        .card p {
+            color: #8b949e;
+            line-height: 1.6;
+            margin-bottom: 1rem;
+        }
+        .card ul {
+            list-style: none;
+            padding: 0;
+            margin-bottom: 1.5rem;
+            color: #8b949e;
+        }
+        .card li {
+            padding: 0.25rem 0;
+            padding-left: 1.25rem;
+            position: relative;
+        }
+        .card li:before {
+            content: "→";
+            color: #58a6ff;
+            position: absolute;
+            left: 0;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin-bottom: 1rem;
+            background: #1a7f37;
+            color: #aff5b4;
+        }
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background: #238636;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        .btn:hover {
+            background: #2ea043;
+        }
+        .requirements {
+            background: #21262d;
+            padding: 1.5rem;
+            border-radius: 6px;
+            margin-top: 3rem;
+            max-width: 1200px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .requirements h3 {
+            color: #58a6ff;
+            margin-bottom: 1rem;
+        }
+        .requirements ul {
+            list-style: none;
+            padding: 0;
+        }
+        .requirements li {
+            padding: 0.5rem 0;
+            padding-left: 1.5rem;
+            position: relative;
+        }
+        .requirements li:before {
+            content: "✓";
+            color: #3fb950;
+            position: absolute;
+            left: 0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🍄 Bovista Examples</h1>
+        <p class="subtitle">High-performance 3D visualization with WebGPU</p>
+    </div>
+
+    <div class="examples">
+        <div class="card">
+            <h2>Slice Viewer</h2>
+            <p>Load multiscale OME-Zarr datasets from remote S3 and explore them with an interactive slice plane.</p>
+            <ul>
+                <li>On-demand tile streaming from S3</li>
+                <li>Multiscale pyramid (LOD) support</li>
+                <li>Multi-channel fluorescence imaging</li>
+                <li>Arbitrary slice plane: tilt, rotate, offset</li>
+                <li>Orthographic + perspective projection</li>
+                <li>Real-time window/level contrast</li>
+            </ul>
+            <a href="slice_viewer/web/index.html" class="btn">Launch Demo →</a>
+        </div>
+
+        <div class="card">
+            <h2>Volume Renderer</h2>
+            <p>Direct volume rendering via GPU ray marching. Same tile-streaming backend as the slice viewer — no extra data required.</p>
+            <ul>
+                <li>Front-to-back alpha-composited ray march</li>
+                <li>Adjustable step size and density scale</li>
+                <li>Same virtual-texture tile cache as slice viewer</li>
+                <li>Multiscale LOD streaming from remote S3</li>
+                <li>Real-time window/level contrast</li>
+                <li>Debug LOD tinting</li>
+            </ul>
+            <a href="volume_renderer/web/index.html" class="btn">Launch Demo →</a>
+        </div>
+    </div>
+
+    <div class="requirements">
+        <h3>System Requirements</h3>
+        <ul>
+            <li>Modern browser with WebGPU support (Chrome 113+, Edge 113+, Safari Technology Preview)</li>
+            <li>WebGPU-capable GPU (most modern GPUs from 2018+)</li>
+            <li>Check compatibility: <a href="https://webgpureport.org/" target="_blank" style="color: #58a6ff;">webgpureport.org</a></li>
+        </ul>
+    </div>
+</body>
+</html>

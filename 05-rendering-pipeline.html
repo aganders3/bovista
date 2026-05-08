@@ -1,0 +1,905 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Rendering Pipeline - Bovista Architecture Guide</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Understanding Bovista&#x27;s GPU-accelerated volumetric visualization architecture built with WGPU">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="custom-681f4f87.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "rust";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-6a6c8c20.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-4cd89307.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Bovista Architecture Guide</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/aganders3/bovista" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="the-wgpu-rendering-pipeline"><a class="header" href="#the-wgpu-rendering-pipeline">The wgpu Rendering Pipeline</a></h1>
+<p>This chapter is a ground-up walkthrough of how Bovista actually draws pixels — from GPU initialization through shader execution. If you’re new to wgpu or WebGPU, start here.</p>
+<ul>
+<li><a href="#what-wgpu-is-and-isnt">What wgpu Is (and Isn’t)</a></li>
+<li><a href="#core-concepts-before-we-start">Core Concepts Before We Start</a>
+<ul>
+<li><a href="#the-gpu-rendering-model">The GPU Rendering Model</a></li>
+<li><a href="#bind-groups">Bind Groups</a></li>
+<li><a href="#buffers-vs-textures">Buffers vs Textures</a></li>
+</ul>
+</li>
+<li><a href="#the-renderer-setting-up-the-gpu">The Renderer: Setting Up the GPU</a>
+<ul>
+<li><a href="#device-and-queue">Device and Queue</a></li>
+<li><a href="#camera-uniform-buffer">Camera Uniform Buffer</a></li>
+<li><a href="#the-depth-buffer">The Depth Buffer</a></li>
+<li><a href="#the-render-loop">The Render Loop</a></li>
+</ul>
+</li>
+<li><a href="#simple-visuals-points-and-lines">Simple Visuals: Points and Lines</a>
+<ul>
+<li><a href="#vertex-layout">Vertex Layout</a></li>
+<li><a href="#pipeline-creation">Pipeline Creation</a></li>
+<li><a href="#shader-point_cloudwgsl">Shader: point_cloud.wgsl</a></li>
+<li><a href="#the-prepare--render-split">The <code>prepare</code> / <code>render</code> Split</a></li>
+</ul>
+</li>
+<li><a href="#the-slice-pipeline-imagevisual">The Slice Pipeline: ImageVisual</a>
+<ul>
+<li><a href="#how-it-works-overview">How It Works (Overview)</a></li>
+<li><a href="#vertex-layout-tilevertex">Vertex Layout: TileVertex</a></li>
+<li><a href="#geometry-plane-aabb-intersection">Geometry: Plane-AABB Intersection</a></li>
+<li><a href="#bind-group-layout-groups-1-and-2">Bind Group Layout (Groups 1 and 2)</a></li>
+<li><a href="#shader-virtual_tilewgsl">Shader: virtual_tile.wgsl</a></li>
+<li><a href="#virtual-texture-lookup-sample_vvt">Virtual Texture Lookup: sample_vvt</a></li>
+<li><a href="#the-render-call">The Render Call</a></li>
+</ul>
+</li>
+<li><a href="#the-volume-pipeline-volumevisual">The Volume Pipeline: VolumeVisual</a>
+<ul>
+<li><a href="#the-box-geometry-trick">The Box Geometry Trick</a></li>
+<li><a href="#ray-marching-the-fragment-shader">Ray Marching: The Fragment Shader</a></li>
+<li><a href="#lod-adaptive-step-size">LOD-Adaptive Step Size</a></li>
+<li><a href="#blending-pre-multiplied-alpha">Blending: Pre-multiplied Alpha</a></li>
+<li><a href="#depth-write-disabled">Depth Write Disabled</a></li>
+</ul>
+</li>
+<li><a href="#vt-uniforms-the-cpu-gpu-contract">VT Uniforms: The CPU-GPU Contract</a></li>
+<li><a href="#shader-selection-summary">Shader Selection Summary</a></li>
+<li><a href="#putting-it-all-together">Putting It All Together</a></li>
+</ul>
+<hr>
+<h2 id="what-wgpu-is-and-isnt"><a class="header" href="#what-wgpu-is-and-isnt">What wgpu Is (and Isn’t)</a></h2>
+<p>wgpu is a Rust library that exposes the <strong>WebGPU API</strong>, a modern, explicit graphics API. “Explicit” means you, the programmer, are responsible for:</p>
+<ul>
+<li>Describing memory layouts to the GPU in advance</li>
+<li>Binding resources (textures, buffers) before drawing</li>
+<li>Specifying exactly how vertices flow into fragments</li>
+</ul>
+<p>You get a lot of control — and a lot of upfront setup. In exchange you get predictable performance and the same code running on Vulkan, Metal, DirectX 12, and WebGPU in the browser.</p>
+<hr>
+<h2 id="core-concepts-before-we-start"><a class="header" href="#core-concepts-before-we-start">Core Concepts Before We Start</a></h2>
+<h3 id="the-gpu-rendering-model"><a class="header" href="#the-gpu-rendering-model">The GPU Rendering Model</a></h3>
+<p>The GPU executes a <strong>render pipeline</strong> for each draw call:</p>
+<pre><code>CPU uploads vertex data + uniforms
+        │
+        ▼
+  [ Vertex Stage ]      ← runs once per vertex; outputs clip-space position
+        │
+        ▼
+  [ Rasterization ]     ← GPU converts triangles to fragments (pixels)
+        │
+        ▼
+  [ Fragment Stage ]    ← runs once per fragment; outputs a color
+        │
+        ▼
+  [ Output Merging ]    ← depth test, blending, write to texture
+</code></pre>
+<p>Shaders are small programs written in WGSL (WebGPU Shading Language) that run on the GPU. Each pipeline has one vertex shader and one fragment shader.</p>
+<h3 id="bind-groups"><a class="header" href="#bind-groups">Bind Groups</a></h3>
+<p>Rather than setting individual texture or buffer pointers before every draw, wgpu groups related resources into <strong>bind groups</strong>. A bind group is a bundle of GPU resources (buffers, textures, samplers) with a fixed layout that you attach to the pipeline once.</p>
+<p>Bovista uses a consistent three-group layout across all its visual pipelines:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Group</th><th>Who owns it</th><th>Contents</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@group(0)</code></td><td><code>Renderer</code> (set once per frame for all visuals)</td><td>Camera view-projection matrix</td></tr>
+<tr><td><code>@group(1)</code></td><td>Each visual (VT visuals)</td><td>Atlas texture, page table, VT uniforms</td></tr>
+<tr><td><code>@group(2)</code></td><td>Each visual</td><td>Per-visual uniforms and colormap</td></tr>
+</tbody>
+</table>
+</div>
+<p>Simple visuals (points, lines) only use group 0.</p>
+<h3 id="buffers-vs-textures"><a class="header" href="#buffers-vs-textures">Buffers vs Textures</a></h3>
+<ul>
+<li><strong>Buffer</strong>: raw bytes. Used for vertex data, index data, and uniform structs.</li>
+<li><strong>Texture</strong>: sampled image data with filtering support. Used for the atlas, the page table, and the colormap LUT.</li>
+<li><strong>Sampler</strong>: describes how to filter a texture (bilinear? clamp to edge?). Bound alongside textures.</li>
+</ul>
+<hr>
+<h2 id="the-renderer-setting-up-the-gpu"><a class="header" href="#the-renderer-setting-up-the-gpu">The Renderer: Setting Up the GPU</a></h2>
+<p><code>src/renderer.rs</code> owns the GPU device, queue, and the shared camera bind group.</p>
+<h3 id="device-and-queue"><a class="header" href="#device-and-queue">Device and Queue</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// In practice, these come from wgpu surface setup (not shown here).
+// The device is used to create GPU objects (buffers, textures, pipelines).
+// The queue is used to submit commands and write data to GPU memory.
+pub struct Renderer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p><code>Device</code> creates GPU objects; <code>Queue</code> sends data and commands to the GPU.</p>
+<h3 id="camera-uniform-buffer"><a class="header" href="#camera-uniform-buffer">Camera Uniform Buffer</a></h3>
+<p>Every shader needs to transform vertices from world space to screen space. The renderer creates a 64-byte uniform buffer that holds a single 4×4 matrix and updates it every frame:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let camera_uniform_buffer = device.create_buffer(&amp;wgpu::BufferDescriptor {
+    size: std::mem::size_of::&lt;CameraUniforms&gt;() as u64,  // 64 bytes
+    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    ...
+});
+<span class="boring">}</span></code></pre>
+<p><code>UNIFORM</code> means the shader can read it. <code>COPY_DST</code> means the CPU can write to it each frame via <code>queue.write_buffer</code>.</p>
+<p>The bind group layout tells the GPU “binding 0 is a uniform buffer, visible only in the vertex stage”:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>wgpu::BindGroupLayoutEntry {
+    binding: 0,
+    visibility: wgpu::ShaderStages::VERTEX,
+    ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        ...
+    },
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p>The matching WGSL declaration:</p>
+<pre><code class="language-wgsl">// virtual_tile.wgsl, group 0
+struct CameraUniforms {
+    view_proj: mat4x4&lt;f32&gt;,
+}
+@group(0) @binding(0)
+var&lt;uniform&gt; camera: CameraUniforms;
+</code></pre>
+<p>Every frame, <code>Renderer::update_camera</code> computes the view-projection matrix and sends it to the GPU:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn update_camera(&amp;self, camera: &amp;Camera) {
+    let uniforms = CameraUniforms {
+        view_proj: camera.view_projection_matrix().to_cols_array_2d(),
+    };
+    self.queue.write_buffer(&amp;self.camera_uniform_buffer, 0,
+        bytemuck::cast_slice(&amp;[uniforms]));
+}
+<span class="boring">}</span></code></pre>
+<p><code>bytemuck::cast_slice</code> safely reinterprets the Rust struct as raw bytes for the GPU.</p>
+<h3 id="the-depth-buffer"><a class="header" href="#the-depth-buffer">The Depth Buffer</a></h3>
+<p>Bovista creates a depth texture at startup and recreates it on resize:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let depth_texture = device.create_texture(&amp;wgpu::TextureDescriptor {
+    format: wgpu::TextureFormat::Depth24PlusStencil8,
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+    ...
+});
+<span class="boring">}</span></code></pre>
+<p>The depth buffer stores the depth of the closest fragment seen so far at each pixel. When a new fragment arrives, it’s compared against the stored depth — if it’s further away, it’s discarded (the depth test). This is what makes closer objects correctly occlude farther ones without sorting draw calls.</p>
+<h3 id="the-render-loop"><a class="header" href="#the-render-loop">The Render Loop</a></h3>
+<p>Each frame, <code>Renderer::render</code>:</p>
+<ol>
+<li>Creates a <strong>command encoder</strong> — a recorder for GPU commands</li>
+<li>Begins a <strong>render pass</strong> — declares what texture to draw into and how to clear it</li>
+<li>Sets the camera bind group at <code>@group(0)</code> <strong>once</strong>, for all visuals</li>
+<li>Calls <code>scene.render()</code> which iterates each visible <code>impl Visual</code> and calls its <code>render()</code></li>
+<li>Finishes and submits the command buffer to the queue</li>
+</ol>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From renderer.rs
+let mut render_pass = encoder.begin_render_pass(&amp;wgpu::RenderPassDescriptor {
+    color_attachments: &amp;[Some(wgpu::RenderPassColorAttachment {
+        view,  // the surface texture we're drawing into
+        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear_color), ... },
+    })],
+    depth_stencil_attachment: Some(...),
+    ...
+});
+
+render_pass.set_bind_group(0, &amp;self.camera_bind_group, &amp;[]);
+scene.render(&amp;mut render_pass);  // each visual sets groups 1, 2 and draws
+<span class="boring">}</span></code></pre>
+<hr>
+<h2 id="simple-visuals-points-and-lines"><a class="header" href="#simple-visuals-points-and-lines">Simple Visuals: Points and Lines</a></h2>
+<p><code>src/visuals/points.rs</code> and <code>src/visuals/lines.rs</code> show the minimal pipeline pattern.</p>
+<h3 id="vertex-layout"><a class="header" href="#vertex-layout">Vertex Layout</a></h3>
+<p>A point has a world-space position and an RGB color:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct PointVertex {
+    pub position: [f32; 3],  // 12 bytes
+    pub color:    [f32; 3],  // 12 bytes — total: 24 bytes/vertex
+}
+<span class="boring">}</span></code></pre>
+<p>The <code>wgpu::VertexBufferLayout</code> tells the pipeline what this struct looks like:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>wgpu::VertexBufferLayout {
+    array_stride: 24,  // advance 24 bytes per vertex
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &amp;wgpu::vertex_attr_array![
+        0 =&gt; Float32x3,  // location 0: 3 floats = position
+        1 =&gt; Float32x3,  // location 1: 3 floats = color
+    ],
+}
+<span class="boring">}</span></code></pre>
+<p>The numbers here (<code>0 =&gt;</code>, <code>1 =&gt;</code>) match the <code>@location(0)</code> and <code>@location(1)</code> annotations in the WGSL vertex input struct.</p>
+<h3 id="pipeline-creation"><a class="header" href="#pipeline-creation">Pipeline Creation</a></h3>
+<p><code>device.create_render_pipeline</code> is the big upfront declaration:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>device.create_render_pipeline(&amp;wgpu::RenderPipelineDescriptor {
+    layout: Some(&amp;pipeline_layout),  // which bind group layouts this pipeline uses
+
+    vertex: wgpu::VertexState {
+        module: &amp;shader,         // compiled WGSL module
+        entry_point: Some("vs_main"),  // the function to call
+        buffers: &amp;[PointVertex::desc()],  // vertex buffer layout
+    },
+
+    fragment: Some(wgpu::FragmentState {
+        module: &amp;shader,
+        entry_point: Some("fs_main"),
+        targets: &amp;[Some(wgpu::ColorTargetState {
+            format: surface_format,  // must match the render pass target
+            blend: Some(wgpu::BlendState::REPLACE),  // no transparency
+            ...
+        })],
+    }),
+
+    primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::PointList,  // draw points, not triangles
+        cull_mode: None,
+        ...
+    },
+
+    depth_stencil: Some(wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: true,
+        depth_compare: wgpu::CompareFunction::LessEqual,
+        ...
+    }),
+})
+<span class="boring">}</span></code></pre>
+<p>A pipeline is <strong>immutable</strong> once created. The topology, shader, and vertex layout are all baked in. This is intentional — the GPU driver compiles the pipeline to native GPU code at creation time, making draw calls very fast.</p>
+<h3 id="shader-point_cloudwgsl"><a class="header" href="#shader-point_cloudwgsl">Shader: point_cloud.wgsl</a></h3>
+<pre><code class="language-wgsl">struct Uniforms { view_proj: mat4x4&lt;f32&gt; }
+@group(0) @binding(0) var&lt;uniform&gt; uniforms: Uniforms;
+
+struct VertexInput {
+    @location(0) position: vec3&lt;f32&gt;,
+    @location(1) color: vec3&lt;f32&gt;,
+}
+struct VertexOutput {
+    @builtin(position) clip_position: vec4&lt;f32&gt;,  // built-in: goes to rasterizer
+    @location(0) color: vec3&lt;f32&gt;,
+}
+
+@vertex
+fn vs_main(input: VertexInput) -&gt; VertexOutput {
+    var out: VertexOutput;
+    // Multiply world position by view-projection matrix to get clip space position.
+    out.clip_position = uniforms.view_proj * vec4&lt;f32&gt;(input.position, 1.0);
+    out.color = input.color;
+    return out;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
+    return vec4&lt;f32&gt;(input.color, 1.0);  // RGBA; alpha=1 = opaque
+}
+</code></pre>
+<p><code>@builtin(position)</code> is a special output understood by the rasterizer as the clip-space position. The other outputs (like <code>color</code>) are interpolated across the triangle/point by the hardware and handed to the fragment shader.</p>
+<h3 id="the-prepare--render-split"><a class="header" href="#the-prepare--render-split">The <code>prepare</code> / <code>render</code> Split</a></h3>
+<p>The <code>Visual</code> trait separates work into two phases:</p>
+<ul>
+<li><strong><code>prepare()</code></strong> — called before the render pass begins. Can write to GPU buffers (<code>queue.write_buffer</code>), create new textures, compute geometry. For points and lines this is a no-op because vertex data never changes.</li>
+<li><strong><code>render()</code></strong> — called inside the render pass. Can only issue draw commands (<code>set_pipeline</code>, <code>set_bind_group</code>, <code>draw</code>). No CPU work here.</li>
+</ul>
+<p>This split exists because <code>queue.write_buffer</code> and render pass recording are incompatible — you can’t upload data mid-pass.</p>
+<hr>
+<h2 id="the-slice-pipeline-imagevisual"><a class="header" href="#the-slice-pipeline-imagevisual">The Slice Pipeline: ImageVisual</a></h2>
+<p><code>src/visuals/image.rs</code> renders a planar cross-section through a 3D volume using the virtual texture system.</p>
+<h3 id="how-it-works-overview"><a class="header" href="#how-it-works-overview">How It Works (Overview)</a></h3>
+<ol>
+<li>Each frame, <code>prepare()</code> computes where the slice plane intersects the volume AABB and generates a polygon mesh for that cross-section (3–6 vertices, depending on the slice angle).</li>
+<li>Each vertex carries a <strong>3D volume UV</strong> (<code>texcoord: vec3&lt;f32&gt;</code>) — the normalized position within the volume at that point.</li>
+<li>In the fragment shader, those UVs are used to look up the voxel value via the virtual texture page table.</li>
+<li>The voxel value is passed through a contrast window and then into a colormap LUT to produce the final color.</li>
+</ol>
+<h3 id="vertex-layout-tilevertex"><a class="header" href="#vertex-layout-tilevertex">Vertex Layout: TileVertex</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[repr(C)]
+pub struct TileVertex {
+    pub position: [f32; 3],   // world-space position (on the slice plane)
+    pub texcoord: [f32; 3],   // volume UV in [0,1]^3
+}
+<span class="boring">}</span></code></pre>
+<p>The hardware interpolates <code>texcoord</code> across the polygon — every fragment knows where in the volume it sits.</p>
+<h3 id="geometry-plane-aabb-intersection"><a class="header" href="#geometry-plane-aabb-intersection">Geometry: Plane-AABB Intersection</a></h3>
+<p><code>compute_plane_aabb_intersection</code> (in <code>src/visuals/tile.rs</code>) tests the slice plane against all 12 edges of the volume bounding box. Each edge that the plane intersects yields one vertex. The result is a convex polygon with 3–6 vertices, triangulated as a fan and uploaded to the GPU as a fresh vertex/index buffer every frame:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From ImageVisual::prepare()
+if let Some((vertices, indices)) =
+    compute_plane_aabb_intersection(&amp;tile_plane, &amp;vol_aabb)
+{
+    self.vt_vertex_buffer = Some(device.create_buffer_init(&amp;wgpu::util::BufferInitDescriptor {
+        contents: bytemuck::cast_slice(&amp;vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+        ...
+    }));
+    // ... also creates index buffer
+}
+<span class="boring">}</span></code></pre>
+<h3 id="bind-group-layout-groups-1-and-2"><a class="header" href="#bind-group-layout-groups-1-and-2">Bind Group Layout (Groups 1 and 2)</a></h3>
+<p>Group 1 (VT resources) is declared in <code>ImageVisual::new</code> with four entries:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Binding</th><th>Type</th><th>Shader access</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td><code>texture_3d&lt;f32&gt;</code></td><td>Fragment</td><td>Physical atlas (packed tile data)</td></tr>
+<tr><td>1</td><td><code>sampler</code></td><td>Fragment</td><td>How to filter the atlas</td></tr>
+<tr><td>2</td><td><code>texture_2d_array&lt;u32&gt;</code></td><td>Fragment</td><td>Page table (tile → atlas slot mapping)</td></tr>
+<tr><td>3</td><td>uniform buffer</td><td>Fragment</td><td>VT uniforms: atlas layout, LOD info, contrast</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Entry for the page table (binding 2)
+wgpu::BindGroupLayoutEntry {
+    binding: 2,
+    visibility: wgpu::ShaderStages::FRAGMENT,
+    ty: wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Uint,  // integer texture, not float
+        view_dimension: wgpu::TextureViewDimension::D2Array,  // one layer per LOD
+        multisampled: false,
+    },
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p>The page table is a <code>texture_2d_array</code> where each array layer is one LOD level. Using <code>TextureSampleType::Uint</code> instead of <code>Float</code> means you read raw 32-bit integers with <code>textureLoad</code> (no filtering — you want exact values, not interpolated ones).</p>
+<p>Group 2 (colormap) has two entries:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Binding</th><th>Type</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td><code>texture_1d&lt;f32&gt;</code></td><td>256-entry RGBA colormap LUT</td></tr>
+<tr><td>1</td><td><code>sampler</code></td><td>Linear filter for smooth colormap interpolation</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="shader-virtual_tilewgsl"><a class="header" href="#shader-virtual_tilewgsl">Shader: virtual_tile.wgsl</a></h3>
+<p><strong>Vertex stage</strong> is trivial — multiply world position by view-projection:</p>
+<pre><code class="language-wgsl">@vertex
+fn vs_main(input: VertexInput) -&gt; VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = camera.view_proj * vec4f(input.position, 1.0);
+    out.vol_uv = input.texcoord;  // passed through to fragment stage
+    return out;
+}
+</code></pre>
+<p><strong>Fragment stage</strong> is where the work happens. For each pixel:</p>
+<pre><code class="language-wgsl">@fragment
+fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
+    // 1. Find the best resident tile for this volume UV
+    let result  = sample_vvt(input.vol_uv);
+    let raw     = result.x;      // voxel value (R16Float)
+    let lod_idx = result.y;      // which LOD level was found (-1 if none)
+
+    // 2. Apply contrast window: remap [contrast_min, contrast_max] → [0, 1]
+    let adjusted = clamp(
+        (raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min),
+        0.0, 1.0
+    );
+
+    // 3. Colormap lookup: 1D texture indexed by adjusted intensity
+    let color = textureSample(colormap, colormap_sampler, adjusted);
+
+    return encode_srgb(color);  // manual sRGB encoding for linear-format surfaces
+}
+</code></pre>
+<h3 id="virtual-texture-lookup-sample_vvt"><a class="header" href="#virtual-texture-lookup-sample_vvt">Virtual Texture Lookup: sample_vvt</a></h3>
+<p>The key function is <code>sample_vvt(vol_uv)</code>. It walks the LOD pyramid looking for a resident tile:</p>
+<pre><code class="language-wgsl">fn sample_vvt(vol_uv: vec3f) -&gt; vec2f {
+    let ideal_lod = i32(vt.target_lod);  // CPU-computed based on camera distance
+    let max_lod   = i32(vt.lod_count) - 1;
+
+    // First try: ideal_lod up to coarsest (normal fallback while tiles load)
+    for (var lod = ideal_lod; lod &lt;= max_lod; lod++) {
+        let r = try_lod(vol_uv, lod);
+        if r.y &gt;= 0.0 { return r; }  // r.y &gt;= 0 means tile was resident
+    }
+    // Second try: finer than ideal (stale fine data beats black)
+    for (var lod = ideal_lod - 1; lod &gt;= 0; lod--) {
+        let r = try_lod(vol_uv, lod);
+        if r.y &gt;= 0.0 { return r; }
+    }
+    return vec2f(0.0, -1.0);  // nothing resident
+}
+</code></pre>
+<p>And <code>try_lod</code> maps from volume UV → page table address → atlas slot → texture sample:</p>
+<pre><code class="language-wgsl">fn try_lod(vol_uv: vec3f, lod: i32) -&gt; vec2f {
+    // 1. Which tile grid cell does this UV fall in?
+    let grid = vt.lods[lod].grid_dims;
+    let vol_in_tiles = min(vol_uv / vt.lods[lod].tile_scale, vec3f(grid) - vec3f(1e-5));
+    let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
+
+    // 2. Linearize 3D tile coordinate to a 1D page table index
+    let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
+    let pt_x = i32(linear % vt.page_table_width);
+    let pt_y = i32(linear / vt.page_table_width);
+
+    // 3. Read the page table entry (integer texture, so textureLoad not textureSample)
+    let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
+
+    // Bit 24 is the "resident" flag; bits 0-15 are the atlas slot index
+    if (entry &gt;&gt; 24u) == 0u { return vec2f(0.0, -1.0); }  // not resident
+
+    // 4. Decode atlas slot → (col, row, layer) in the 3D atlas texture
+    let slot      = entry &amp; 0xFFFFu;
+    let atlas_col   = slot % vt.atlas_cols;
+    let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
+    let atlas_layer = slot / (vt.atlas_cols * vt.atlas_rows);
+
+    // 5. Compute UV within this atlas slot, then scale to full-atlas UV
+    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * vt.lods[lod].data_scale;
+    let u = (f32(atlas_col)   + within_tile.x) * vt.atlas_tile_pitch_x;
+    let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
+    let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
+
+    // 6. Sample the 3D atlas texture
+    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
+                 f32(lod));
+}
+</code></pre>
+<p><code>tile_scale</code> is <code>tile_size / volume_size</code> per axis — it tells you what fraction of the full volume UV one tile spans. <code>data_scale</code> handles the case where a coarser LOD tile has fewer voxels than the atlas slot is sized for (the extra space in the slot is unused padding; <code>data_scale</code> clamps sampling to the populated region).</p>
+<h3 id="the-render-call"><a class="header" href="#the-render-call">The Render Call</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// From ImageVisual::render()
+fn render(&amp;self, render_pass: &amp;mut RenderPass) {
+    if self.vt_index_count == 0 { return; }  // slice missed the volume
+    if let (Some(vb), Some(ib)) = (&amp;self.vt_vertex_buffer, &amp;self.vt_index_buffer) {
+        render_pass.set_pipeline(&amp;self.vt_render_pipeline);
+        render_pass.set_bind_group(1, &amp;self.vt_bind_group, &amp;[]);    // atlas, page table, uniforms
+        render_pass.set_bind_group(2, &amp;self.colormap_bind_group, &amp;[]);
+        render_pass.set_vertex_buffer(0, vb.slice(..));
+        render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(0..self.vt_index_count, 0, 0..1);
+        // Note: group 0 (camera) is already set by Renderer before this is called.
+    }
+}
+<span class="boring">}</span></code></pre>
+<p><code>draw_indexed</code> draws triangles using the index buffer. The index buffer contains u16 offsets into the vertex buffer — this lets you reuse vertices across triangles (important for the fan triangulation of the polygon).</p>
+<hr>
+<h2 id="the-volume-pipeline-volumevisual"><a class="header" href="#the-volume-pipeline-volumevisual">The Volume Pipeline: VolumeVisual</a></h2>
+<p><code>src/visuals/volume.rs</code> renders the entire 3D volume via GPU ray marching. The virtual texture back-end (atlas, page table, LOD streaming) is identical to <code>ImageVisual</code>.</p>
+<h3 id="the-box-geometry-trick"><a class="header" href="#the-box-geometry-trick">The Box Geometry Trick</a></h3>
+<p>Instead of rasterizing every voxel, the volume is rendered using a <strong>proxy geometry</strong> approach:</p>
+<ol>
+<li>Draw the back faces of a unit cube that covers the volume AABB</li>
+<li>In the fragment shader, reconstruct the ray from the camera through each fragment’s world-space position</li>
+<li>March that ray through the volume, sampling voxels front-to-back</li>
+</ol>
+<p>Why back faces? The rasterizer fires a fragment for each pixel where the cube’s surface is visible. Using back faces means a fragment fires for every pixel that the volume occupies in screen space, even when the camera is inside the volume (at which point the front faces would be clipped by the near plane):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Volume box: 12 triangles, CW winding = inward-facing normals
+const BOX_INDICES: &amp;[u16] = &amp;[ /* 36 indices for all 6 faces */ ];
+
+primitive: wgpu::PrimitiveState {
+    cull_mode: Some(wgpu::Face::Front),  // cull front-facing = keep back-facing
+    ...
+}
+<span class="boring">}</span></code></pre>
+<p>The volume shader’s vertex stage positions the cube:</p>
+<pre><code class="language-wgsl">@vertex
+fn vs_main(in: VertexInput) -&gt; VertexOutput {
+    // BOX_VERTICES are in [0,1]^3; scale them to the actual AABB in world space.
+    let world = vol.vol_min + in.position * (vol.vol_max - vol.vol_min);
+    out.clip_position = camera.view_proj * vec4f(world, 1.0);
+    out.world_pos = world;  // pass world position for ray reconstruction in fragment
+    return out;
+}
+</code></pre>
+<h3 id="ray-marching-the-fragment-shader"><a class="header" href="#ray-marching-the-fragment-shader">Ray Marching: The Fragment Shader</a></h3>
+<p>The fragment shader (<code>volume_raymarch.wgsl</code>) does the heavy lifting:</p>
+<pre><code class="language-wgsl">@fragment
+fn fs_main(in: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
+    // Ray from camera through this fragment's world position (on the back face of the box)
+    let ray_origin = vol.camera_pos;
+    let ray_dir    = normalize(in.world_pos - vol.camera_pos);
+
+    // AABB slab test: find where the ray enters and exits the volume
+    let inv_dir = 1.0 / ray_dir;
+    let t_min_v = (vol.vol_min - ray_origin) * inv_dir;
+    let t_max_v = (vol.vol_max - ray_origin) * inv_dir;
+    let t1 = min(t_min_v, t_max_v);
+    let t2 = max(t_min_v, t_max_v);
+    let t_enter = max(max(t1.x, t1.y), t1.z);  // ray enters volume here
+    let t_exit  = min(min(t2.x, t2.y), t2.z);  // ray exits volume here
+
+    if t_exit &lt;= max(t_enter, 0.0) { discard; }  // ray misses or is behind camera
+    ...
+</code></pre>
+<p>Then it steps along the ray, accumulating color front-to-back (a technique called <strong>alpha compositing</strong>):</p>
+<pre><code class="language-wgsl">    var accum_color = vec3f(0.0);
+    var accum_alpha = 0.0;
+    var t = max(t_enter, 0.0);
+
+    loop {
+        if t &gt;= t_exit || accum_alpha &gt;= 0.95 { break; }
+
+        let world_p = ray_origin + ray_dir * t;
+        let vol_uv  = (world_p - vol.vol_min) / (vol.vol_max - vol.vol_min);
+
+        // Same page-table lookup as the slice shader
+        let result = sample_vvt(vol_uv);
+        let raw    = result.x;
+        let lod_f  = result.y;
+
+        let adjusted = clamp(
+            (raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min),
+            0.0, 1.0
+        );
+        let cs = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+
+        // Beer-Lambert opacity: alpha = 1 - exp(-extinction)
+        if adjusted &gt; 0.01 {
+            let extinction = cs.a * vol.density_scale * advance;
+            let alpha      = 1.0 - exp(-extinction);
+            accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;  // front-to-back
+            accum_alpha += (1.0 - accum_alpha) * alpha;
+        }
+
+        t += advance;  // advance is LOD-adaptive (larger steps in coarser regions)
+    }
+</code></pre>
+<p>The early-out <code>accum_alpha &gt;= 0.95</code> is an optimization — once the ray is 95% opaque, continuing adds less than 5% contribution to the final color.</p>
+<h3 id="lod-adaptive-step-size"><a class="header" href="#lod-adaptive-step-size">LOD-Adaptive Step Size</a></h3>
+<p>In unloaded regions, the shader jumps to the next tile boundary instead of crawling one LOD-0 voxel at a time:</p>
+<pre><code class="language-wgsl">if lod_f &gt;= 0.0 {
+    // Resident tile: step size proportional to the LOD scale ratio
+    advance = step_size * vt.lods[lod_i].tile_scale.x / vt.lods[0].tile_scale.x;
+} else {
+    // Not resident: compute distance to the nearest coarsest-LOD tile boundary and jump
+    let coarse_scale = vt.lods[coarsest].tile_scale;
+    // ... (slab test against tile grid boundaries)
+    advance = max(min(dt_to_bound.x, min(dt_to_bound.y, dt_to_bound.z)), step_size);
+}
+</code></pre>
+<h3 id="blending-pre-multiplied-alpha"><a class="header" href="#blending-pre-multiplied-alpha">Blending: Pre-multiplied Alpha</a></h3>
+<p><code>VolumeVisual</code> uses <code>wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING</code> (not the simple alpha blending used by <code>ImageVisual</code>). The ray marcher outputs pre-multiplied alpha: <code>out = (accum_color * accum_alpha, accum_alpha)</code>. Pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices are rendered together.</p>
+<h3 id="depth-write-disabled"><a class="header" href="#depth-write-disabled">Depth Write Disabled</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>depth_stencil: Some(wgpu::DepthStencilState {
+    depth_write_enabled: false,  // transparent volume: don't block other visuals
+    depth_compare: wgpu::CompareFunction::LessEqual,
+    ...
+})
+<span class="boring">}</span></code></pre>
+<p>The volume reads the depth buffer (so it’s occluded by opaque geometry) but doesn’t write to it. If it wrote, its back-face fragments would prevent any geometry behind the volume from rendering.</p>
+<hr>
+<h2 id="vt-uniforms-the-cpu-gpu-contract"><a class="header" href="#vt-uniforms-the-cpu-gpu-contract">VT Uniforms: The CPU-GPU Contract</a></h2>
+<p><code>VTUniforms</code> (defined in <code>src/visuals/tile.rs</code>) is the main data structure shared between the CPU and the VT shaders. Every field must match between Rust and WGSL exactly, including padding:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[repr(C)]  // C-compatible layout — field order is preserved
+#[derive(Pod, Zeroable)]  // bytemuck: safe to cast to/from bytes
+pub struct VTUniforms {
+    pub atlas_cols: u32,
+    pub atlas_rows: u32,
+    pub atlas_tile_pitch_x: f32,  // 1/atlas_cols
+    pub atlas_tile_pitch_y: f32,  // 1/atlas_rows
+    pub atlas_tile_pitch_z: f32,  // 1/atlas_layers
+    pub lod_count: u32,
+    pub contrast_min: f32,
+    pub contrast_max: f32,
+    pub debug_mode: u32,
+    pub page_table_width: u32,
+    pub target_lod: u32,
+    pub _pad_c: u32,          // explicit padding to reach 48-byte offset
+    pub lods: [VTLodInfo; 16],  // per-LOD data (grid dims, tile scale, data scale)
+}
+<span class="boring">}</span></code></pre>
+<p>WGSL uniform structs require 16-byte alignment for sub-structs (<code>VTLodInfo</code>). The <code>_pad_c</code> field ensures <code>lods</code> starts at offset 48 (a multiple of 16). Getting this wrong produces subtle visual corruption with no error message — the GPU silently reads the wrong bytes.</p>
+<hr>
+<h2 id="shader-selection-summary"><a class="header" href="#shader-selection-summary">Shader Selection Summary</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Visual</th><th>Shader</th><th>Topology</th><th>Cull mode</th><th>Depth write</th><th>Blend</th></tr>
+</thead>
+<tbody>
+<tr><td><code>PointsVisual</code></td><td><code>point_cloud.wgsl</code></td><td>PointList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
+<tr><td><code>LinesVisual</code></td><td><code>lines.wgsl</code></td><td>LineList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
+<tr><td><code>ImageVisual</code></td><td><code>virtual_tile.wgsl</code></td><td>TriangleList</td><td>None</td><td>Yes</td><td>Alpha</td></tr>
+<tr><td><code>VolumeVisual</code></td><td><code>volume_raymarch.wgsl</code></td><td>TriangleList</td><td>Front</td><td>No</td><td>Pre-multiplied Alpha</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="putting-it-all-together"><a class="header" href="#putting-it-all-together">Putting It All Together</a></h2>
+<p>One frame, step by step:</p>
+<pre><code>1. CPU: camera.view_projection_matrix() → queue.write_buffer(camera_uniform)
+
+2. CPU (each visual's prepare()):
+   - ImageVisual: recompute slice polygon geometry, upload vertex/index buffers,
+                  write VTUniforms to vt_uniform_buffer
+   - VolumeVisual: write VTUniforms + VolumeUniforms to GPU buffers
+   - PointsVisual: no-op (geometry is static)
+
+3. GPU: begin_render_pass (clears color and depth)
+   render_pass.set_bind_group(0, camera_bind_group)  ← once for all visuals
+
+4. GPU (each visual's render()):
+   - PointsVisual:
+       set_pipeline(point_pipeline)
+       set_vertex_buffer(point_vb)
+       draw(0..N)
+
+   - ImageVisual:
+       set_pipeline(vt_pipeline)
+       set_bind_group(1, vt_bind_group)    ← atlas, page table, uniforms
+       set_bind_group(2, colormap_bind_group)
+       set_vertex_buffer(0, slice_polygon_vb)
+       set_index_buffer(slice_polygon_ib)
+       draw_indexed(0..index_count)
+
+   - VolumeVisual:
+       set_pipeline(volume_pipeline)
+       set_bind_group(1, vt_bind_group)
+       set_bind_group(2, vol_bind_group)   ← vol uniforms + colormap
+       set_vertex_buffer(0, box_vb)
+       set_index_buffer(box_ib)
+       draw_indexed(0..36)  ← 12 triangles, back faces only
+
+5. GPU: end render pass → submit → present to screen
+</code></pre>
+<p>The entire visible result — slice planes, volume, overlaid point clouds — comes from this single render pass.</p>
+<hr>
+<p><strong>Next</strong>: <a href="./07-chunked-rendering.html">Chunked Rendering →</a></p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="04-visuals.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="07-chunked-rendering.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="04-visuals.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="07-chunked-rendering.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="custom-53791975.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

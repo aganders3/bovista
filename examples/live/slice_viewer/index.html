@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bovista OME-Zarr Viewer - Remote Multi-Resolution</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app-container">
+        <!-- Header with main controls -->
+        <div id="header">
+            <h1>🔬 Bovista OME-Zarr Viewer</h1>
+
+            <div class="divider"></div>
+
+            <div class="header-section">
+                <label>Dataset:</label>
+                <select id="dataset-select">
+                    <option value="">Select dataset...</option>
+                    <option value="idr0062">Human Mitotic Cell (HeLa) - 3 channels</option>
+                    <option value="marmoset_neurons">Marmoset Neurons - 3D microscopy</option>
+                    <option value="pawpawsaurus">Pawpawsaurus - CT scan fossil</option>
+                    <option value="beechnut">Beechnut - CT scan</option>
+                    <option value="exaspim_844958">AIND exaSPIM 844958 - tile 000000 ch 561</option>
+                </select>
+                <button id="load-btn">Load</button>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="header-section">
+                <label>Channel:</label>
+                <select id="channel-select" disabled>
+                    <option value="0">Channel 0</option>
+                </select>
+            </div>
+
+            <div class="header-section">
+                <label>LOD Bias:</label>
+                <input type="range" id="lod-bias" min="-20" max="20" step="1" value="0"
+                       style="width: 100px;" disabled>
+                <span id="lod-bias-value" class="value-display">0.0</span>
+            </div>
+
+            <div class="header-section">
+                <button id="projection-toggle" disabled>Switch to Orthographic</button>
+            </div>
+        </div>
+
+        <!-- Canvas -->
+        <div id="canvas-container">
+            <canvas id="canvas"></canvas>
+
+            <!-- Contrast Controls -->
+            <div id="controls">
+                <div class="control-group">
+                    <label>
+                        Contrast Min
+                        <span class="value-display" id="contrast-min-value">0.000</span>
+                    </label>
+                    <input type="range" id="contrast-min" min="0" max="1000" value="0" disabled>
+                </div>
+
+                <div class="control-group">
+                    <label>
+                        Contrast Max
+                        <span class="value-display" id="contrast-max-value">1.000</span>
+                    </label>
+                    <input type="range" id="contrast-max" min="0" max="1000" value="1000" disabled>
+                </div>
+
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="debug-mode" disabled>
+                        Debug Visualization
+                    </label>
+                </div>
+            </div>
+
+            <!-- Statistics -->
+            <div id="stats">
+                <h3>Statistics</h3>
+                <div class="stat-row">
+                    <span class="stat-label">Loaded chunks:</span>
+                    <span class="stat-value" id="loaded-chunks">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Visible chunks:</span>
+                    <span class="stat-value" id="visible-chunks">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Pending loads:</span>
+                    <span class="stat-value" id="pending-loads">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Slice offset:</span>
+                    <span class="stat-value" id="slice-offset">0.0</span>
+                </div>
+            </div>
+
+            <!-- Status -->
+            <div id="status">
+                <span id="status-text" class="status-loading">Initializing WebGPU...</span>
+            </div>
+
+            <!-- Help -->
+            <div id="help">
+                <h4>Controls</h4>
+                <p><kbd>Left Click + Drag</kbd> Orbit camera</p>
+                <p><kbd>Right Click + Drag ↔</kbd> Move slice offset</p>
+                <p><kbd>Right Click + Drag ↕</kbd> Rotate slice (Y axis)</p>
+                <p><kbd>Shift + Right Drag ↕</kbd> Rotate slice (X axis)</p>
+                <p><kbd>Scroll</kbd> Zoom camera</p>
+                <p><kbd>D</kbd> Toggle debug mode</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="main.js"></script>
+</body>
+</html>
