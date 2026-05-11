@@ -7,6 +7,8 @@ name = "bovista"
 version = "0.1.0"
 description = "High-performance 3D visualization library for scientific computing"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",

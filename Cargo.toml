@@ -6,6 +6,7 @@ resolver = "2"
 name = "bovista"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 
 [dependencies]
 bovista-codegen = { path = "bovista-codegen" }
