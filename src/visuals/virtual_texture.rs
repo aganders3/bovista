@@ -98,7 +98,13 @@ impl VirtualTextureData {
     ) -> Self {
         assert!(!lod_levels.is_empty(), "VirtualTextureData requires at least one LOD level");
 
-        let tile_size = lod_levels[0].tile_size; // (z, y, x)
+        // Atlas slots are sized to LOD 0's tile dimensions — the "logical" tile
+        // size the renderer commits to. The loader is responsible for producing
+        // tiles of that shape; anything larger gets cropped at upload time
+        // (`write_tile_to_atlas` enforces this). Sizing the slot to "max across
+        // source LODs" was tempting but explodes the atlas when some pyramids
+        // store the coarsest LOD as a single multi-GB chunk (exaSPIM-style).
+        let tile_size = lod_levels[0].tile_size;
 
         let (tile_d, tile_h, tile_w) = tile_size;
 
@@ -175,28 +181,103 @@ impl VirtualTextureData {
         let row   = (slot / self.atlas_cols) % self.atlas_rows;
         let layer = slot / (self.atlas_cols * self.atlas_rows);
         let (tile_d, tile_h, tile_w) = self.tile_size;
+        let origin = wgpu::Origin3d {
+            x: col * tile_w,
+            y: row * tile_h,
+            z: layer * tile_d,
+        };
+        let bpv = data.bytes_per_voxel();
 
+        // Full-size chunk: write the data directly into the slot.
+        if data.width == tile_w && data.height == tile_h && data.depth == tile_d {
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data.data,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(data.width * bpv),
+                    rows_per_image: Some(data.height),
+                },
+                wgpu::Extent3d {
+                    width: data.width,
+                    height: data.height,
+                    depth_or_array_layers: data.depth,
+                },
+            );
+            return;
+        }
+
+        // Edge tile (smaller than tile_size on at least one axis): pad with zeros
+        // into a full-tile buffer before uploading, so the slot's previous tenant
+        // can't leak its data into the padding region. Without this, every
+        // partial chunk that lands in a slot recently occupied by a different
+        // tile shows fragments of that other tile outside its actual extent —
+        // which manifests as "chunks in the wrong place" once you look at how
+        // the shader samples across the full slot.
+        //
+        // We row-major-iterate over the *claimed* (depth, height, width) extents
+        // but bound each row copy against `data.data.len()`, so a shorter-than-
+        // claimed buffer (which can happen at LOD/chunk boundaries from some
+        // zarr backends) just stops copying early instead of panicking.
+        let bpv_us = bpv as usize;
+        let full_size = (tile_w * tile_h * tile_d) as usize * bpv_us;
+        let mut padded = vec![0u8; full_size];
+        let dst_row_bytes = tile_w as usize * bpv_us;
+        let dst_slice_bytes = dst_row_bytes * tile_h as usize;
+        let data_len = data.data.len();
+
+        // Clamp source extents to what actually fits in the slot. Now that the
+        // slot is sized to the largest chunk across LODs this shouldn't trip,
+        // but guarding here turns any future mismatch into a graceful crop
+        // instead of an OOB panic.
+        let copy_w = (data.width as usize).min(tile_w as usize);
+        let copy_h = (data.height as usize).min(tile_h as usize);
+        let copy_d = (data.depth as usize).min(tile_d as usize);
+        let src_row_bytes = data.width as usize * bpv_us;     // stride in source
+        let row_copy_bytes = copy_w * bpv_us;                  // bytes actually copied per row
+
+        'copy: for z in 0..copy_d {
+            for y in 0..copy_h {
+                let src_off = (z * data.height as usize + y) * src_row_bytes;
+                let src_end = src_off + row_copy_bytes;
+                if src_end > data_len {
+                    // Buffer is shorter than the claimed dimensions — copy
+                    // whatever's left of this row and stop.
+                    if src_off < data_len {
+                        let avail = data_len - src_off;
+                        let dst_off = z * dst_slice_bytes + y * dst_row_bytes;
+                        padded[dst_off..dst_off + avail]
+                            .copy_from_slice(&data.data[src_off..data_len]);
+                    }
+                    break 'copy;
+                }
+                let dst_off = z * dst_slice_bytes + y * dst_row_bytes;
+                padded[dst_off..dst_off + row_copy_bytes]
+                    .copy_from_slice(&data.data[src_off..src_end]);
+            }
+        }
         queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &self.atlas_texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: col   * tile_w,
-                    y: row   * tile_h,
-                    z: layer * tile_d,
-                },
+                origin,
                 aspect: wgpu::TextureAspect::All,
             },
-            &data.data,
+            &padded,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(data.width * data.bytes_per_voxel()),
-                rows_per_image: Some(data.height),
+                bytes_per_row: Some(tile_w * bpv),
+                rows_per_image: Some(tile_h),
             },
             wgpu::Extent3d {
-                width: data.width,
-                height: data.height,
-                depth_or_array_layers: data.depth,
+                width: tile_w,
+                height: tile_h,
+                depth_or_array_layers: tile_d,
             },
         );
     }
@@ -230,15 +311,6 @@ impl VirtualTextureData {
             self.write_tile_to_atlas(queue, slot, &data);
 
             let TileKey { lod_level, z, y, x } = key;
-            let (gx, gy, _gz) = {
-                let (gz2, gy2, gx2) = self.levels[lod_level].grid_size();
-                (gx2, gy2, gz2)
-            };
-            let linear = z * gy * gx + y * gx + x;
-            eprintln!("VT load: lod={lod_level} ({x},{y},{z}) linear={linear} slot={slot} \
-                col={} row={} layer={}", slot % self.atlas_cols,
-                (slot / self.atlas_cols) % self.atlas_rows,
-                slot / (self.atlas_cols * self.atlas_rows));
             self.page_table.update(queue, lod_level, z, y, x, slot);
 
             self.slot_map.insert(key, slot);
@@ -594,8 +666,14 @@ impl VirtualTextureData {
         self.frame_counter = frame_number;
         self.update_visible_tiles_volume(camera_info);
         self.requested_keys.retain(|k| self.visible_tile_keys.contains(k) || self.slot_map.contains_key(k));
+        // Touch LRU only for tiles that are actually resident — adding entries
+        // for visible-but-not-yet-loaded tiles would accumulate forever for any
+        // tile the loader rejected or the camera moved past before its data
+        // arrived. lru_map should mirror slot_map's keyset.
         for key in &self.visible_tile_keys {
-            self.lru_map.insert(*key, frame_number);
+            if self.slot_map.contains_key(key) {
+                self.lru_map.insert(*key, frame_number);
+            }
         }
         self.evict_tiles(queue);
         self.process_pending_chunks(queue);
@@ -626,9 +704,13 @@ impl VirtualTextureData {
         // Cancel in-flight requests for tiles that are no longer visible.
         self.requested_keys.retain(|k| self.visible_tile_keys.contains(k) || self.slot_map.contains_key(k));
 
-        // Touch LRU timestamps for visible loaded tiles.
+        // Touch LRU timestamps for visible *loaded* tiles only — see the
+        // matching comment in `prepare_volume`. Inserting entries for tiles
+        // that may never load leaks lru_map over long sessions.
         for key in &self.visible_tile_keys {
-            self.lru_map.insert(*key, frame_number);
+            if self.slot_map.contains_key(key) {
+                self.lru_map.insert(*key, frame_number);
+            }
         }
 
         // Evict before placing arriving chunks so there's always a free slot available.

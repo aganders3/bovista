@@ -182,10 +182,13 @@ function computeMaxChunks() {
     const lod0 = lodLevels[0];
     const [tileZ, tileY, tileX] = lod0.chunkSize;
     const vramBudgetGB = parseFloat(document.getElementById('vram-budget').value);
-    // Also respect the WebGPU staging-buffer hard limit of 4 GB.
+    // Cap at 2 GiB: Dawn's dynamic uploader allocates staging buffers that can
+    // grow to ~2x the atlas size, and the *combined* must stay under the 4 GiB
+    // per-resource limit. So an atlas above 2 GiB tends to trip an "exceeds
+    // max buffer size" error once chunk uploads pile up.
     const budgetBytes = Math.min(
         vramBudgetGB * 1024 ** 3,
-        4 * 1024 ** 3
+        2 * 1024 ** 3
     );
 
     // Binary search for the largest n tiles whose rounded atlas fits within budget.

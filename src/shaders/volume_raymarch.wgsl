@@ -607,9 +607,16 @@ fn fs_iso(in: VertexOutput) -> @location(0) vec4<f32> {
     let refl  = reflect(-light, normal);
     let spec  = pow(max(dot(refl, view), 0.0), 32.0);
 
-    let cs = textureSampleLevel(colormap, colormap_sampler, vol.iso_threshold, 0.0);
-    let ambient = 0.2 * cs.rgb;
-    let diffuse = 0.7 * ndotl * cs.rgb;
+    // Iso surfaces use a fixed bright base colour rather than sampling the
+    // colormap at `iso_threshold`. Sampling at threshold tied the surface
+    // brightness to where the threshold landed, which made the surface
+    // mysteriously dark whenever the user set a low threshold to enlarge the
+    // surface. The visual identity of an iso is a single value — its colour
+    // should be a property of the visual, not the data intensity.
+    // TODO: expose a `set_iso_color` setter so users can recolour the iso.
+    let base = vec3f(0.85, 0.85, 0.9);   // slightly cool white
+    let ambient  = 0.2 * base;
+    let diffuse  = 0.7 * ndotl * base;
     let specular = 0.3 * spec * vec3f(1.0);
     return encode_srgb(vec4f(ambient + diffuse + specular, 1.0));
 }

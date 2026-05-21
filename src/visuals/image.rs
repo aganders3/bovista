@@ -469,8 +469,9 @@ impl Visual for ImageVisual {
             tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
             data_scale: [1.0, 1.0, 1.0], _pad3: 0.0,
         }; VT_MAX_LODS];
-        // Atlas slot size is fixed at LOD 0's tile dimensions.
-        let (atlas_tile_d, atlas_tile_h, atlas_tile_w) = vt.levels[0].tile_size;
+        // Atlas slots are sized to fit the largest chunk across all LODs, not
+        // just LOD 0's chunk size — `vt.tile_size` is that max.
+        let (atlas_tile_d, atlas_tile_h, atlas_tile_w) = vt.tile_size;
         for (i, level) in vt.levels.iter().take(VT_MAX_LODS).enumerate() {
             let (gz, gy, gx) = level.grid_size();
             let (vol_z, vol_y, vol_x) = level.volume_size;
