@@ -30,6 +30,19 @@ const DATASETS = {
 
 const MAX_PENDING_CHUNKS = 64;
 
+// One config row per rendering algorithm. `ctor` and `addMethod` reference
+// names on the WASM module / JsViewer; the capability flags drive which
+// per-mode sliders are enabled while this mode is active.
+const VOLUME_MODES = {
+    direct:   { ctor: 'JsDirectVolume',      addMethod: 'addDirectVolume',      density: true,  attenuation: false, iso: false, debug: true  },
+    additive: { ctor: 'JsAdditiveVolume',    addMethod: 'addAdditiveVolume',    density: true,  attenuation: false, iso: false, debug: false },
+    mip:      { ctor: 'JsMipVolume',         addMethod: 'addMipVolume',         density: false, attenuation: true,  iso: false, debug: false },
+    minip:    { ctor: 'JsMinipVolume',       addMethod: 'addMinipVolume',       density: false, attenuation: false, iso: false, debug: false },
+    average:  { ctor: 'JsAverageVolume',     addMethod: 'addAverageVolume',     density: false, attenuation: false, iso: false, debug: false },
+    iso:      { ctor: 'JsIsosurfaceVolume',  addMethod: 'addIsosurfaceVolume',  density: false, attenuation: false, iso: true,  debug: false },
+};
+let currentMode = 'direct';
+
 // Global state
 let wasmModule = null;
 let wasmInitialized = false;
@@ -203,13 +216,35 @@ function createVisual() {
     ));
 
     const maxChunks = computeMaxChunks();
-    volumeVisual = new wasmModule.JsVolumeVisual(viewer, jsLevels, maxChunks, chunkLoader);
-    viewer.addVolume(volumeVisual);
+    const cfg = VOLUME_MODES[currentMode];
+    volumeVisual = new wasmModule[cfg.ctor](viewer, jsLevels, maxChunks, chunkLoader);
+    viewer[cfg.addMethod](volumeVisual);
 
-    // Apply initial controls
+    // Apply controls (only the ones that apply to this mode).
     applyStepSize();
-    applyDensityScale();
+    applyLodBias();
     applyContrast();
+    if (cfg.density)     applyDensityScale();
+    if (cfg.attenuation) applyAttenuation();
+    if (cfg.iso)         applyIsoThreshold();
+    applyModeCaps();
+}
+
+// Enable/disable per-mode sliders based on the active rendering algorithm.
+function applyModeCaps() {
+    const cfg = VOLUME_MODES[currentMode];
+    document.getElementById('density-scale').disabled    = !cfg.density;
+    document.getElementById('attenuation').disabled      = !cfg.attenuation;
+    document.getElementById('iso-threshold').disabled    = !cfg.iso;
+    document.getElementById('debug-mode').disabled       = !cfg.debug;
+    document.getElementById('atlas-debug-mode').disabled = !cfg.debug;
+    document.getElementById('step-debug-mode').disabled  = !cfg.debug;
+    if (!cfg.debug) {
+        document.getElementById('debug-mode').checked = false;
+        document.getElementById('atlas-debug-mode').checked = false;
+        document.getElementById('step-debug-mode').checked = false;
+        debugMode = false; atlasDebugMode = false; stepDebugMode = false;
+    }
 }
 
 // Contrast helpers: sliders are integers 0-1000 mapped within [0, contrastCeiling].
@@ -297,10 +332,31 @@ function applyStepSize() {
     volumeVisual.setRelativeStepSize(relative);
 }
 
+function applyLodBias() {
+    if (!volumeVisual) return;
+    const v = parseFloat(document.getElementById('lod-bias').value) / 10.0;
+    document.getElementById('lod-bias-value').textContent = v.toFixed(1);
+    volumeVisual.setLodBias(v);
+}
+
+function applyAttenuation() {
+    if (!volumeVisual || !volumeVisual.setAttenuation) return;
+    const v = parseInt(document.getElementById('attenuation').value) / 10.0;
+    document.getElementById('attenuation-value').textContent = v.toFixed(1);
+    volumeVisual.setAttenuation(v);
+}
+
+function applyIsoThreshold() {
+    if (!volumeVisual || !volumeVisual.setIsoThreshold) return;
+    const v = parseInt(document.getElementById('iso-threshold').value) / 1000.0;
+    document.getElementById('iso-threshold-value').textContent = v.toFixed(3);
+    volumeVisual.setIsoThreshold(v);
+}
+
 let densityScaleExp = 0;  // log10 exponent; slider range -20..+20 → 0.01× to 100×
 
 function applyDensityScale() {
-    if (!volumeVisual) return;
+    if (!volumeVisual || !volumeVisual.setDensityScale) return;
     // Match kiln's normalization: extinction = cs.a * stepSize * maxDim * 0.5
     // where stepSize is in normalized [0,1] volume space and maxDim is in voxels.
     // Equivalent in world-space: density_scale = 0.5 * maxDim / volumeScale,
@@ -359,7 +415,7 @@ canvas.addEventListener('wheel', e => {
 
 // Keyboard
 document.addEventListener('keydown', e => {
-    if ((e.key === 'd' || e.key === 'D') && volumeVisual) {
+    if ((e.key === 'd' || e.key === 'D') && volumeVisual && volumeVisual.setDebugMode) {
         debugMode = !debugMode;
         atlasDebugMode = false; stepDebugMode = false;
         volumeVisual.setDebugMode(debugMode);
@@ -480,8 +536,10 @@ async function loadDataset(datasetKey) {
 
         createVisual();
 
-        // Enable controls
-        ['lod-bias','contrast-min','contrast-max','contrast-ceiling','auto-contrast-btn','step-size','density-scale','debug-mode','atlas-debug-mode','step-debug-mode'].forEach(id => {
+        // Enable controls common to every mode; per-mode sliders (density,
+        // attenuation, iso-threshold, debug) are gated by applyModeCaps() inside
+        // createVisual().
+        ['lod-bias','contrast-min','contrast-max','contrast-ceiling','auto-contrast-btn','step-size'].forEach(id => {
             const el = document.getElementById(id);
             if (el) { el.disabled = false; el.removeAttribute('disabled'); }
         });
@@ -505,11 +563,19 @@ document.getElementById('channel-select').addEventListener('change', e => {
     if (volumeVisual && lodLevels.length > 0) createVisual();
 });
 
-document.getElementById('lod-bias').addEventListener('input', e => {
-    const v = parseFloat(e.target.value) / 10.0;
-    document.getElementById('lod-bias-value').textContent = v.toFixed(1);
-    if (volumeVisual) volumeVisual.setLodBias(v);
+document.getElementById('mode-select').addEventListener('change', e => {
+    currentMode = e.target.value;
+    if (lodLevels.length > 0) {
+        createVisual();
+    } else {
+        // No dataset loaded yet — just update which controls are enabled.
+        applyModeCaps();
+    }
 });
+
+document.getElementById('lod-bias').addEventListener('input', applyLodBias);
+document.getElementById('attenuation').addEventListener('input', applyAttenuation);
+document.getElementById('iso-threshold').addEventListener('input', applyIsoThreshold);
 
 document.getElementById('contrast-min').addEventListener('input', e => {
     const maxI = parseInt(document.getElementById('contrast-max').value);
@@ -541,7 +607,7 @@ document.getElementById('vram-budget').addEventListener('change', () => {
 document.getElementById('debug-mode').addEventListener('change', e => {
     debugMode = e.target.checked;
     if (debugMode) { atlasDebugMode = false; document.getElementById('atlas-debug-mode').checked = false; }
-    if (volumeVisual) volumeVisual.setDebugMode(debugMode);
+    if (volumeVisual && volumeVisual.setDebugMode) volumeVisual.setDebugMode(debugMode);
 });
 
 document.getElementById('atlas-debug-mode').addEventListener('change', e => {
@@ -551,7 +617,7 @@ document.getElementById('atlas-debug-mode').addEventListener('change', e => {
         document.getElementById('debug-mode').checked = false;
         document.getElementById('step-debug-mode').checked = false;
     }
-    if (volumeVisual) volumeVisual.setAtlasDebugMode(atlasDebugMode);
+    if (volumeVisual && volumeVisual.setAtlasDebugMode) volumeVisual.setAtlasDebugMode(atlasDebugMode);
 });
 
 document.getElementById('step-debug-mode').addEventListener('change', e => {
@@ -561,7 +627,7 @@ document.getElementById('step-debug-mode').addEventListener('change', e => {
         document.getElementById('debug-mode').checked = false;
         document.getElementById('atlas-debug-mode').checked = false;
     }
-    if (volumeVisual) volumeVisual.setStepDebugMode(stepDebugMode);
+    if (volumeVisual && volumeVisual.setStepDebugMode) volumeVisual.setStepDebugMode(stepDebugMode);
 });
 
 // Stats update

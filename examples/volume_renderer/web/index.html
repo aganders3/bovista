@@ -29,6 +29,20 @@
             <div class="divider"></div>
 
             <div class="header-section">
+                <label>Mode:</label>
+                <select id="mode-select">
+                    <option value="direct" selected>Direct (translucent)</option>
+                    <option value="additive">Additive</option>
+                    <option value="mip">MIP</option>
+                    <option value="minip">minIP</option>
+                    <option value="average">Average</option>
+                    <option value="iso">Isosurface</option>
+                </select>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="header-section">
                 <label>Channel:</label>
                 <select id="channel-select" disabled>
                     <option value="0">Channel 0</option>
@@ -104,6 +118,23 @@
                     </label>
                     <!-- -20 to +20 → 10^(-2) to 10^(+2) = 0.01× to 100× multiplier on auto base -->
                     <input type="range" id="density-scale" min="-20" max="20" value="0" disabled>
+                </div>
+
+                <div class="control-group">
+                    <label>
+                        Iso Threshold
+                        <span class="value-display" id="iso-threshold-value">0.500</span>
+                    </label>
+                    <input type="range" id="iso-threshold" min="0" max="1000" value="500" disabled>
+                </div>
+
+                <div class="control-group">
+                    <label>
+                        Attenuation
+                        <span class="value-display" id="attenuation-value">0.0</span>
+                    </label>
+                    <!-- Slider 0-1000 → 0.0-100.0; matches the Python example. -->
+                    <input type="range" id="attenuation" min="0" max="1000" value="0" disabled>
                 </div>
 
                 <div class="control-group">

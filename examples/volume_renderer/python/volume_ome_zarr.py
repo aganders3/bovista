@@ -2,8 +2,10 @@
 """
 OME-Zarr Volume Renderer
 
-Demonstrates direct volume rendering (DVR) of multi-resolution OME-Zarr
-datasets with bovista.Volume.
+Demonstrates all of bovista's volume rendering algorithms (DirectVolume,
+AdditiveVolume, MipVolume, MinipVolume, AverageVolume, IsosurfaceVolume) on
+multi-resolution OME-Zarr datasets. Switch between modes from the Mode
+dropdown; mode-specific controls activate as appropriate.
 """
 
 import sys
@@ -17,6 +19,17 @@ from PyQt6.QtCore import Qt, QTimer
 
 import bovista as bv
 import zarr
+
+
+# Mode-name → (ctor, supports_density, supports_attenuation, supports_iso, supports_debug)
+VOLUME_MODES = {
+    "Direct (translucent)": (bv.DirectVolume, True,  False, False, True),
+    "Additive":             (bv.AdditiveVolume, True,  False, False, False),
+    "MIP":                  (bv.MipVolume,      False, True,  False, False),
+    "minIP":                (bv.MinipVolume,    False, False, False, False),
+    "Average":              (bv.AverageVolume,  False, False, False, False),
+    "Isosurface":           (bv.IsosurfaceVolume, False, False, True, False),
+}
 
 
 class ViewerWidget(QWidget):
@@ -99,7 +112,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OME-Zarr Volume Renderer")
-        self.setGeometry(100, 100, 1024, 820)
+        self.setGeometry(100, 100, 1024, 860)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -122,13 +135,20 @@ class MainWindow(QMainWindow):
         self.load_button = QPushButton("Load")
         self.load_button.clicked.connect(self.load_zarr)
         ds_row.addWidget(self.load_button)
+
+        ds_row.addWidget(QLabel("  Mode:"))
+        self.mode_combo = QComboBox()
+        for name in VOLUME_MODES:
+            self.mode_combo.addItem(name)
+        self.mode_combo.currentIndexChanged.connect(self._switch_mode)
+        ds_row.addWidget(self.mode_combo)
         layout.addLayout(ds_row)
 
         # Viewer
         self.viewer_widget = ViewerWidget()
         layout.addWidget(self.viewer_widget)
 
-        # Row 1: LOD bias, density, step, debug
+        # Row 1: LOD bias, step, contrast floor/ceiling
         ctrl1 = QHBoxLayout()
 
         ctrl1.addWidget(QLabel("LOD Bias:"))
@@ -138,76 +158,87 @@ class MainWindow(QMainWindow):
         self.lod_slider.setFixedWidth(100)
         self.lod_slider.valueChanged.connect(self._update_lod_bias)
         ctrl1.addWidget(self.lod_slider)
-        self.lod_label = QLabel("0.0")
-        self.lod_label.setFixedWidth(32)
+        self.lod_label = QLabel("0.0"); self.lod_label.setFixedWidth(32)
         ctrl1.addWidget(self.lod_label)
-
-        ctrl1.addWidget(QLabel("  Density:"))
-        self.density_slider = QSlider(Qt.Orientation.Horizontal)
-        self.density_slider.setRange(-20, 20)
-        self.density_slider.setValue(0)
-        self.density_slider.setFixedWidth(100)
-        self.density_slider.valueChanged.connect(self._update_density)
-        ctrl1.addWidget(self.density_slider)
-        self.density_label = QLabel("1.00×")
-        self.density_label.setFixedWidth(44)
-        ctrl1.addWidget(self.density_label)
 
         ctrl1.addWidget(QLabel("  Step:"))
         self.step_slider = QSlider(Qt.Orientation.Horizontal)
-        self.step_slider.setRange(2, 30)   # 0.2 – 3.0 voxels, ×0.1
-        self.step_slider.setValue(10)       # default 1.0
+        self.step_slider.setRange(2, 30)
+        self.step_slider.setValue(10)
         self.step_slider.setFixedWidth(80)
         self.step_slider.valueChanged.connect(self._update_step)
         ctrl1.addWidget(self.step_slider)
-        self.step_label = QLabel("1.0")
-        self.step_label.setFixedWidth(28)
+        self.step_label = QLabel("1.0"); self.step_label.setFixedWidth(28)
         ctrl1.addWidget(self.step_label)
 
+        ctrl1.addWidget(QLabel("  Floor:"))
+        self.floor_slider = QSlider(Qt.Orientation.Horizontal)
+        self.floor_slider.setRange(0, 1000); self.floor_slider.setValue(0)
+        self.floor_slider.setFixedWidth(120)
+        self.floor_slider.valueChanged.connect(self._update_contrast)
+        ctrl1.addWidget(self.floor_slider)
+        self.floor_label = QLabel("0.000"); self.floor_label.setFixedWidth(40)
+        ctrl1.addWidget(self.floor_label)
+
+        ctrl1.addWidget(QLabel("  Ceiling:"))
+        self.ceiling_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ceiling_slider.setRange(0, 1000); self.ceiling_slider.setValue(1000)
+        self.ceiling_slider.setFixedWidth(120)
+        self.ceiling_slider.valueChanged.connect(self._update_contrast)
+        ctrl1.addWidget(self.ceiling_slider)
+        self.ceiling_label = QLabel("1.000"); self.ceiling_label.setFixedWidth(40)
+        ctrl1.addWidget(self.ceiling_label)
+
+        self.auto_button = QPushButton("Auto"); self.auto_button.setFixedWidth(50)
+        self.auto_button.clicked.connect(self._auto_contrast)
+        ctrl1.addWidget(self.auto_button)
+
         ctrl1.addStretch()
+        layout.addLayout(ctrl1)
+
+        # Row 2: mode-specific parameters (only relevant ones are enabled at any time)
+        ctrl2 = QHBoxLayout()
+
+        ctrl2.addWidget(QLabel("Density:"))
+        self.density_slider = QSlider(Qt.Orientation.Horizontal)
+        self.density_slider.setRange(-20, 20); self.density_slider.setValue(0)
+        self.density_slider.setFixedWidth(120)
+        self.density_slider.valueChanged.connect(self._update_density)
+        ctrl2.addWidget(self.density_slider)
+        self.density_label = QLabel("1.00×"); self.density_label.setFixedWidth(50)
+        ctrl2.addWidget(self.density_label)
+
+        ctrl2.addWidget(QLabel("  Iso:"))
+        self.iso_slider = QSlider(Qt.Orientation.Horizontal)
+        self.iso_slider.setRange(0, 1000); self.iso_slider.setValue(500)
+        self.iso_slider.setFixedWidth(120)
+        self.iso_slider.valueChanged.connect(self._update_iso)
+        ctrl2.addWidget(self.iso_slider)
+        self.iso_label = QLabel("0.500"); self.iso_label.setFixedWidth(40)
+        ctrl2.addWidget(self.iso_label)
+
+        ctrl2.addWidget(QLabel("  Attenuation:"))
+        self.att_slider = QSlider(Qt.Orientation.Horizontal)
+        # Attenuation is in units of 1/(accumulated normalised density). For
+        # sparse data (lots of air), sumval at exit is small, so high attenuation
+        # values are needed to fully suppress the far side. 0 = plain MIP.
+        self.att_slider.setRange(0, 1000); self.att_slider.setValue(0)
+        self.att_slider.setFixedWidth(120)
+        self.att_slider.valueChanged.connect(self._update_attenuation)
+        ctrl2.addWidget(self.att_slider)
+        self.att_label = QLabel("0.0"); self.att_label.setFixedWidth(40)
+        ctrl2.addWidget(self.att_label)
+
+        ctrl2.addStretch()
 
         self.debug_combo = QComboBox()
         self.debug_combo.addItems(["Debug: Off", "Debug: LOD tint", "Debug: Atlas", "Debug: Steps"])
         self.debug_combo.currentIndexChanged.connect(self._update_debug)
-        ctrl1.addWidget(self.debug_combo)
+        ctrl2.addWidget(self.debug_combo)
 
-        layout.addLayout(ctrl1)
-
-        # Row 2: contrast floor / ceiling / auto
-        ctrl2 = QHBoxLayout()
-
-        ctrl2.addWidget(QLabel("Floor:"))
-        self.floor_slider = QSlider(Qt.Orientation.Horizontal)
-        self.floor_slider.setRange(0, 1000)
-        self.floor_slider.setValue(0)
-        self.floor_slider.setFixedWidth(120)
-        self.floor_slider.valueChanged.connect(self._update_contrast)
-        ctrl2.addWidget(self.floor_slider)
-        self.floor_label = QLabel("0.000")
-        self.floor_label.setFixedWidth(40)
-        ctrl2.addWidget(self.floor_label)
-
-        ctrl2.addWidget(QLabel("  Ceiling:"))
-        self.ceiling_slider = QSlider(Qt.Orientation.Horizontal)
-        self.ceiling_slider.setRange(0, 1000)
-        self.ceiling_slider.setValue(1000)
-        self.ceiling_slider.setFixedWidth(120)
-        self.ceiling_slider.valueChanged.connect(self._update_contrast)
-        ctrl2.addWidget(self.ceiling_slider)
-        self.ceiling_label = QLabel("1.000")
-        self.ceiling_label.setFixedWidth(40)
-        ctrl2.addWidget(self.ceiling_label)
-
-        self.auto_button = QPushButton("Auto")
-        self.auto_button.setFixedWidth(50)
-        self.auto_button.clicked.connect(self._auto_contrast)
-        ctrl2.addWidget(self.auto_button)
-
-        ctrl2.addStretch()
         layout.addLayout(ctrl2)
 
         layout.addWidget(QLabel("Left-drag: Orbit  |  Scroll: Zoom"))
-
         self.status_label = QLabel("Select dataset and click Load")
         layout.addWidget(self.status_label)
 
@@ -215,17 +246,35 @@ class MainWindow(QMainWindow):
         self.stats_timer.timeout.connect(self._update_stats)
         self.stats_timer.start(100)
 
+        # State.
         self.executor = None
         self.volume = None
-        self.level_info = []
+        self.volume_index = None       # scene index of the current volume
+        self.loader = None              # bound chunk loader (re-pointed on mode switch)
+        self.lod_levels = []
         self._base_density = 1.0
-        self._density_exp = 0
 
-        for w in [self.lod_slider, self.density_slider, self.step_slider, self.debug_combo,
-                  self.floor_slider, self.ceiling_slider, self.auto_button]:
+        # Disable all controls until dataset loaded.
+        for w in [self.lod_slider, self.step_slider, self.floor_slider, self.ceiling_slider,
+                  self.auto_button, self.density_slider, self.iso_slider, self.att_slider,
+                  self.debug_combo, self.mode_combo]:
             w.setEnabled(False)
 
-    # ── loaders ───────────────────────────────────────────────────────────────
+    def _current_mode_caps(self):
+        name = self.mode_combo.currentText()
+        return VOLUME_MODES[name]
+
+    def _apply_mode_caps(self):
+        """Enable only the mode-specific sliders that apply to the current type."""
+        _, density, attenuation, iso, debug = self._current_mode_caps()
+        self.density_slider.setEnabled(density)
+        self.att_slider.setEnabled(attenuation)
+        self.iso_slider.setEnabled(iso)
+        self.debug_combo.setEnabled(debug)
+        if not debug:
+            self.debug_combo.setCurrentIndex(0)
+
+    # ── loaders ──────────────────────────────────────────────────────────────
 
     def load_zarr(self):
         try:
@@ -296,13 +345,15 @@ class MainWindow(QMainWindow):
             if not lod_levels:
                 raise ValueError("No LOD levels found in dataset!")
 
-            self.level_info = lod_levels
+            self.lod_levels = lod_levels
 
             if self.executor:
                 self.executor.shutdown(wait=False)
             self.executor = ThreadPoolExecutor(max_workers=8)
 
             def create_loader():
+                # The active volume is stored mutably so the loader can be re-pointed
+                # at a freshly-constructed visual whenever the user switches modes.
                 volume = None
                 pending = {}
                 lock = Lock()
@@ -366,50 +417,38 @@ class MainWindow(QMainWindow):
                 request.set_volume = set_volume
                 return request
 
-            loader = create_loader()
+            self.loader = create_loader()
 
             def setup_scene(viewer):
-                volume = bv.Volume(viewer, lod_levels, 2000, loader)
-                loader.set_volume(volume)
-
                 lod0 = lod_levels[0]
                 world_size = tuple(s * v for s, v in zip(lod0.volume_size, lod0.voxel_size))
                 center = [world_size[2] / 2, world_size[1] / 2, world_size[0] / 2]
                 max_dim = max(world_size)
 
-                self.floor_slider.setValue(0)
-                self.ceiling_slider.setValue(1000)
-                volume.set_contrast(0.0, 1.0)
-
-                # Auto density scale: ~0.5× traversal opacity over max dimension
-                base_density = 0.5 * max(lod0.volume_size) / max(max_dim, 1e-9)
-                self._base_density = base_density
-                self._density_exp = 0
-                self.density_slider.setValue(0)
-                volume.set_density_scale(base_density)
-
-                viewer.add(volume)
-                self.viewer_widget._volume = volume
+                # Auto density scale baseline (used for DirectVolume / AdditiveVolume).
+                self._base_density = 0.5 * max(lod0.volume_size) / max(max_dim, 1e-9)
                 self.viewer_widget.volume_scale = max_dim
-                self.volume = volume
 
                 near = max_dim * 0.001
                 far  = max_dim * 100
                 viewer.set_camera_clip_planes(near, far)
-
                 viewer.set_camera_position(center[0], center[1], center[2] + camera_distance)
                 viewer.set_camera_target(*center)
-
                 viewer.add(bv.Lines.axis_helper(viewer, max(lod0.volume_size) * 0.3))
 
-                for w in [self.lod_slider, self.density_slider, self.step_slider, self.debug_combo,
-                          self.floor_slider, self.ceiling_slider, self.auto_button]:
+                # Build the initial volume of whatever mode is selected.
+                self._build_current_volume(viewer)
+
+                for w in [self.lod_slider, self.step_slider, self.floor_slider, self.ceiling_slider,
+                          self.auto_button, self.mode_combo]:
                     w.setEnabled(True)
+                self._apply_mode_caps()
+
                 self.lod_slider.setValue(0)
                 self.step_slider.setValue(10)
                 self.debug_combo.setCurrentIndex(0)
                 self.load_button.setEnabled(True)
-                self.status_label.setText("Loaded! Orbit: left-drag  |  Contrast: middle-drag  |  Zoom: scroll")
+                self.status_label.setText("Loaded! Switch Mode to compare rendering algorithms.")
                 print("✓ Ready")
 
             self.viewer_widget.on_ready(setup_scene)
@@ -420,7 +459,51 @@ class MainWindow(QMainWindow):
             import traceback; traceback.print_exc()
             self.load_button.setEnabled(True)
 
-    # ── control slots ─────────────────────────────────────────────────────────
+    # ── volume (re)construction ──────────────────────────────────────────────
+
+    def _build_current_volume(self, viewer):
+        """Construct a fresh volume of the currently-selected type, replacing any prior."""
+        ctor, supports_density, _, _, _ = self._current_mode_caps()
+
+        # Replace the previous volume in the scene, if any.
+        # Bovista's scene doesn't currently expose a remove-by-index, so we rebuild
+        # by clearing everything but the axis helper. For the example this is fine —
+        # in production code you'd want a stable remove API.
+        if self.volume_index is not None:
+            # No remove API yet: easiest is to clear the entire scene and re-add axes
+            # alongside the new volume. The viewer.add_lines / clear flow handles it.
+            viewer.clear_visuals()
+            lod0 = self.lod_levels[0]
+            viewer.add(bv.Lines.axis_helper(viewer, max(lod0.volume_size) * 0.3))
+
+        new_volume = ctor(viewer, self.lod_levels, 2000, self.loader)
+        self.loader.set_volume(new_volume)
+
+        # Apply common defaults.
+        new_volume.set_contrast(self.floor_slider.value() / 1000.0, self.ceiling_slider.value() / 1000.0)
+        new_volume.set_relative_step_size(self.step_slider.value() / 10.0)
+        new_volume.set_lod_bias(self.lod_slider.value() / 10.0)
+
+        # Apply mode-specific defaults.
+        if supports_density and hasattr(new_volume, 'set_density_scale'):
+            multiplier = math.pow(10, self.density_slider.value() / 10)
+            new_volume.set_density_scale(self._base_density * multiplier)
+        if hasattr(new_volume, 'set_iso_threshold'):
+            new_volume.set_iso_threshold(self.iso_slider.value() / 1000.0)
+        if hasattr(new_volume, 'set_attenuation'):
+            new_volume.set_attenuation(self.att_slider.value() / 100.0)
+
+        self.volume_index = viewer.add(new_volume)
+        self.volume = new_volume
+        self.viewer_widget._volume = new_volume
+
+    def _switch_mode(self):
+        if not self.viewer_widget._initialized or not self.lod_levels:
+            return
+        self._build_current_volume(self.viewer_widget.viewer)
+        self._apply_mode_caps()
+
+    # ── control slots ────────────────────────────────────────────────────────
 
     def _update_lod_bias(self):
         if self.volume:
@@ -429,10 +512,9 @@ class MainWindow(QMainWindow):
             self.volume.set_lod_bias(bias)
 
     def _update_density(self):
-        if not self.volume:
+        if not self.volume or not hasattr(self.volume, 'set_density_scale'):
             return
-        self._density_exp = self.density_slider.value()
-        multiplier = math.pow(10, self._density_exp / 10)
+        multiplier = math.pow(10, self.density_slider.value() / 10)
         self.volume.set_density_scale(self._base_density * multiplier)
         label = f"{multiplier:.2f}×" if multiplier < 10 else f"{multiplier:.1f}×"
         self.density_label.setText(label)
@@ -443,23 +525,33 @@ class MainWindow(QMainWindow):
             self.step_label.setText(f"{step:.1f}")
             self.volume.set_relative_step_size(step)
 
+    def _update_iso(self):
+        if not self.volume or not hasattr(self.volume, 'set_iso_threshold'):
+            return
+        threshold = self.iso_slider.value() / 1000.0
+        self.iso_label.setText(f"{threshold:.3f}")
+        self.volume.set_iso_threshold(threshold)
+
+    def _update_attenuation(self):
+        if not self.volume or not hasattr(self.volume, 'set_attenuation'):
+            return
+        # Slider 0-1000 → 0.0-100.0.
+        attenuation = self.att_slider.value() / 10.0
+        self.att_label.setText(f"{attenuation:.1f}")
+        self.volume.set_attenuation(attenuation)
+
     def _update_contrast(self):
         if not self.volume:
             return
         floor   = self.floor_slider.value() / 1000.0
         ceiling = self.ceiling_slider.value() / 1000.0
-        # Keep floor < ceiling
         if floor >= ceiling:
             if self.sender() is self.floor_slider:
                 floor = max(0.0, ceiling - 0.001)
-                self.floor_slider.blockSignals(True)
-                self.floor_slider.setValue(int(floor * 1000))
-                self.floor_slider.blockSignals(False)
+                self.floor_slider.blockSignals(True); self.floor_slider.setValue(int(floor * 1000)); self.floor_slider.blockSignals(False)
             else:
                 ceiling = min(1.0, floor + 0.001)
-                self.ceiling_slider.blockSignals(True)
-                self.ceiling_slider.setValue(int(ceiling * 1000))
-                self.ceiling_slider.blockSignals(False)
+                self.ceiling_slider.blockSignals(True); self.ceiling_slider.setValue(int(ceiling * 1000)); self.ceiling_slider.blockSignals(False)
         self.floor_label.setText(f"{floor:.3f}")
         self.ceiling_label.setText(f"{ceiling:.3f}")
         self.volume.set_contrast(floor, ceiling)
@@ -473,16 +565,19 @@ class MainWindow(QMainWindow):
         if not self.volume:
             return
         mode = self.debug_combo.currentIndex()
-        self.volume.set_debug_mode(mode == 1)
-        self.volume.set_atlas_debug_mode(mode == 2)
-        self.volume.set_step_debug_mode(mode == 3)
+        if hasattr(self.volume, 'set_debug_mode'):
+            self.volume.set_debug_mode(mode == 1)
+        if hasattr(self.volume, 'set_atlas_debug_mode'):
+            self.volume.set_atlas_debug_mode(mode == 2)
+        if hasattr(self.volume, 'set_step_debug_mode'):
+            self.volume.set_step_debug_mode(mode == 3)
 
     def _update_stats(self):
         if self.volume:
             try:
                 loaded, visible = self.volume.get_stats()
                 self.status_label.setText(
-                    f"{len(self.level_info)} LODs  |  {loaded} tiles loaded, {visible} visible"
+                    f"{len(self.lod_levels)} LODs  |  {loaded} tiles, {visible} visible  |  {self.mode_combo.currentText()}"
                 )
             except Exception:
                 pass

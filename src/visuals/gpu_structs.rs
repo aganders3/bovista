@@ -359,8 +359,15 @@ pub struct VolumeUniforms {
     pub early_exit_alpha: f32,
     /// Voxel dimensions of the full volume at LOD 0 (x, y, z).
     pub lod0_dims: [u32; 3],
-    /// 0=normal DVR, 1=LOD tint + tile wireframe, 2=atlas direct
+    /// 0=normal DVR, 1=LOD tint + tile wireframe, 2=atlas direct, 3=step heatmap.
+    /// Only honoured by the translucent pipeline.
     pub debug_mode: u32,
+    /// Isosurface threshold in contrast-normalised raw units (0..1). Used by fs_iso.
+    pub iso_threshold: f32,
+    /// Attenuated-MIP falloff coefficient per world-space unit. Used by fs_attenuated_mip.
+    pub attenuation: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
 }
 
 /// Shared uniforms for tile rendering
