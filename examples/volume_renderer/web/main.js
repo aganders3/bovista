@@ -163,31 +163,47 @@ function atlasSizeBytes(n, tileW, tileH, tileD) {
     return cols * tileW * rows * tileH * layers * tileD * 2; // R16Float = 2 bytes
 }
 
-function computeMaxChunks() {
-    if (lodLevels.length === 0) return 256;
-    // The atlas uses LOD-0 tile dimensions for every slot.
+// Per-atlas hard cap. Chrome's per-resource limit + Dawn's dynamic-uploader
+// staging mean each atlas texture must stay safely under ~2 GiB on most setups.
+const PER_ATLAS_CAP_BYTES = 2 * 1024 ** 3;
+// Mirrors MAX_ATLAS_COUNT in src/visuals/virtual_texture.rs.
+const MAX_ATLAS_COUNT = 4;
+
+/// Auto-derive how many physical atlases the requested budget needs and what
+/// the per-atlas / total tile counts work out to. Returns { atlasCount,
+/// tilesPerAtlas, totalTiles } — callers use atlasCount when constructing the
+/// visual and totalTiles for the max_tiles parameter.
+function computeAtlasPlan() {
+    if (lodLevels.length === 0) return { atlasCount: 1, tilesPerAtlas: 256, totalTiles: 256 };
     const lod0 = lodLevels[0];
     const [tileZ, tileY, tileX] = lod0.chunkSize;
-    const vramBudgetGB = parseFloat(document.getElementById('vram-budget').value);
-    // Also respect the WebGPU staging-buffer hard limit of 4 GB.
-    const budgetBytes = Math.min(
-        vramBudgetGB * 1024 ** 3,
-        4 * 1024 ** 3
-    );
+    const budgetBytes = parseFloat(document.getElementById('vram-budget').value) * 1024 ** 3;
 
-    // Binary search for the largest n tiles whose rounded atlas fits within budget.
+    // Number of atlases needed = ceil(budget / per-atlas-cap), clamped to MAX.
+    const atlasCount = Math.max(1, Math.min(
+        MAX_ATLAS_COUNT,
+        Math.ceil(budgetBytes / PER_ATLAS_CAP_BYTES),
+    ));
+    const perAtlasBudgetBytes = budgetBytes / atlasCount;
+
+    // Binary search for the largest n tiles whose rounded per-atlas footprint fits.
     let lo = 1, hi = 65536, best = 64;
     while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        if (atlasSizeBytes(mid, tileX, tileY, tileZ) <= budgetBytes) {
+        if (atlasSizeBytes(mid, tileX, tileY, tileZ) <= perAtlasBudgetBytes) {
             best = mid;
             lo = mid + 1;
         } else {
             hi = mid - 1;
         }
     }
-    document.getElementById('max-chunks-display').textContent = best;
-    return best;
+    return { atlasCount, tilesPerAtlas: best, totalTiles: best * atlasCount };
+}
+
+function updateAtlasBreakdown(plan) {
+    const el = document.getElementById('atlas-breakdown');
+    if (!el) return;
+    el.textContent = `${plan.atlasCount} × ${plan.tilesPerAtlas} = ${plan.totalTiles} tiles`;
 }
 
 function createVisual() {
@@ -202,8 +218,9 @@ function createVisual() {
         level.translation[2], level.translation[1], level.translation[0]
     ));
 
-    const maxChunks = computeMaxChunks();
-    volumeVisual = new wasmModule.JsVolumeVisual(viewer, jsLevels, maxChunks, chunkLoader);
+    const plan = computeAtlasPlan();
+    updateAtlasBreakdown(plan);
+    volumeVisual = new wasmModule.JsVolumeVisual(viewer, jsLevels, plan.totalTiles, chunkLoader, plan.atlasCount);
     viewer.addVolume(volumeVisual);
 
     // Apply initial controls
@@ -535,6 +552,8 @@ document.getElementById('density-scale').addEventListener('input', e => {
 });
 document.getElementById('vram-budget').addEventListener('change', () => {
     // Recreate the visual with the new tile budget when a dataset is loaded.
+    // The atlas count is auto-derived from the budget (one physical atlas per
+    // ~2 GiB), so this is the only knob the user needs to touch.
     if (volumeVisual && lodLevels.length > 0) createVisual();
 });
 

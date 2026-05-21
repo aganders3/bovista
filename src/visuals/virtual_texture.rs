@@ -12,6 +12,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use wgpu::{Device, Queue};
 
+/// Maximum number of physical atlas textures a single visual can hold.
+/// Pre-bound in every shader's bind group; visuals that request fewer get
+/// 1×1×1 dummy textures for the unused slots. Increase by editing the shader
+/// switch in virtual_tile.wgsl / volume_raymarch.wgsl in parallel.
+pub const MAX_ATLAS_COUNT: usize = 4;
+
 /// Type alias for pending chunks queue (can be shared across threads)
 pub type PendingChunks = Arc<Mutex<HashMap<TileKey, TileData>>>;
 
@@ -50,19 +56,30 @@ impl LodLevelConfig {
 
 /// Virtual-texture rendering strategy.
 ///
-/// Maintains a physical atlas (one large 3D texture) and a page table (small
-/// 2D-array texture) so the entire volume can be rendered with a single draw call.
-/// The fragment shader walks the LOD hierarchy in-flight for each fragment.
+/// Maintains one or more physical atlases (3D textures) and a page table
+/// (2D-array texture) so the entire volume can be rendered with a single
+/// draw call. The fragment shader walks the LOD hierarchy in-flight for each
+/// fragment and looks up the correct atlas/slot for each tile.
+///
+/// Multi-atlas: up to `MAX_ATLAS_COUNT` physical atlases per visual. Each has
+/// its own free-list allocator and 3D texture (all identically sized). The
+/// page-table entry encodes which atlas a tile lives in. Visuals construct
+/// with `atlas_count` ≤ MAX_ATLAS_COUNT; unused atlas slots in the bind group
+/// get 1×1×1 dummy textures so the shader bindings stay valid.
 pub struct VirtualTextureData {
     pub levels: Vec<LodLevelConfig>,
 
     // Tile size assumed uniform across all LODs (validated in new()).
     pub tile_size: (u32, u32, u32),  // (z, y, x)
 
-    // Physical atlas resources (owned; views are referenced by the ImageVisual bind group)
-    pub atlas_allocator: AtlasAllocator,
-    pub atlas_texture: wgpu::Texture,
-    pub atlas_texture_view: wgpu::TextureView,
+    // Physical atlas resources. One allocator per *real* atlas; `atlas_textures`
+    // and `atlas_views` are always MAX_ATLAS_COUNT long — entries past
+    // `atlas_count` are 1×1×1 dummies. Atlases all share identical dimensions
+    // so atlas_cols/rows/layers apply uniformly.
+    atlas_allocators: Vec<AtlasAllocator>,
+    pub atlas_textures: Vec<wgpu::Texture>,
+    pub atlas_views: Vec<wgpu::TextureView>,
+    pub atlas_count: usize,
     pub atlas_cols: u32,
     pub atlas_rows: u32,
     pub atlas_layers: u32,
@@ -70,8 +87,8 @@ pub struct VirtualTextureData {
     // Page table (owns its own texture + view)
     pub page_table: PageTable,
 
-    // TileKey → atlas slot index
-    pub slot_map: HashMap<TileKey, u32>,
+    // TileKey → (atlas_id, slot)
+    pub slot_map: HashMap<TileKey, (u32, u32)>,
     // TileKey → last frame the tile was accessed
     lru_map: HashMap<TileKey, u64>,
 
@@ -90,29 +107,34 @@ pub struct VirtualTextureData {
 }
 
 impl VirtualTextureData {
+    /// `max_tiles` is the *total* tile budget across all atlases; it's split
+    /// roughly evenly into `atlas_count` per-atlas capacities. `atlas_count`
+    /// is clamped to `[1, MAX_ATLAS_COUNT]`.
     pub fn new(
         device: &Device,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
+        atlas_count: usize,
         loader: TileLoaderFn,
     ) -> Self {
         assert!(!lod_levels.is_empty(), "VirtualTextureData requires at least one LOD level");
 
+        let atlas_count = atlas_count.clamp(1, MAX_ATLAS_COUNT);
         let tile_size = lod_levels[0].tile_size; // (z, y, x)
-
         let (tile_d, tile_h, tile_w) = tile_size;
 
-        // Clamp atlas grid to the device's 3D texture dimension limits.
-        // The atlas uses all three dimensions for slot stacking:
-        //   atlas width  = tile_w * cols
-        //   atlas height = tile_h * rows
-        //   atlas depth  = tile_d * layers
+        // Per-atlas capacity. Round-up so the sum >= max_tiles.
+        let capacity_per_atlas = max_tiles.div_ceil(atlas_count);
+
+        // Clamp the *per-atlas* grid to the device's 3D texture dimension limits.
+        // Each atlas's dimensions are width=tile_w*cols, height=tile_h*rows,
+        // depth=tile_d*layers; multi-atlas multiplies *capacity*, not per-texture size.
         let max_dim = device.limits().max_texture_dimension_3d;
         let max_cols   = (max_dim / tile_w).max(1);
         let max_rows   = (max_dim / tile_h).max(1);
         let max_layers = (max_dim / tile_d).max(1);
         let effective_capacity =
-            max_tiles.min((max_cols * max_rows * max_layers) as usize);
+            capacity_per_atlas.min((max_cols * max_rows * max_layers) as usize);
 
         // Distribute slots as evenly as possible across the three axes.
         let cbrt_cap = (effective_capacity as f64).cbrt().ceil() as u32;
@@ -121,34 +143,47 @@ impl VirtualTextureData {
         let layers = ((effective_capacity as u32 + cols * rows - 1) / (cols * rows))
             .min(max_layers)
             .max(1);
-
-        // cols*rows*layers may exceed effective_capacity due to grid rounding.
         let atlas_capacity = effective_capacity.min((cols * rows * layers) as usize);
 
-        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("VT Atlas"),
-            size: wgpu::Extent3d {
-                width:                tile_w * cols,
-                height:               tile_h * rows,
-                depth_or_array_layers: tile_d * layers,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        // Create `atlas_count` real atlases + (MAX_ATLAS_COUNT - atlas_count) dummies.
+        // Dummies exist purely to satisfy the bind-group layout; their format
+        // matches the real atlases so the shader's sample_type stays valid.
+        let mut atlas_textures = Vec::with_capacity(MAX_ATLAS_COUNT);
+        let mut atlas_views = Vec::with_capacity(MAX_ATLAS_COUNT);
+        let mut atlas_allocators = Vec::with_capacity(atlas_count);
+        for i in 0..MAX_ATLAS_COUNT {
+            let is_real = i < atlas_count;
+            let (w, h, d) = if is_real {
+                (tile_w * cols, tile_h * rows, tile_d * layers)
+            } else {
+                (1, 1, 1)
+            };
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(if is_real { "VT Atlas" } else { "VT Atlas (dummy)" }),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: d },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D3,
+                format: wgpu::TextureFormat::R16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            atlas_textures.push(tex);
+            atlas_views.push(view);
+            if is_real {
+                atlas_allocators.push(AtlasAllocator::new(atlas_capacity));
+            }
+        }
 
-        let atlas_texture_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let atlas_allocator = AtlasAllocator::new(atlas_capacity);
         let page_table = PageTable::new(device, &lod_levels);
 
         Self {
             tile_size,
-            atlas_allocator,
-            atlas_texture,
-            atlas_texture_view,
+            atlas_allocators,
+            atlas_textures,
+            atlas_views,
+            atlas_count,
             atlas_cols: cols,
             atlas_rows: rows,
             atlas_layers: layers,
@@ -168,17 +203,45 @@ impl VirtualTextureData {
         }
     }
 
+    /// Allocate a slot in the first atlas with free capacity. Returns
+    /// `(atlas_id, slot)` or `None` if every atlas is full.
+    fn alloc_slot(&mut self) -> Option<(u32, u32)> {
+        for (atlas_id, alloc) in self.atlas_allocators.iter_mut().enumerate() {
+            if let Some(slot) = alloc.alloc() {
+                return Some((atlas_id as u32, slot));
+            }
+        }
+        None
+    }
+
+    fn free_slot(&mut self, atlas_id: u32, slot: u32) {
+        if let Some(alloc) = self.atlas_allocators.get_mut(atlas_id as usize) {
+            alloc.free(slot);
+        }
+    }
+
+    /// Total tiles currently resident across all atlases.
+    pub fn total_used(&self) -> usize {
+        self.atlas_allocators.iter().map(|a| a.used()).sum()
+    }
+
+    /// Total atlas slot capacity across all real atlases.
+    pub fn total_capacity(&self) -> usize {
+        self.atlas_allocators.iter().map(|a| a.capacity()).sum()
+    }
+
     // ── Tile management ──────────────────────────────────────────────────────
 
-    fn write_tile_to_atlas(&self, queue: &Queue, slot: u32, data: &TileData) {
+    fn write_tile_to_atlas(&self, queue: &Queue, atlas_id: u32, slot: u32, data: &TileData) {
         let col   = slot % self.atlas_cols;
         let row   = (slot / self.atlas_cols) % self.atlas_rows;
         let layer = slot / (self.atlas_cols * self.atlas_rows);
         let (tile_d, tile_h, tile_w) = self.tile_size;
+        let texture = &self.atlas_textures[atlas_id as usize];
 
         queue.write_texture(
             wgpu::ImageCopyTexture {
-                texture: &self.atlas_texture,
+                texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
                     x: col   * tile_w,
@@ -220,28 +283,19 @@ impl VirtualTextureData {
                 continue;
             }
 
-            let Some(slot) = self.atlas_allocator.alloc() else {
+            let Some((atlas_id, slot)) = self.alloc_slot() else {
                 // Eviction ran before this, but visible tiles may have consumed all slots.
                 // Release the key so it can be re-requested once space frees up.
                 self.requested_keys.remove(&key);
                 continue;
             };
 
-            self.write_tile_to_atlas(queue, slot, &data);
+            self.write_tile_to_atlas(queue, atlas_id, slot, &data);
 
             let TileKey { lod_level, z, y, x } = key;
-            let (gx, gy, _gz) = {
-                let (gz2, gy2, gx2) = self.levels[lod_level].grid_size();
-                (gx2, gy2, gz2)
-            };
-            let linear = z * gy * gx + y * gx + x;
-            eprintln!("VT load: lod={lod_level} ({x},{y},{z}) linear={linear} slot={slot} \
-                col={} row={} layer={}", slot % self.atlas_cols,
-                (slot / self.atlas_cols) % self.atlas_rows,
-                slot / (self.atlas_cols * self.atlas_rows));
-            self.page_table.update(queue, lod_level, z, y, x, slot);
+            self.page_table.update(queue, lod_level, z, y, x, atlas_id, slot);
 
-            self.slot_map.insert(key, slot);
+            self.slot_map.insert(key, (atlas_id, slot));
             self.lru_map.insert(key, self.frame_counter);
         }
     }
@@ -283,8 +337,8 @@ impl VirtualTextureData {
         }
 
         for key in candidates.into_iter().take(num_to_remove) {
-            if let Some(slot) = self.slot_map.remove(&key) {
-                self.atlas_allocator.free(slot);
+            if let Some((atlas_id, slot)) = self.slot_map.remove(&key) {
+                self.free_slot(atlas_id, slot);
                 self.lru_map.remove(&key);
                 self.requested_keys.remove(&key);
                 let TileKey { lod_level, z, y, x } = key;

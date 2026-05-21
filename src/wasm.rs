@@ -410,7 +410,9 @@ impl JsImageVisual {
         levels: Vec<JsLevelMetadata>,
         max_chunks: usize,
         chunk_loader: Function,
+        atlas_count: Option<usize>,
     ) -> Self {
+        let atlas_count = atlas_count.unwrap_or(1);
         let rust_levels: Vec<LodLevelConfig> =
             levels.iter().map(|l| l.to_lod_level_config()).collect();
 
@@ -454,6 +456,7 @@ impl JsImageVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_chunks,
+            atlas_count,
             loader_fn,
         );
 
@@ -595,7 +598,9 @@ impl JsVolumeVisual {
         levels: Vec<JsLevelMetadata>,
         max_chunks: usize,
         chunk_loader: Function,
+        atlas_count: Option<usize>,
     ) -> Self {
+        let atlas_count = atlas_count.unwrap_or(1);
         let rust_levels: Vec<LodLevelConfig> =
             levels.iter().map(|l| l.to_lod_level_config()).collect();
 
@@ -639,6 +644,7 @@ impl JsVolumeVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_chunks,
+            atlas_count,
             loader_fn,
         );
 

@@ -81,9 +81,10 @@ impl VolumeVisual {
     /// Create a `VolumeVisual` with virtual-texture multiscale streaming.
     ///
     /// # Arguments
-    /// * `lod_levels` - Configuration for each LOD level (finest to coarsest)
-    /// * `max_tiles`  - Atlas capacity (number of simultaneously resident tiles)
-    /// * `loader`     - Callback invoked when a tile is needed
+    /// * `lod_levels`  - Configuration for each LOD level (finest to coarsest)
+    /// * `max_tiles`   - Total atlas capacity across all physical atlases
+    /// * `atlas_count` - Number of physical atlas textures (1..=MAX_ATLAS_COUNT)
+    /// * `loader`      - Callback invoked when a tile is needed
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -91,9 +92,10 @@ impl VolumeVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
+        atlas_count: usize,
         loader: TileLoaderFn,
     ) -> Self {
-        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles, loader);
+        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles, atlas_count, loader);
 
         // Atlas sampler
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -108,27 +110,33 @@ impl VolumeVisual {
         });
 
         // ── VT bind group (group 1) ───────────────────────────────────────────
+        // Bindings 0..3 are the four atlas textures (real or dummy);
+        // binding 4 is the shared sampler; 5 the page table; 6 the VT uniforms.
+        let atlas_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            },
+            count: None,
+        };
         let vt_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Volume VT Bind Group Layout"),
             entries: &[
+                atlas_entry(0),
+                atlas_entry(1),
+                atlas_entry(2),
+                atlas_entry(3),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D3,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
@@ -138,7 +146,7 @@ impl VolumeVisual {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 6,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -161,22 +169,13 @@ impl VolumeVisual {
             label: Some("Volume VT Bind Group"),
             layout: &vt_bgl,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&strategy.atlas_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&strategy.page_table.texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: vt_uniform_buffer.as_entire_binding(),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&strategy.atlas_views[0]) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&strategy.atlas_views[1]) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&strategy.atlas_views[2]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&strategy.atlas_views[3]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&strategy.page_table.texture_view) },
+                wgpu::BindGroupEntry { binding: 6, resource: vt_uniform_buffer.as_entire_binding() },
             ],
         });
 

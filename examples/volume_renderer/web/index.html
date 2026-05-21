@@ -47,15 +47,15 @@
             <div class="header-section">
                 <label>VRAM Budget:</label>
                 <select id="vram-budget">
-                    <option value="1">1 GB</option>
+                    <option value="0.5">512 MB</option>
+                    <option value="1" selected>1 GB</option>
                     <option value="2">2 GB</option>
-                    <option value="4" selected>4 GB</option>
+                    <option value="4">4 GB</option>
                     <option value="8">8 GB</option>
-                    <option value="16">16 GB</option>
                 </select>
                 <span style="font-size:11px;color:#8b949e;">→</span>
-                <span id="max-chunks-display" class="value-display">—</span>
-                <span style="font-size:11px;color:#8b949e;">tiles</span>
+                <span id="atlas-breakdown" class="value-display"
+                      title="Atlas count is auto-derived from the budget: each physical atlas is capped at ~2 GiB by Chrome's per-resource limit, so >2 GiB budget = multi-atlas.">—</span>
             </div>
         </div>
 

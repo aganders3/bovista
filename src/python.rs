@@ -797,12 +797,13 @@ impl PyVisualWrapper for PyImageVisual {
 #[pymethods]
 impl PyImageVisual {
     #[new]
-    #[pyo3(signature = (viewer, levels, max_tiles, loader))]
+    #[pyo3(signature = (viewer, levels, max_tiles, loader, atlas_count=1))]
     fn new(
         viewer: &PyViewer,
         levels: Vec<PyLevelMetadata>,
         max_tiles: usize,
         loader: PyObject,
+        atlas_count: usize,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
@@ -859,6 +860,7 @@ impl PyImageVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_tiles,
+            atlas_count,
             loader_fn,
         );
 
@@ -1156,12 +1158,13 @@ impl PyVisualWrapper for PyVolumeVisual {
 #[pymethods]
 impl PyVolumeVisual {
     #[new]
-    #[pyo3(signature = (viewer, levels, max_tiles, loader))]
+    #[pyo3(signature = (viewer, levels, max_tiles, loader, atlas_count=1))]
     fn new(
         viewer: &PyViewer,
         levels: Vec<PyLevelMetadata>,
         max_tiles: usize,
         loader: PyObject,
+        atlas_count: usize,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
@@ -1219,6 +1222,7 @@ impl PyVolumeVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_tiles,
+            atlas_count,
             loader_fn,
         );
 

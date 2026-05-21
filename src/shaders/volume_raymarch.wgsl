@@ -28,10 +28,16 @@ struct CameraUniforms {
 var<uniform> camera: CameraUniforms;
 
 // ── Group 1: virtual texture resources ───────────────────────────────────────
+//
+// Up to MAX_ATLAS_COUNT physical atlas textures are pre-bound (currently 4).
+// `sample_atlas` dispatches by atlas_id encoded in each page-table entry.
 
-@group(1) @binding(0) var atlas: texture_3d<f32>;
-@group(1) @binding(1) var atlas_sampler: sampler;
-@group(1) @binding(2) var page_table: texture_2d_array<u32>;
+@group(1) @binding(0) var atlas0: texture_3d<f32>;
+@group(1) @binding(1) var atlas1: texture_3d<f32>;
+@group(1) @binding(2) var atlas2: texture_3d<f32>;
+@group(1) @binding(3) var atlas3: texture_3d<f32>;
+@group(1) @binding(4) var atlas_sampler: sampler;
+@group(1) @binding(5) var page_table: texture_2d_array<u32>;
 
 struct VTLodInfo {
     grid_dims: vec3<u32>,
@@ -58,7 +64,17 @@ struct VTUniforms {
     lods: array<VTLodInfo, 16>,
 }
 
-@group(1) @binding(3) var<uniform> vt: VTUniforms;
+@group(1) @binding(6) var<uniform> vt: VTUniforms;
+
+fn sample_atlas(atlas_id: u32, uv: vec3f) -> f32 {
+    switch atlas_id {
+        case 0u: { return textureSampleLevel(atlas0, atlas_sampler, uv, 0.0).r; }
+        case 1u: { return textureSampleLevel(atlas1, atlas_sampler, uv, 0.0).r; }
+        case 2u: { return textureSampleLevel(atlas2, atlas_sampler, uv, 0.0).r; }
+        case 3u: { return textureSampleLevel(atlas3, atlas_sampler, uv, 0.0).r; }
+        default: { return 0.0; }
+    }
+}
 
 // ── Group 2: volume uniforms + colormap ──────────────────────────────────────
 
@@ -137,6 +153,7 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
 
     if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
 
+    let atlas_id    = (entry >> 16u) & 0xFFu;
     let slot        = entry & 0xFFFFu;
     let atlas_col   = slot % vt.atlas_cols;
     let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
@@ -148,8 +165,7 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
 
-    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
-                 f32(lod));
+    return vec2f(sample_atlas(atlas_id, vec3f(u, v, w)), f32(lod));
 }
 
 fn sample_vvt(vol_uv: vec3f) -> vec2f {
@@ -214,8 +230,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // ── Mode 2: atlas direct ────────────────────────────────────────────
         // Bypass the page table entirely — sample the raw packed atlas texture.
         // Useful for verifying atlas allocation and what data is actually loaded.
+        // With multi-atlas we just inspect atlas 0; atlases 1..3 are still
+        // populated and you'd need to extend this debug mode to step through
+        // them if you want full coverage.
         if vol.debug_mode == 2u {
-            let raw      = textureSampleLevel(atlas, atlas_sampler, vol_uv, 0.0).r;
+            let raw      = textureSampleLevel(atlas0, atlas_sampler, vol_uv, 0.0).r;
             let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
             if adjusted > 0.01 {
                 let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);

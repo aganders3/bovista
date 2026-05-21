@@ -22,14 +22,22 @@ struct CameraUniforms {
 var<uniform> camera: CameraUniforms;
 
 // ── Group 1: virtual texture resources ───────────────────────────────────────
+//
+// Up to MAX_ATLAS_COUNT physical atlas textures are pre-bound (currently 4).
+// When the visual was constructed with atlas_count < 4, the unused slots are
+// 1×1×1 dummies that the page-table entries never reference. `sample_atlas`
+// dispatches by atlas_id; nearby fragments usually hit the same atlas so warps
+// stay coherent.
 
-@group(1) @binding(0)
-var atlas: texture_3d<f32>;
+@group(1) @binding(0) var atlas0: texture_3d<f32>;
+@group(1) @binding(1) var atlas1: texture_3d<f32>;
+@group(1) @binding(2) var atlas2: texture_3d<f32>;
+@group(1) @binding(3) var atlas3: texture_3d<f32>;
 
-@group(1) @binding(1)
+@group(1) @binding(4)
 var atlas_sampler: sampler;
 
-@group(1) @binding(2)
+@group(1) @binding(5)
 var page_table: texture_2d_array<u32>;
 
 struct VTLodInfo {
@@ -67,8 +75,18 @@ struct VTUniforms {
     lods: array<VTLodInfo, 16>,
 }
 
-@group(1) @binding(3)
+@group(1) @binding(6)
 var<uniform> vt: VTUniforms;
+
+fn sample_atlas(atlas_id: u32, uv: vec3f) -> f32 {
+    switch atlas_id {
+        case 0u: { return textureSampleLevel(atlas0, atlas_sampler, uv, 0.0).r; }
+        case 1u: { return textureSampleLevel(atlas1, atlas_sampler, uv, 0.0).r; }
+        case 2u: { return textureSampleLevel(atlas2, atlas_sampler, uv, 0.0).r; }
+        case 3u: { return textureSampleLevel(atlas3, atlas_sampler, uv, 0.0).r; }
+        default: { return 0.0; }
+    }
+}
 
 // ── Group 2: colormap LUT ────────────────────────────────────────────────────
 
@@ -126,6 +144,7 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
 
     if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
 
+    let atlas_id    = (entry >> 16u) & 0xFFu;
     let slot        = entry & 0xFFFFu;
     let atlas_col   = slot % vt.atlas_cols;
     let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
@@ -138,8 +157,7 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
 
-    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
-                 f32(lod));
+    return vec2f(sample_atlas(atlas_id, vec3f(u, v, w)), f32(lod));
 }
 
 // Walk the page table to find the best resident LOD for this fragment.

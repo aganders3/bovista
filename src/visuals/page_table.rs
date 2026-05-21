@@ -4,8 +4,10 @@
 //   - One array layer per LOD level.
 //   - Width  = min(max_linear, max_texture_dimension_2d).
 //   - Height = ceil(max_linear / width).
-//   - Each texel encodes a single tile: `(resident_bit << 24) | (atlas_slot & 0xFFFF)`.
+//   - Each texel encodes a single tile:
+//       (resident_bit << 24) | ((atlas_id & 0xFF) << 16) | (slot & 0xFFFF)
 //     A resident_bit of 0 means "not loaded"; the shader falls back to the next coarser LOD.
+//     atlas_id picks one of the (up to MAX_ATLAS_COUNT) physical atlas textures.
 //
 // Coordinate mapping (must match the shader):
 //   linear_index = tz * gy * gx + ty * gx + tx
@@ -64,11 +66,16 @@ impl PageTable {
         Self { texture, texture_view, width: pt_width, lod_grids }
     }
 
-    /// Mark a tile as resident at the given atlas slot.
-    pub fn update(&self, queue: &wgpu::Queue, lod: usize, tz: u32, ty: u32, tx: u32, slot: u32) {
+    /// Mark a tile as resident at `(atlas_id, slot)`.
+    pub fn update(
+        &self,
+        queue: &wgpu::Queue,
+        lod: usize, tz: u32, ty: u32, tx: u32,
+        atlas_id: u32, slot: u32,
+    ) {
         let (gx, gy, _gz) = self.lod_grids[lod];
         let linear = tz * gy * gx + ty * gx + tx;
-        let value: u32 = (1u32 << 24) | (slot & 0xFFFF);
+        let value: u32 = (1u32 << 24) | ((atlas_id & 0xFF) << 16) | (slot & 0xFFFF);
         self.write_texel(queue, lod as u32, linear, value);
     }
 
