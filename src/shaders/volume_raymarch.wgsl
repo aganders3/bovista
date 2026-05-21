@@ -418,29 +418,33 @@ fn fs_average(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // -- Mode: attenuated MIP ----------------------------------------------------
-// vispy-style attenuated MIP. Instead of attenuating by ray distance (which
-// burns through the empty space surrounding most volumes), we attenuate by
-// *accumulated contrast-normalised density*: sumval grows only where there is
-// actual data, so empty regions don't suppress later samples.
+// Pure distance-based attenuation along the normalised ray (0 at the entry
+// face, 1 at the exit face). `attenuation` is in units of 1/ray-length, so
+// scale = exp(-attenuation) at the far end and scale = 1 at the near end.
+// At attenuation = 0 this degenerates to plain MIP.
 //
-// scale = exp(-attenuation * sumval). At attenuation = 0 this degenerates to
-// plain MIP. Positive attenuation favours the first dense region encountered.
+// Two earlier designs had problems on real data:
+//   1) world-distance attenuation: aggressive on big volumes but useless on
+//      tiny ones — single slider couldn't span both.
+//   2) density-weighted accumulation (vispy-style): elegant in theory but
+//      sparse-data rays (lots of empty space + scattered bright points)
+//      accumulated almost nothing, so high attenuation values still let the
+//      far side bleed through.
 //
-// Early termination: once `maxval > contrast_max * scale`, no future sample
-// can produce a higher attenuated value (future scale <= scale, future raw
-// effectively capped at contrast_max for colormap purposes).
+// To prevent the "dark floor" problem (an empty ray's brightest near sample
+// being raw≈0, so the output is black even when there's bright material
+// further along), we skip below-floor samples entirely — they don't compete
+// for `maxval`. Rays that find no above-floor sample discard.
 
 @fragment
 fn fs_attenuated_mip(in: VertexOutput) -> @location(0) vec4<f32> {
     let s = setup_ray(in.world_pos);
     if !s.hit { discard; }
 
-    let ray_len        = max(s.t_exit - s.t_start, 1e-9);
-    let inv_ray_len    = 1.0 / ray_len;
-    let inv_clim_range = 1.0 / max(vt.contrast_max - vt.contrast_min, 1e-9);
+    let ray_len     = max(s.t_exit - s.t_start, 1e-9);
+    let inv_ray_len = 1.0 / ray_len;
 
     var maxval = 0.0;
-    var sumval = 0.0;
     var any_hit = false;
     var t = s.t_start;
 
@@ -454,19 +458,24 @@ fn fs_attenuated_mip(in: VertexOutput) -> @location(0) vec4<f32> {
         let advance = compute_advance(lod_f, s.step_size, vol_uv, s.ray_dir, s.vol_extent, s.inv_tile0_scale_x);
 
         if lod_f >= 0.0 {
-            // Step contribution = fraction of ray covered, weighted by normalised
-            // intensity. Empty/below-floor samples contribute nothing to sumval.
-            let norm = clamp((raw - vt.contrast_min) * inv_clim_range, 0.0, 1.0);
-            sumval += (advance * inv_ray_len) * norm;
-            let scale = exp(-vol.attenuation * sumval);
+            let adjusted = contrast_normalise(raw);
+            // Skip below-floor samples so empty space doesn't drag maxval down
+            // to ~0 (which would then colormap as the floor colour and create
+            // the "floor effect" bug).
+            if adjusted > 0.001 {
+                let t_norm = (t - s.t_start) * inv_ray_len;
+                let scale  = exp(-vol.attenuation * t_norm);
 
-            // Early-out (also benefits plain MIP when contrast_max < 1).
-            if maxval > vt.contrast_max * scale { break; }
+                // Early termination: future scale only shrinks, and future raw
+                // contributes at most `contrast_max` to the colormap. If our
+                // current best already beats that bound, no future sample wins.
+                if maxval > vt.contrast_max * scale { break; }
 
-            let attenuated = raw * scale;
-            if attenuated > maxval {
-                maxval = attenuated;
-                any_hit = true;
+                let attenuated = raw * scale;
+                if attenuated > maxval {
+                    maxval = attenuated;
+                    any_hit = true;
+                }
             }
         }
         t += advance;

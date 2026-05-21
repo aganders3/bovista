@@ -219,10 +219,9 @@ class MainWindow(QMainWindow):
 
         ctrl2.addWidget(QLabel("  Attenuation:"))
         self.att_slider = QSlider(Qt.Orientation.Horizontal)
-        # Attenuation is in units of 1/(accumulated normalised density). For
-        # sparse data (lots of air), sumval at exit is small, so high attenuation
-        # values are needed to fully suppress the far side. 0 = plain MIP.
-        self.att_slider.setRange(0, 1000); self.att_slider.setValue(0)
+        # Pure distance attenuation: scale = exp(-attenuation) at the far end
+        # of the ray. 0 = plain MIP; ~10 ≈ fully suppressed.
+        self.att_slider.setRange(0, 200); self.att_slider.setValue(0)
         self.att_slider.setFixedWidth(120)
         self.att_slider.valueChanged.connect(self._update_attenuation)
         ctrl2.addWidget(self.att_slider)
@@ -491,7 +490,7 @@ class MainWindow(QMainWindow):
         if hasattr(new_volume, 'set_iso_threshold'):
             new_volume.set_iso_threshold(self.iso_slider.value() / 1000.0)
         if hasattr(new_volume, 'set_attenuation'):
-            new_volume.set_attenuation(self.att_slider.value() / 100.0)
+            new_volume.set_attenuation(self.att_slider.value() / 10.0)
 
         self.volume_index = viewer.add(new_volume)
         self.volume = new_volume
@@ -535,7 +534,7 @@ class MainWindow(QMainWindow):
     def _update_attenuation(self):
         if not self.volume or not hasattr(self.volume, 'set_attenuation'):
             return
-        # Slider 0-1000 → 0.0-100.0.
+        # Slider 0-200 → 0.0-20.0; useful sweep is roughly 0-10 (exp(-10) ≈ 5e-5).
         attenuation = self.att_slider.value() / 10.0
         self.att_label.setText(f"{attenuation:.1f}")
         self.volume.set_attenuation(attenuation)

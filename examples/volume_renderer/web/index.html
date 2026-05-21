@@ -133,8 +133,9 @@
                         Attenuation
                         <span class="value-display" id="attenuation-value">0.0</span>
                     </label>
-                    <!-- Slider 0-1000 → 0.0-100.0; matches the Python example. -->
-                    <input type="range" id="attenuation" min="0" max="1000" value="0" disabled>
+                    <!-- Slider 0-200 → 0.0-20.0. Pure distance attenuation:
+                         scale = exp(-attenuation) at the ray's far end. -->
+                    <input type="range" id="attenuation" min="0" max="200" value="0" disabled>
                 </div>
 
                 <div class="control-group">
