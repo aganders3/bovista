@@ -98,8 +98,8 @@ fn main() {
     let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_view = renderer.create_depth_texture(width, height);
 
-    // Synthetic 128³ sphere as R16Float bytes.
-    let tile_bytes = Arc::new(generate_sphere_volume_r16f(VOLUME_DIM));
+    // Synthetic 128³ cube as R16Float bytes.
+    let tile_bytes = Arc::new(generate_cube_volume_r16f(VOLUME_DIM));
     println!("[headless] synthetic volume: {0}x{0}x{0} R16Float ({1} bytes)",
              VOLUME_DIM, tile_bytes.len());
 
@@ -353,22 +353,31 @@ fn render_one_frame(
     output
 }
 
-/// Build a 128³ sphere as little-endian f16 bytes. Values: 1.0 at center,
-/// ramping to 0.0 at the surface, 0.0 outside.
-fn generate_sphere_volume_r16f(dim: u32) -> Vec<u8> {
+/// Build a 128³ axis-aligned cube as little-endian f16 bytes. The cube occupies
+/// the centered region [0.2·dim, 0.8·dim) on each axis, with an asymmetric
+/// notch cut out of one corner so camera rotation is visually obvious.
+fn generate_cube_volume_r16f(dim: u32) -> Vec<u8> {
     let n = dim as usize;
-    let radius = (dim as f32) * 0.40;
-    let center = (dim as f32 - 1.0) * 0.5;
+    let d = dim as f32;
+    let lo = (d * 0.20) as usize;
+    let hi = (d * 0.80) as usize;
+    // Asymmetric notch: remove the +x +y +z corner of the cube so the result
+    // is chiral and rotation is unambiguous.
+    let notch_lo = (d * 0.55) as usize;
+    let notch_hi = hi;
+
+    let one = half::f16::from_f32(1.0).to_bits();
+    let zero = half::f16::from_f32(0.0).to_bits();
+
     let mut out = Vec::with_capacity(n * n * n * 2);
     for z in 0..n {
         for y in 0..n {
             for x in 0..n {
-                let dx = x as f32 - center;
-                let dy = y as f32 - center;
-                let dz = z as f32 - center;
-                let r = (dx*dx + dy*dy + dz*dz).sqrt();
-                let v = (1.0 - r / radius).clamp(0.0, 1.0);
-                let bits = half::f16::from_f32(v).to_bits();
+                let in_cube  = x >= lo && x < hi && y >= lo && y < hi && z >= lo && z < hi;
+                let in_notch = x >= notch_lo && x < notch_hi
+                            && y >= notch_lo && y < notch_hi
+                            && z >= notch_lo && z < notch_hi;
+                let bits = if in_cube && !in_notch { one } else { zero };
                 out.push((bits & 0xff) as u8);
                 out.push((bits >> 8) as u8);
             }
