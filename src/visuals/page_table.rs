@@ -46,7 +46,13 @@ impl PageTable {
             size: wgpu::Extent3d {
                 width: pt_width,
                 height: pt_height,
-                depth_or_array_layers: num_lods,
+                // Pad to >= 2 layers so wgpu-hal-GL creates a real
+                // GL_TEXTURE_2D_ARRAY object (its heuristic maps
+                // depth_or_array_layers==1 to plain GL_TEXTURE_2D, which
+                // can't be sampled through a D2Array binding on GLES).
+                // The shader's lod_count uniform still bounds reads to
+                // the real LOD count, so the extra layer is never read.
+                depth_or_array_layers: num_lods.max(2),
             },
             mip_level_count: 1,
             sample_count: 1,
