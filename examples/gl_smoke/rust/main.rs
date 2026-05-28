@@ -95,6 +95,42 @@ fn fs_main() -> @location(0) vec4<f32> {
 // 2D-array R32Uint textureLoad probe (matches bovista's page_table sampling).
 // Loads texel (layer=2, y=2, x=3) — known value 0xCAFEBABE. If the load works,
 // outputs bright magenta; if it returns 0, outputs dim teal.
+// Three-bind-group probe. Each group contributes one color channel and one
+// magic constant. Output is bright if all three are read correctly.
+const SHADER_THREE_BGS: &str = r#"
+struct GroupUbo {
+    magic: u32,
+    rgba: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> g0: GroupUbo;
+@group(1) @binding(0) var<uniform> g1: GroupUbo;
+@group(2) @binding(0) var<uniform> g2: GroupUbo;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    var rgba = g0.rgba + g1.rgba + g2.rgba;
+    var alpha_ok = 0.0;
+    if g0.magic == 0xCAFE0001u { alpha_ok = alpha_ok + 0.34; }
+    if g1.magic == 0xCAFE0002u { alpha_ok = alpha_ok + 0.33; }
+    if g2.magic == 0xCAFE0003u { alpha_ok = alpha_ok + 0.33; }
+    return vec4<f32>(rgba.r, rgba.g, rgba.b, alpha_ok);
+}
+"#;
+
 const SHADER_TEX2DA_UINT: &str = r#"
 @group(0) @binding(0) var pt: texture_2d_array<u32>;
 
@@ -222,6 +258,7 @@ fn main() {
     let with_depth = args.iter().any(|a| a == "--depth");
     let use_tex3d = args.iter().any(|a| a == "--tex3d");
     let use_tex2da_uint = args.iter().any(|a| a == "--tex2da-uint");
+    let use_three_bgs = args.iter().any(|a| a == "--three-bgs");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -298,7 +335,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_tex2da_uint {
+    let shader_src = if use_three_bgs {
+        SHADER_THREE_BGS
+    } else if use_tex2da_uint {
         SHADER_TEX2DA_UINT
     } else if use_tex3d {
         SHADER_TEX3D
@@ -309,7 +348,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_tex2da_uint { "tex2da-uint" }
+    let mode_name = if use_three_bgs { "three-bgs" }
+                   else if use_tex2da_uint { "tex2da-uint" }
                    else if use_tex3d { "tex3d" }
                    else if use_vec3_probe { "vec3-probe" }
                    else if use_uniform { "uniform" }
@@ -546,7 +586,59 @@ fn main() {
         (Some(layout), Some(bg))
     } else { (None, None) };
 
-    let pipeline_layout = if let Some(bgl) = tex2da_uint_layout.as_ref() {
+    // ── Three-bind-group probe ─────────────────────────────────────────────
+    // Mimics bovista's camera/vt/vol layout: 3 bind groups, each with at
+    // least one uniform. Shader reads a u32 magic value from each group's
+    // uniform and a color contribution. If all three are wired correctly,
+    // output is bright yellow-orange.
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct GroupUbo { magic: u32, _pad: [u32; 3], rgba: [f32; 4] }
+    let three_bgs_layouts_bgs = if use_three_bgs {
+        let make = |magic: u32, rgba: [f32; 4], label: &str| {
+            let ubo = GroupUbo { magic, _pad: [0; 3], rgba };
+            let bytes: [u8; 32] = unsafe { std::mem::transmute(ubo) };
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&buf, 0, &bytes);
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(label),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+            });
+            (layout, bg)
+        };
+        // Each group contributes one channel; alpha goes to 1.0 only if all three magics check out.
+        let (l0, b0) = make(0xCAFE0001u32, [0.5, 0.0, 0.0, 0.0], "bg0");
+        let (l1, b1) = make(0xCAFE0002u32, [0.0, 0.5, 0.0, 0.0], "bg1");
+        let (l2, b2) = make(0xCAFE0003u32, [0.0, 0.0, 0.5, 0.0], "bg2");
+        Some((l0, b0, l1, b1, l2, b2))
+    } else { None };
+
+    let pipeline_layout = if let Some((l0, _, l1, _, l2, _)) = &three_bgs_layouts_bgs {
+        Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("smoke-pl-3bgs"),
+            bind_group_layouts: &[l0, l1, l2],
+            push_constant_ranges: &[],
+        }))
+    } else if let Some(bgl) = tex2da_uint_layout.as_ref() {
         Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke-pl"),
             bind_group_layouts: &[bgl],
@@ -645,7 +737,11 @@ fn main() {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
-        if let Some(bg) = &tex2da_uint_bg {
+        if let Some((_, b0, _, b1, _, b2)) = &three_bgs_layouts_bgs {
+            pass.set_bind_group(0, b0, &[]);
+            pass.set_bind_group(1, b1, &[]);
+            pass.set_bind_group(2, b2, &[]);
+        } else if let Some(bg) = &tex2da_uint_bg {
             pass.set_bind_group(0, bg, &[]);
         } else if let Some(bg) = &tex3d_bg {
             pass.set_bind_group(0, bg, &[]);
