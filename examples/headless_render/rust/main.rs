@@ -198,11 +198,8 @@ fn main() {
         loader,
     );
     *pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
-    match debug_mode {
-        1 => volume.set_debug_mode(true),
-        2 => volume.set_atlas_debug_mode(true),
-        3 => volume.set_step_debug_mode(true),
-        _ => {}
+    if debug_mode != 0 {
+        volume.set_debug_mode_raw(debug_mode);
     }
 
     let mut scene = Scene::new();

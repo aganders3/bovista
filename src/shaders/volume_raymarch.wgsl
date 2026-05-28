@@ -171,6 +171,24 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
+    // Confirms the fragment stage runs at all on the active backend. If you
+    // get all-black with mode 4, the cube bounding box isn't producing
+    // fragments — depth-clip / NDC / pipeline issue.
+    if vol.debug_mode == 4u {
+        return vec4f(1.0, 0.0, 0.0, 1.0);
+    }
+    // ── Debug mode 5: uniform-echo probe ────────────────────────────────────
+    // Encodes the volume's AABB extent in the red/green/blue channels. If you
+    // get black with mode 5 but red with mode 4, the uniform buffer is being
+    // read at wrong offsets — std140 vs WGSL packing mismatch on this driver.
+    // Expected on a 128³ cube: a soft greyish color (extent ≈ 128 / 256 = 0.5
+    // each).
+    if vol.debug_mode == 5u {
+        let extent = (vol.vol_max - vol.vol_min) / 256.0;
+        return vec4f(extent, 1.0);
+    }
+
     let ray_origin = vol.camera_pos;
     let ray_dir    = normalize(in.world_pos - vol.camera_pos);
 
