@@ -101,6 +101,45 @@ fn fs_main() -> @location(0) vec4<f32> {
 // bind group at separate binding slots. If --three-bgs salmoned on HPC
 // because wgpu-hal-gles drops bind groups 1 and 2 silently, this should
 // come back mid-gray (the expected color when all three reads work).
+// Cross-stage uniform probe. VS reads probe.flags.x (forces the compiler
+// to declare the uniform block in the VS too); FS reads probe.color.
+// Same data layout as SHADER_UNIFORM. If FS returns magenta, cross-stage
+// uniforms work. If FS returns red, FS read fails when VS also reads.
+const SHADER_CROSS_STAGE: &str = r#"
+struct Probe {
+    color: vec4<f32>,
+    flags: vec4<u32>,
+};
+@group(0) @binding(0) var<uniform> probe: Probe;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    // Touch probe.flags.x so the compiler emits the uniform block in VS too.
+    // The select keeps the output identical regardless of probe contents.
+    if probe.flags.x == 0u {
+        out.pos.w = 1.0;
+    }
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    if probe.flags.x == 0xDEADBEEFu {
+        return probe.color;  // magenta if FS uniform read succeeds
+    }
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);  // red if it doesn't
+}
+"#;
+
 // Two-texture probe. If both textures read independently we get yellow
 // (R from tex A, G from tex B). If they alias to one texture unit on this
 // driver, we'd see red-only or green-only.
@@ -329,6 +368,7 @@ fn main() {
     let use_three_bgs = args.iter().any(|a| a == "--three-bgs");
     let use_one_bg_three = args.iter().any(|a| a == "--one-bg-three");
     let use_two_tex = args.iter().any(|a| a == "--two-tex");
+    let use_cross_stage = args.iter().any(|a| a == "--cross-stage");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -405,7 +445,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_two_tex {
+    let shader_src = if use_cross_stage {
+        SHADER_CROSS_STAGE
+    } else if use_two_tex {
         SHADER_TWO_TEX
     } else if use_one_bg_three {
         SHADER_ONE_BG_THREE
@@ -422,7 +464,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_two_tex { "two-tex" }
+    let mode_name = if use_cross_stage { "cross-stage" }
+                   else if use_two_tex { "two-tex" }
                    else if use_one_bg_three { "one-bg-three" }
                    else if use_three_bgs { "three-bgs" }
                    else if use_tex2da_uint { "tex2da-uint" }
@@ -431,7 +474,13 @@ fn main() {
                    else if use_uniform { "uniform" }
                    else { "no-uniform" };
     println!("[smoke] mode: {}", mode_name);
-    let needs_uniform = use_uniform || use_vec3_probe;
+    let needs_uniform = use_uniform || use_vec3_probe || use_cross_stage;
+    // Cross-stage uses VERTEX | FRAGMENT visibility; others stay FRAGMENT-only.
+    let uniform_visibility = if use_cross_stage {
+        wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+    } else {
+        wgpu::ShaderStages::FRAGMENT
+    };
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("smoke-shader"),
         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
@@ -491,7 +540,7 @@ fn main() {
             label: Some("smoke-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: uniform_visibility,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
