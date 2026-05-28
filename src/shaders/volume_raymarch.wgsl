@@ -199,52 +199,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if _tx <= max(_te, 0.0) {
         return vec4f(0.0, 0.0, 0.0, 1.0);
     }
-    // All uniform reads + integer math from try_lod, but NO textures.
-    // For our test: grid=(1,1,1), tile_scale=(1,1,1), data_scale≈(1,1,1),
-    // page_table_width=1, atlas_cols=1, atlas_rows=1, atlas_tile_pitch=(1,1,1).
-    //   tc = (0,0,0), linear = 0, pt_x = pt_y = 0,
-    //   within_tile ≈ (0.498, 0.498, 0.498), u=v=w ≈ 0.498.
-    //
-    // Output channel encoding (all in [0, 1]):
-    //   r = (within_tile.x)       (~0.498)
-    //   g = (linear)              (0.0, scaled)
-    //   b = (page_table_width)    (1.0, scaled)
-    //   a = 1.0
-    // Expected on Mac (and HPC if math works): linear ≈ (0.50, 0.0, 0.50, 1.0)
-    // = dim red-purple.
-    let vol_uv2 = vec3f(0.5, 0.5, 0.5);
-    let lod2: i32 = 0;
-    let grid = uni.vt.lods[lod2].grid_dims;
-    let vol_in_tiles = min(vol_uv2 / uni.vt.lods[lod2].tile_scale, vec3f(grid) - vec3f(1e-5));
-    let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
-    let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
-    let pt_x = i32(linear % uni.vt.page_table_width);
-    let pt_y = i32(linear / uni.vt.page_table_width);
-    let _ds = uni.vt.lods[lod2].data_scale;
-    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * _ds;
-    let _ac = uni.vt.atlas_cols;
-    let _ar = uni.vt.atlas_rows;
-    let _pp = uni.vt.atlas_tile_pitch_x;
-    _ = vec4f(
-        within_tile.x,
-        f32(pt_x) * 0.5 + f32(linear) * 0.25,
-        f32(_ac + _ar) * 0.25 * _pp,
+    // Minimal repro: two independent texture ops with hardcoded coords.
+    // No uniform reads, no math, no conditional flow. If THIS still cyan-clears,
+    // having both texture-op types in one shader is the bug.
+    let sampled = textureSampleLevel(atlas, atlas_sampler, vec3f(0.5, 0.5, 0.5), 0.0).r;
+    let entry   = textureLoad(page_table, vec2<i32>(0, 0), 0, 0).x;
+    // Encode: R = atlas sample, G = page-table low byte, B = resident bit, A = 1.
+    return vec4f(
+        sampled,
+        f32(entry & 0xFFu) / 255.0,
+        f32((entry >> 24u) & 1u),
         1.0,
     );
-    let entry = textureLoad(page_table, vec2<i32>(pt_x, pt_y), lod2, 0).x;
-    // NO early return — always sample the atlas with computed coords.
-    let slot = entry & 0xFFFFu;
-    let atlas_col   = slot % _ac;
-    let atlas_row   = (slot / _ac) % _ar;
-    let atlas_layer = slot / (_ac * _ar);
-    let u = (f32(atlas_col)   + within_tile.x) * uni.vt.atlas_tile_pitch_x;
-    let v = (f32(atlas_row)   + within_tile.y) * uni.vt.atlas_tile_pitch_y;
-    let w = (f32(atlas_layer) + within_tile.z) * uni.vt.atlas_tile_pitch_z;
-    let sampled = textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r;
-    // also fold the page-table entry into the output so we can tell if it was
-    // read but unused (alpha channel encodes resident bit).
-    let resident_f = f32((entry >> 24u) & 1u);
-    return vec4f(sampled, 0.4 - sampled * 0.4, 0.4 + sampled * 0.6, resident_f);
 
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
