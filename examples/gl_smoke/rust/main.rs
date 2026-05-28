@@ -155,6 +155,7 @@ fn main() {
     let clear_hex = flag(&args, "--clear").unwrap_or_else(|| "ff0000ff".to_string());
     let use_uniform = args.iter().any(|a| a == "--uniform");
     let use_vec3_probe = args.iter().any(|a| a == "--vec3-probe");
+    let with_depth = args.iter().any(|a| a == "--depth");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -215,6 +216,21 @@ fn main() {
         view_formats: &[],
     });
     let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let depth_view = with_depth.then(|| {
+        let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("smoke-depth"),
+            size: wgpu::Extent3d { width: WIDTH, height: HEIGHT, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth24PlusStencil8,  // same as bovista
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        depth_tex.create_view(&wgpu::TextureViewDescriptor::default())
+    });
+    println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
     let shader_src = if use_vec3_probe {
         SHADER_VEC3_PROBE
@@ -342,7 +358,17 @@ fn main() {
             polygon_mode: wgpu::PolygonMode::Fill,
             conservative: false,
         },
-        depth_stencil: None,
+        depth_stencil: if with_depth {
+            Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24PlusStencil8,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,  // never reject
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            })
+        } else {
+            None
+        },
         multisample: wgpu::MultisampleState {
             count: 1,
             mask: !0,
@@ -368,7 +394,17 @@ fn main() {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: depth_view.as_ref().map(|v| wgpu::RenderPassDepthStencilAttachment {
+                view: v,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
             timestamp_writes: None,
             occlusion_query_set: None,
         });
