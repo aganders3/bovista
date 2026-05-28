@@ -177,8 +177,15 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // Set the camera bind group (available to all visuals at group 0)
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            // TEMP DIAGNOSTIC: skip pre-binding group 0 to the camera bind
+            // group. We suspect that the back-to-back set_bind_group(0, A)
+            // then set_bind_group(0, B) (different layouts) is leaving wgpu-
+            // hal-gles in a bad state on NVIDIA 3.30 compat where the volume
+            // ends up reading stale data. The volume visual now binds its
+            // own combined bind group at slot 0 directly. Lines/Points/Custom
+            // visuals will break (no camera bound at group 0), but those
+            // aren't in scope for the current HPC test.
+            // render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
             // Render all visuals in the scene
             scene.render(&mut render_pass);
