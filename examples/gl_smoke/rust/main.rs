@@ -89,6 +89,37 @@ fn fs_main() -> @location(0) vec4<f32> {
 //
 // Expected: color = (0.1, 0.3, 0.9) blue-purple if all reads land correctly.
 // If any field reads garbage, the color shifts visibly.
+// 3D R16Float texture sample probe. Reads voxel (12,12,12) — known value ≈ 0.797.
+// If the sampled value is non-zero (gives bright purple-ish), 3D R16Float
+// sampling works. If sample returns 0 (black/clear), it's broken.
+const SHADER_TEX3D: &str = r#"
+@group(0) @binding(0) var t3d: texture_3d<f32>;
+@group(0) @binding(1) var s3d: sampler;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    // Sample at (0.75, 0.75, 0.75). Expected value ~0.797.
+    let v = textureSampleLevel(t3d, s3d, vec3<f32>(0.75, 0.75, 0.75), 0.0).r;
+    // Encode the sampled value as color: bright = sample works, dark = sample broken.
+    // R = v (so we see ~0.8 red), G = 0.2 baseline so non-zero alpha confirms FS ran.
+    return vec4<f32>(v, 0.2, 1.0 - v, 1.0);
+}
+"#;
+
 const SHADER_VEC3_PROBE: &str = r#"
 struct Probe3 {
     a3: vec3<f32>,   // expect (0.1, 0.0, 0.0)
@@ -156,6 +187,7 @@ fn main() {
     let use_uniform = args.iter().any(|a| a == "--uniform");
     let use_vec3_probe = args.iter().any(|a| a == "--vec3-probe");
     let with_depth = args.iter().any(|a| a == "--depth");
+    let use_tex3d = args.iter().any(|a| a == "--tex3d");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -232,14 +264,17 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_vec3_probe {
+    let shader_src = if use_tex3d {
+        SHADER_TEX3D
+    } else if use_vec3_probe {
         SHADER_VEC3_PROBE
     } else if use_uniform {
         SHADER_UNIFORM
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_vec3_probe { "vec3-probe" }
+    let mode_name = if use_tex3d { "tex3d" }
+                   else if use_vec3_probe { "vec3-probe" }
                    else if use_uniform { "uniform" }
                    else { "no-uniform" };
     println!("[smoke] mode: {}", mode_name);
@@ -322,13 +357,106 @@ fn main() {
         (None, None)
     };
 
-    let pipeline_layout = uniform_layout.as_ref().map(|bgl| {
+    // ── 3D texture setup (only used when --tex3d) ────────────────────────
+    // Match bovista's atlas: 16x16x16 R16Float volume with a known
+    // gradient. The shader samples at uv=(0.75, 0.75, 0.75) and decodes
+    // the value to RGB. If the sample returns the expected value, 3D
+    // R16Float texture sampling on this driver works. If it returns 0,
+    // we've found the bug.
+    let (tex3d_layout, tex3d_bg) = if use_tex3d {
+        const N: u32 = 16;
+        // Build a 16³ R16Float volume where v(x,y,z) = (x + y*N + z*N*N) / N³.
+        // At uv=(0.75,0.75,0.75) → voxel (12,12,12) → value = (12 + 12*16 + 12*256)/4096 ≈ 0.797.
+        let total = (N * N * N) as usize;
+        let mut bytes = Vec::with_capacity(total * 2);
+        for z in 0..N { for y in 0..N { for x in 0..N {
+            let v = (x + y * N + z * N * N) as f32 / (N * N * N) as f32;
+            let h = half::f16::from_f32(v).to_bits();
+            bytes.push((h & 0xff) as u8);
+            bytes.push((h >> 8) as u8);
+        }}}
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("smoke-tex3d"),
+            size: wgpu::Extent3d { width: N, height: N, depth_or_array_layers: N },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(N * 2),
+                rows_per_image: Some(N),
+            },
+            wgpu::Extent3d { width: N, height: N, depth_or_array_layers: N },
+        );
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let samp = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("smoke-samp3d"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("smoke-bgl3d"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("smoke-bg3d"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&samp) },
+            ],
+        });
+        (Some(layout), Some(bg))
+    } else {
+        (None, None)
+    };
+
+    let pipeline_layout = if let Some(bgl) = tex3d_layout.as_ref() {
+        Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("smoke-pl"),
+            bind_group_layouts: &[bgl],
+            push_constant_ranges: &[],
+        }))
+    } else { uniform_layout.as_ref().map(|bgl| {
         device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke-pl"),
             bind_group_layouts: &[bgl],
             push_constant_ranges: &[],
         })
-    });
+    })};
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("smoke-pipeline"),
@@ -409,7 +537,9 @@ fn main() {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
-        if let Some(bg) = &uniform_bg {
+        if let Some(bg) = &tex3d_bg {
+            pass.set_bind_group(0, bg, &[]);
+        } else if let Some(bg) = &uniform_bg {
             pass.set_bind_group(0, bg, &[]);
         }
         pass.draw(0..3, 0..1);
