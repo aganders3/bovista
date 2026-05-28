@@ -360,6 +360,7 @@ fn render_one_frame(
         frustum: camera.frustum_planes(),
         projection_mode: camera.projection_mode,
         ortho_height: camera.ortho_height,
+        view_proj: camera.view_projection_matrix(),
     };
     scene.prepare(device, queue, &camera_info);
 

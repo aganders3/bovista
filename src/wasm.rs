@@ -185,6 +185,7 @@ impl JsViewer {
             frustum: self.camera.frustum_planes(),
             projection_mode: self.camera.projection_mode,
             ortho_height: self.camera.ortho_height,
+            view_proj: self.camera.view_projection_matrix(),
         };
         self.scene.prepare(self.renderer.device(), self.renderer.queue(), &camera_info);
 

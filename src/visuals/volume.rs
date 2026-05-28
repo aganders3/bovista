@@ -5,7 +5,30 @@ use crate::visual::{Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
 use crate::visuals::gpu_structs::{VolumeVertex, VolumeUniforms, VTUniforms, VTLodInfo, VT_MAX_LODS};
 use crate::visuals::gpu_structs::TileLoaderFn;
+use bytemuck::{Pod, Zeroable};
 use wgpu::RenderPass;
+
+/// Combined uniform struct for the volume shader.
+///
+/// Workaround for a wgpu-hal-gles bug on NVIDIA's GL 3.30 compat profile
+/// where multiple uniform-buffer bindings in a single shader are silently
+/// aliased to the same GL UBO slot — every block ends up reading the
+/// first-bound buffer's bytes (see memory/wgpu-gles-multi-ubo-bug.md and
+/// `examples/gl_smoke --one-bg-three`). Collapsing camera + vt + vol into
+/// a single uniform buffer sidesteps the bug.
+///
+/// Layout (WGSL std140 / WGSL packing rules — verified equivalent here):
+///   offset 0:   view_proj           (mat4x4<f32>, 64 B)
+///   offset 64:  vt:    VTUniforms   (816 B, 16-aligned)
+///   offset 880: vol:   VolumeUniforms (64 B, 16-aligned)
+///   total: 944 B
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct VolumeAllUniforms {
+    view_proj: [[f32; 4]; 4],
+    vt: VTUniforms,
+    vol: VolumeUniforms,
+}
 
 /// Visual for direct volume rendering via ray marching.
 ///
@@ -15,17 +38,14 @@ use wgpu::RenderPass;
 pub struct VolumeVisual {
     strategy: VirtualTextureData,
 
-    // Colormap LUT (group 2, binding 1) — 256-entry 1D RGBA texture
+    // 256-entry 1D RGBA colormap LUT
     colormap_texture: wgpu::Texture,
-    #[allow(dead_code)]
-    colormap_bind_group_layout: wgpu::BindGroupLayout,
-    vol_bind_group: wgpu::BindGroup,
-    vol_uniform_buffer: wgpu::Buffer,
     pending_colormap: Option<Vec<u8>>,
 
-    // VT bind group (group 1)
-    vt_bind_group: wgpu::BindGroup,
-    vt_uniform_buffer: wgpu::Buffer,
+    // Single bind group containing the combined uniform buffer plus all
+    // textures and samplers (see `VolumeAllUniforms` for rationale).
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
 
     // Box geometry (8 vertices, 36 indices)
     vertex_buffer: wgpu::Buffer,
@@ -88,7 +108,7 @@ impl VolumeVisual {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
-        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        _camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
         loader: TileLoaderFn,
@@ -107,123 +127,17 @@ impl VolumeVisual {
             ..Default::default()
         });
 
-        // ── VT bind group (group 1) ───────────────────────────────────────────
-        let vt_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Volume VT Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D3,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let vt_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Volume VT Uniform Buffer"),
-            size: std::mem::size_of::<VTUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let vt_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Volume VT Bind Group"),
-            layout: &vt_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&strategy.atlas_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&strategy.page_table.texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: vt_uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        // ── Volume bind group (group 2) ───────────────────────────────────────
-        let colormap_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Volume Colormap Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    // Visible to vertex stage too: vs_main uses vol_min/vol_max to position the box.
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D1,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-
-        let vol_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Volume Uniforms Buffer"),
-            size: std::mem::size_of::<VolumeUniforms>() as u64,
+        // ── Single combined bind group (workaround for wgpu-hal-gles
+        //    multi-UBO aliasing on NVIDIA 3.30 compat — see
+        //    memory/wgpu-gles-multi-ubo-bug.md) ────────────────────────────────
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Volume Combined Uniform Buffer"),
+            size: std::mem::size_of::<VolumeAllUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         // Default colormap: grayscale with proportional alpha (matches kiln's grayscale TF).
-        // Color ramps with density so low-density regions are dark gray, high-density
-        // regions are white. Alpha also ramps so background/air stays transparent.
         let colormap_data: Vec<u8> = (0u32..256)
             .flat_map(|i| { let v = i as u8; [v, v, v, v] })
             .collect();
@@ -257,22 +171,80 @@ impl VolumeVisual {
         });
         let colormap_view = colormap_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let vol_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Volume Bind Group"),
-            layout: &colormap_bgl,
+        // Bindings:
+        //   0: uniform buffer (VolumeAllUniforms — camera + vt + vol combined)
+        //   1: atlas 3D texture
+        //   2: atlas sampler
+        //   3: page table 2D-array uint texture
+        //   4: colormap 1D texture
+        //   5: colormap sampler
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Volume Combined Bind Group Layout"),
             entries: &[
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    resource: vol_uniform_buffer.as_entire_binding(),
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&colormap_view),
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&colormap_sampler),
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D1,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Volume Combined Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&strategy.atlas_texture_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&strategy.page_table.texture_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&colormap_view) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&colormap_sampler) },
             ],
         });
 
@@ -302,7 +274,7 @@ impl VolumeVisual {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Volume Pipeline Layout"),
-            bind_group_layouts: &[camera_bind_group_layout, &vt_bgl, &colormap_bgl],
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -329,9 +301,7 @@ impl VolumeVisual {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                // TEMP DIAGNOSTIC: cull disabled to isolate whether HPC GLES
-                // path is rejecting triangles by winding. Was: Some(Face::Front).
-                cull_mode: None,
+                cull_mode: Some(wgpu::Face::Front),  // inward-wound box: cull near faces, render exit faces
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
@@ -339,9 +309,7 @@ impl VolumeVisual {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: false,  // transparent volume; don't occlude other visuals
-                // TEMP DIAGNOSTIC: Always lets every fragment pass the depth
-                // test. Was: LessEqual.
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -357,12 +325,9 @@ impl VolumeVisual {
         Self {
             strategy,
             colormap_texture,
-            colormap_bind_group_layout: colormap_bgl,
-            vol_bind_group,
-            vol_uniform_buffer,
             pending_colormap: None,
-            vt_bind_group,
-            vt_uniform_buffer,
+            bind_group,
+            uniform_buffer,
             vertex_buffer,
             index_buffer,
             render_pipeline,
@@ -527,9 +492,8 @@ impl Visual for VolumeVisual {
             _pad_c: 0,
             lods,
         };
-        queue.write_buffer(&self.vt_uniform_buffer, 0, bytemuck::cast_slice(&[vt_uniforms]));
 
-        // Upload volume uniforms: AABB and voxel dimensions from LOD 0.
+        // Volume uniforms: AABB and voxel dimensions from LOD 0.
         let lod0 = &vt.levels[0];
         let vol_min = [
             lod0.translation.2,
@@ -541,8 +505,6 @@ impl Visual for VolumeVisual {
             vol_min[1] + lod0.volume_size.1 as f32 * lod0.voxel_size.1,
             vol_min[2] + lod0.volume_size.0 as f32 * lod0.voxel_size.0,
         ];
-        // LOD-0 voxel dimensions used by the shader as the base unit; advance is then
-        // scaled up by the actual LOD ratio so step size = relative_step_size voxels at that LOD.
         let lod0_dims = [lod0.volume_size.2, lod0.volume_size.1, lod0.volume_size.0];
         let vol_uniforms = VolumeUniforms {
             vol_min,
@@ -554,13 +516,23 @@ impl Visual for VolumeVisual {
             lod0_dims,
             debug_mode: self.debug_mode,
         };
-        queue.write_buffer(&self.vol_uniform_buffer, 0, bytemuck::cast_slice(&[vol_uniforms]));
+
+        // Single combined write — camera + vt + vol packed into one buffer.
+        let combined = VolumeAllUniforms {
+            view_proj: camera_info.view_proj.to_cols_array_2d(),
+            vt: vt_uniforms,
+            vol: vol_uniforms,
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[combined]));
     }
 
     fn render(&self, render_pass: &mut RenderPass) {
         render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.set_bind_group(1, &self.vt_bind_group, &[]);
-        render_pass.set_bind_group(2, &self.vol_bind_group, &[]);
+        // Single bind group at slot 0 — overrides the renderer's camera bind
+        // group. Combined UBO at binding 0 contains view_proj at offset 0,
+        // so even if a later visual (lines/points/custom) reads view_proj
+        // from slot 0 without re-binding, it gets the right matrix bytes.
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..BOX_INDICES.len() as u32, 0, 0..1);
