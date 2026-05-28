@@ -231,16 +231,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         f32(_ac + _ar) * 0.25 * _pp,
         1.0,
     );
-    // Now add the page table textureLoad using the COMPUTED pt_x, pt_y, lod2.
-    // Same operation as the earlier "yellow" probe but with computed indices
-    // instead of hardcoded (0, 0, 0). Expected:
-    //   entry = 0x01000000 → entry >> 24 = 1 → resident → yellow
-    //   else → red
     let entry = textureLoad(page_table, vec2<i32>(pt_x, pt_y), lod2, 0).x;
     if (entry >> 24u) == 0u {
         return vec4f(1.0, 0.0, 0.0, 1.0);
     }
-    return vec4f(1.0, 1.0, 0.0, 1.0);
+    // Final piece of try_lod: compute atlas (u, v, w) and sample.
+    let slot = entry & 0xFFFFu;
+    let atlas_col   = slot % _ac;
+    let atlas_row   = (slot / _ac) % _ar;
+    let atlas_layer = slot / (_ac * _ar);
+    let u = (f32(atlas_col)   + within_tile.x) * uni.vt.atlas_tile_pitch_x;
+    let v = (f32(atlas_row)   + within_tile.y) * uni.vt.atlas_tile_pitch_y;
+    let w = (f32(atlas_layer) + within_tile.z) * uni.vt.atlas_tile_pitch_z;
+    let sampled = textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r;
+    //   v=1 → bright magenta (1, 0, 1, 1)
+    //   v=0 → dim teal       (0, 0.4, 0.4, 1)
+    return vec4f(sampled, 0.4 - sampled * 0.4, 0.4 + sampled * 0.6, 1.0);
 
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
