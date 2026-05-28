@@ -174,10 +174,15 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // TEMP DIAGNOSTIC: short-circuit the whole fragment shader to a single
+    // solid magenta. If the cube projects magenta on HPC, fragments ARE
+    // being written and the bug is in the raymarch / textureLod / sampling
+    // logic. If we still see only the clear color, the cube isn't
+    // rasterizing at all (some pipeline-state-level rejection).
+    _ = in;
+    return vec4f(1.0, 0.0, 1.0, 1.0);
+
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
-    // Confirms the fragment stage runs at all on the active backend. If you
-    // get all-black with mode 4, the cube bounding box isn't producing
-    // fragments — depth-clip / NDC / pipeline issue.
     if uni.vol.debug_mode == 4u {
         return vec4f(1.0, 0.0, 0.0, 1.0);
     }
