@@ -109,12 +109,49 @@ fn vs_main(@builtin(vertex_index) vi: u32, in: VertexInput) -> VertexOutput {
     // VolumeUniforms (vol_min/vol_max) or CameraUniforms (view_proj).
     // Winding (CW from outside) chosen so cull_mode=Front doesn't drop it.
     if vol.debug_mode == 6u {
+        // CW-from-outside in WGSL space.
         var pos = array<vec2f, 3>(
             vec2f(-1.0, -1.0),
             vec2f(-1.0,  3.0),
             vec2f( 3.0, -1.0),
         );
         let xy = pos[vi % 3u];
+        out.clip_position = vec4f(xy, 0.5, 1.0);
+        out.world_pos = vec3f(0.0);
+        return out;
+    }
+    // ── Debug mode 7: opposite winding ──────────────────────────────────────
+    // If mode 6 fails on GLES but mode 7 renders, the front_face / cull
+    // inversion that wgpu-hal-gles does to compensate for naga's Y-flip is
+    // mis-targeted on this driver.
+    if vol.debug_mode == 7u {
+        // CCW-from-outside in WGSL space.
+        var pos = array<vec2f, 3>(
+            vec2f(-1.0, -1.0),
+            vec2f( 3.0, -1.0),
+            vec2f(-1.0,  3.0),
+        );
+        let xy = pos[vi % 3u];
+        out.clip_position = vec4f(xy, 0.5, 1.0);
+        out.world_pos = vec3f(0.0);
+        return out;
+    }
+    // ── Debug mode 8: both windings overlapping ────────────────────────────
+    // Vertices 0..2 are CW, 3..5 are CCW. Whichever direction is culled,
+    // the other should survive. If both are culled, the cull state itself
+    // is in a broken setting that drops all triangles regardless of winding.
+    if vol.debug_mode == 8u {
+        var pos = array<vec2f, 6>(
+            // CW from outside
+            vec2f(-1.0, -1.0),
+            vec2f(-1.0,  3.0),
+            vec2f( 3.0, -1.0),
+            // CCW from outside
+            vec2f(-1.0, -1.0),
+            vec2f( 3.0, -1.0),
+            vec2f(-1.0,  3.0),
+        );
+        let xy = pos[vi % 6u];
         out.clip_position = vec4f(xy, 0.5, 1.0);
         out.world_pos = vec3f(0.0);
         return out;
@@ -216,6 +253,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // broken on this driver, not the shader uniforms.
     if vol.debug_mode == 6u {
         return vec4f(0.0, 1.0, 0.0, 1.0);
+    }
+    if vol.debug_mode == 7u {
+        return vec4f(1.0, 1.0, 0.0, 1.0);  // yellow
+    }
+    if vol.debug_mode == 8u {
+        return vec4f(0.0, 1.0, 1.0, 1.0);  // cyan
     }
 
     let ray_origin = vol.camera_pos;
