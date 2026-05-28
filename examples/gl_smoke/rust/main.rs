@@ -81,6 +81,71 @@ fn fs_main() -> @location(0) vec4<f32> {
 }
 "#;
 
+// Same shape as bovista's VolumeUniforms: many vec3<T> + scalar pairs that
+// pack in WGSL (16 bytes per pair) but DON'T pack in std140 (32 bytes per
+// pair). The Rust side writes WGSL-packed bytes. If naga emits std140 GLSL
+// without inserting compensating padding, the shader reads each scalar from
+// the wrong offset.
+//
+// Expected: color = (0.1, 0.3, 0.9) blue-purple if all reads land correctly.
+// If any field reads garbage, the color shifts visibly.
+const SHADER_VEC3_PROBE: &str = r#"
+struct Probe3 {
+    a3: vec3<f32>,   // expect (0.1, 0.0, 0.0)
+    s1: f32,         // expect 0.3            (packs in WGSL, offset 12)
+    b3: vec3<f32>,   // expect (0.0, 0.9, 0.0)
+    s2: f32,         // expect 1.0            (packs in WGSL, offset 28)
+    c3: vec3<u32>,   // expect (0xCAFEu, 0u, 0u)
+    s3: u32,         // expect 0xBABEu        (packs in WGSL, offset 44)
+};
+@group(0) @binding(0) var<uniform> p: Probe3;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    // Each field that reads correctly contributes its expected component.
+    // If a scalar lands at the wrong offset (std140 layout), it reads as 0
+    // and the color channel goes missing. The two integer probes gate red
+    // and alpha; if they're 0xCAFE / 0xBABE the corresponding output stays
+    // bright. Mac (Metal) reference is bright bluish-purple with full alpha.
+    var r: f32 = 0.0;
+    var g: f32 = 0.0;
+    var b: f32 = 0.0;
+    var a: f32 = 0.0;
+
+    // a3.x must be 0.1 (the only red contributor)
+    r = p.a3.x;
+    // s1 must be 0.3 (offset 12: packed)
+    r = r + p.s1;
+    // b3.y must be 0.9 (the only green contributor)
+    g = p.b3.y;
+    // s2 must be 1.0 (offset 28: packed)
+    b = p.s2 * 0.9;
+    // Integer field reads on the alpha + a tiny red bump
+    if p.c3.x == 0xCAFEu {
+        a = a + 0.5;
+    }
+    if p.s3 == 0xBABEu {
+        a = a + 0.5;
+    }
+
+    return vec4<f32>(r, g, b, a);
+}
+"#;
+
 fn main() {
     env_logger::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -89,6 +154,7 @@ fn main() {
     let backend_str = flag(&args, "--backend").unwrap_or_else(|| "auto".to_string());
     let clear_hex = flag(&args, "--clear").unwrap_or_else(|| "ff0000ff".to_string());
     let use_uniform = args.iter().any(|a| a == "--uniform");
+    let use_vec3_probe = args.iter().any(|a| a == "--vec3-probe");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -150,8 +216,18 @@ fn main() {
     });
     let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let shader_src = if use_uniform { SHADER_UNIFORM } else { SHADER_NO_UNIFORM };
-    println!("[smoke] mode: {}", if use_uniform { "uniform" } else { "no-uniform" });
+    let shader_src = if use_vec3_probe {
+        SHADER_VEC3_PROBE
+    } else if use_uniform {
+        SHADER_UNIFORM
+    } else {
+        SHADER_NO_UNIFORM
+    };
+    let mode_name = if use_vec3_probe { "vec3-probe" }
+                   else if use_uniform { "uniform" }
+                   else { "no-uniform" };
+    println!("[smoke] mode: {}", mode_name);
+    let needs_uniform = use_uniform || use_vec3_probe;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("smoke-shader"),
         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
@@ -169,14 +245,44 @@ fn main() {
     let probe = Probe { color: [1.0, 0.0, 1.0, 1.0], flags: [0xDEADBEEFu32, 0, 0, 0] };
     let probe_bytes: [u8; 32] = unsafe { std::mem::transmute(probe) };
 
-    let (uniform_layout, uniform_bg) = if use_uniform {
+    // Probe3 layout — WGSL packing:
+    //   offset 0:  a3.x a3.y a3.z   s1     (16 bytes; vec3+f32 packed)
+    //   offset 16: b3.x b3.y b3.z   s2     (16 bytes; vec3+f32 packed)
+    //   offset 32: c3.x c3.y c3.z   s3     (16 bytes; vec3<u32>+u32 packed)
+    // Total 48 bytes.
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct Probe3Bytes {
+        a3: [f32; 3],
+        s1: f32,
+        b3: [f32; 3],
+        s2: f32,
+        c3: [u32; 3],
+        s3: u32,
+    }
+    let probe3 = Probe3Bytes {
+        a3: [0.1, 0.0, 0.0],
+        s1: 0.3,
+        b3: [0.0, 0.9, 0.0],
+        s2: 1.0,
+        c3: [0xCAFEu32, 0, 0],
+        s3: 0xBABEu32,
+    };
+    let probe3_bytes: [u8; 48] = unsafe { std::mem::transmute(probe3) };
+
+    let (uniform_layout, uniform_bg) = if needs_uniform {
+        let (size, bytes): (u64, &[u8]) = if use_vec3_probe {
+            (48, &probe3_bytes)
+        } else {
+            (32, &probe_bytes)
+        };
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("smoke-uniform"),
-            size: 32,
+            size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(&buf, 0, &probe_bytes);
+        queue.write_buffer(&buf, 0, bytes);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("smoke-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
