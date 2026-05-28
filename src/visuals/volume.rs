@@ -329,7 +329,9 @@ impl VolumeVisual {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Front),  // inward-wound box: near faces appear front-facing, cull them to render far/exit faces only
+                // TEMP DIAGNOSTIC: cull disabled to isolate whether HPC GLES
+                // path is rejecting triangles by winding. Was: Some(Face::Front).
+                cull_mode: None,
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
@@ -337,7 +339,9 @@ impl VolumeVisual {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: false,  // transparent volume; don't occlude other visuals
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                // TEMP DIAGNOSTIC: Always lets every fragment pass the depth
+                // test. Was: LessEqual.
+                depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
