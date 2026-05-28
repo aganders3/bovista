@@ -174,13 +174,28 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // TEMP DIAGNOSTIC: short-circuit the whole fragment shader to a single
-    // solid magenta. If the cube projects magenta on HPC, fragments ARE
-    // being written and the bug is in the raymarch / textureLod / sampling
-    // logic. If we still see only the clear color, the cube isn't
-    // rasterizing at all (some pipeline-state-level rejection).
-    _ = in;
-    return vec4f(1.0, 0.0, 1.0, 1.0);
+    // TEMP DIAGNOSTIC: short-circuit fs_main to do JUST the AABB slab test
+    // and return a color based on the outcome (no discard, no raymarch).
+    //   blue   → slab test passed (ray enters the volume box)
+    //   red    → slab test failed (ray misses)
+    // On Mac we'd see blue where the cube projects and red elsewhere on
+    // top of any clear color. If HPC shows all-red, the FS-side uniform
+    // reads (vol_min, vol_max, camera_pos) are wrong despite working in
+    // VS. If HPC shows blue inside the cube silhouette, the slab test is
+    // fine and the bug is further downstream in the raymarch.
+    let _ro = uni.vol.camera_pos;
+    let _rd = normalize(in.world_pos - uni.vol.camera_pos);
+    let _id = 1.0 / _rd;
+    let _tmn = (uni.vol.vol_min - _ro) * _id;
+    let _tmx = (uni.vol.vol_max - _ro) * _id;
+    let _t1 = min(_tmn, _tmx);
+    let _t2 = max(_tmn, _tmx);
+    let _te = max(max(_t1.x, _t1.y), _t1.z);
+    let _tx = min(min(_t2.x, _t2.y), _t2.z);
+    if _tx <= max(_te, 0.0) {
+        return vec4f(1.0, 0.0, 0.0, 1.0);
+    }
+    return vec4f(0.0, 0.5, 1.0, 1.0);
 
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
