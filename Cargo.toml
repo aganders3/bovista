@@ -71,3 +71,8 @@ required-features = []
 name = "headless_render"
 path = "examples/headless_render/rust/main.rs"
 required-features = []
+
+[[example]]
+name = "gl_smoke"
+path = "examples/gl_smoke/rust/main.rs"
+required-features = []
