@@ -199,19 +199,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if _tx <= max(_te, 0.0) {
         return vec4f(0.0, 0.0, 0.0, 1.0);
     }
-    // Atlas and page-table primitives both confirmed on HPC. Now run
-    // try_lod() at lod=0, vol_uv=(0.5, 0.5, 0.5) — exercises the full
-    // sample_vvt sub-path: vt.lods[i] array element reads, coord math,
-    // textureLoad + textureSampleLevel together.
-    let r = try_lod(vec3f(0.5, 0.5, 0.5), 0);
-    // r.x = sampled value, r.y = lod (-1 if not resident).
-    if r.y < 0.0 {
-        return vec4f(1.0, 0.0, 0.0, 1.0);   // red: not resident
+    // Inlined try_lod body. If the previous probe (function call form)
+    // fails on HPC but this works, the GLSL function call is the bug.
+    let vol_uv2 = vec3f(0.5, 0.5, 0.5);
+    let lod2: i32 = 0;
+    let grid = uni.vt.lods[lod2].grid_dims;
+    let vol_in_tiles = min(vol_uv2 / uni.vt.lods[lod2].tile_scale, vec3f(grid) - vec3f(1e-5));
+    let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
+    let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
+    let pt_x = i32(linear % uni.vt.page_table_width);
+    let pt_y = i32(linear / uni.vt.page_table_width);
+    let entry = textureLoad(page_table, vec2<i32>(pt_x, pt_y), lod2, 0).x;
+    if (entry >> 24u) == 0u {
+        return vec4f(1.0, 0.0, 0.0, 1.0);
     }
-    // resident: encode sampled value
-    //   v=0 → dim teal       (0.0, 0.4, 0.4, 1.0)
-    //   v=1 → bright magenta (1.0, 0.0, 1.0, 1.0)
-    return vec4f(r.x, 0.4 - r.x * 0.4, 0.4 + r.x * 0.6, 1.0);
+    let slot = entry & 0xFFFFu;
+    let atlas_col   = slot % uni.vt.atlas_cols;
+    let atlas_row   = (slot / uni.vt.atlas_cols) % uni.vt.atlas_rows;
+    let atlas_layer = slot / (uni.vt.atlas_cols * uni.vt.atlas_rows);
+    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * uni.vt.lods[lod2].data_scale;
+    let u = (f32(atlas_col)   + within_tile.x) * uni.vt.atlas_tile_pitch_x;
+    let v = (f32(atlas_row)   + within_tile.y) * uni.vt.atlas_tile_pitch_y;
+    let w = (f32(atlas_layer) + within_tile.z) * uni.vt.atlas_tile_pitch_z;
+    let sampled = textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r;
+    return vec4f(sampled, 0.4 - sampled * 0.4, 0.4 + sampled * 0.6, 1.0);
 
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
