@@ -199,13 +199,38 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if _tx <= max(_te, 0.0) {
         return vec4f(0.0, 0.0, 0.0, 1.0);
     }
-    // Read ONLY uni.vt.lods[0].grid_dims (uvec3, the first field of the
-    // nested array element) and encode it. Our test has grid_dims = (1, 1, 1).
-    //   expected = (0.25, 0.25, 0.25, 1.0)  → uniform light grey
-    //   black                                → read returned 0
-    //   anything else                        → some other bug
-    let gd = uni.vt.lods[0].grid_dims;
-    return vec4f(f32(gd.x) * 0.25, f32(gd.y) * 0.25, f32(gd.z) * 0.25, 1.0);
+    // All uniform reads + integer math from try_lod, but NO textures.
+    // For our test: grid=(1,1,1), tile_scale=(1,1,1), data_scale≈(1,1,1),
+    // page_table_width=1, atlas_cols=1, atlas_rows=1, atlas_tile_pitch=(1,1,1).
+    //   tc = (0,0,0), linear = 0, pt_x = pt_y = 0,
+    //   within_tile ≈ (0.498, 0.498, 0.498), u=v=w ≈ 0.498.
+    //
+    // Output channel encoding (all in [0, 1]):
+    //   r = (within_tile.x)       (~0.498)
+    //   g = (linear)              (0.0, scaled)
+    //   b = (page_table_width)    (1.0, scaled)
+    //   a = 1.0
+    // Expected on Mac (and HPC if math works): linear ≈ (0.50, 0.0, 0.50, 1.0)
+    // = dim red-purple.
+    let vol_uv2 = vec3f(0.5, 0.5, 0.5);
+    let lod2: i32 = 0;
+    let grid = uni.vt.lods[lod2].grid_dims;
+    let vol_in_tiles = min(vol_uv2 / uni.vt.lods[lod2].tile_scale, vec3f(grid) - vec3f(1e-5));
+    let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
+    let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
+    let pt_x = i32(linear % uni.vt.page_table_width);
+    let pt_y = i32(linear / uni.vt.page_table_width);
+    let _ds = uni.vt.lods[lod2].data_scale;
+    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * _ds;
+    let _ac = uni.vt.atlas_cols;
+    let _ar = uni.vt.atlas_rows;
+    let _pp = uni.vt.atlas_tile_pitch_x;
+    return vec4f(
+        within_tile.x,
+        f32(pt_x) * 0.5 + f32(linear) * 0.25,
+        f32(_ac + _ar) * 0.25 * _pp,
+        1.0,
+    );
 
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
