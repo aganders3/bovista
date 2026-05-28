@@ -101,6 +101,58 @@ fn fs_main() -> @location(0) vec4<f32> {
 // bind group at separate binding slots. If --three-bgs salmoned on HPC
 // because wgpu-hal-gles drops bind groups 1 and 2 silently, this should
 // come back mid-gray (the expected color when all three reads work).
+// VBO + big-struct probe: like --big-struct, but the VS reads vol_min /
+// vol_max / view_proj from the UBO and uses them to transform a vertex-buffer
+// position into clip space. Mirrors volume.rs's vs_main exactly.
+//
+// view_proj is identity, vol_min = (-0.9, -0.7, 0.4), vol_max = (0.9, 0.7, 0.6).
+// Three vertices (unit positions 0/1 on each axis) cover most of NDC.
+// Fragment returns the same channel-encoded reads as --big-struct.
+const SHADER_VBO_BIG: &str = r#"
+struct BigSub {
+    a: vec3<f32>, _p1: f32,
+    b: vec3<f32>, _p2: f32,
+    c: vec3<f32>, _p3: f32,
+}
+struct BigInnerVt {
+    u0: u32, u1: u32, f0: f32, f1: f32, f2: f32, u2: u32,
+    f3: f32, f4: f32, u3: u32, u4: u32, u5: u32, u6: u32,
+    lods: array<BigSub, 16>,
+}
+struct BigInnerVol {
+    vol_min: vec3<f32>, rss: f32,
+    vol_max: vec3<f32>, density: f32,
+    cpos: vec3<f32>, early: f32,
+    dims: vec3<u32>, debug_mode: u32,
+}
+struct BigAll {
+    view_proj: mat4x4<f32>,
+    vt: BigInnerVt,
+    vol: BigInnerVol,
+}
+@group(0) @binding(0) var<uniform> big: BigAll;
+
+struct VertexInput { @location(0) position: vec3<f32> };
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(in: VertexInput) -> VsOut {
+    var out: VsOut;
+    let world = big.vol.vol_min + in.position * (big.vol.vol_max - big.vol.vol_min);
+    out.pos = big.view_proj * vec4<f32>(world, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    var r = 0.0;
+    if big.vol.debug_mode == 0xCAFEu { r = 0.5; }
+    let g = big.vt.lods[5].b.y;
+    let b = big.vol.vol_max.z;
+    return vec4<f32>(r, g, b, 1.0);
+}
+"#;
+
 // Big-struct probe: replicates bovista's VolumeAllUniforms layout
 // (cross-stage + nested vt with array<Sub,16> + nested vol). Fragment
 // outputs (read-OK indicators) per channel.
@@ -425,6 +477,7 @@ fn main() {
     let use_two_tex = args.iter().any(|a| a == "--two-tex");
     let use_cross_stage = args.iter().any(|a| a == "--cross-stage");
     let use_big_struct = args.iter().any(|a| a == "--big-struct");
+    let use_vbo_big = args.iter().any(|a| a == "--vbo-big");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -501,7 +554,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_big_struct {
+    let shader_src = if use_vbo_big {
+        SHADER_VBO_BIG
+    } else if use_big_struct {
         SHADER_BIG_STRUCT
     } else if use_cross_stage {
         SHADER_CROSS_STAGE
@@ -522,7 +577,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_big_struct { "big-struct" }
+    let mode_name = if use_vbo_big { "vbo-big" }
+                   else if use_big_struct { "big-struct" }
                    else if use_cross_stage { "cross-stage" }
                    else if use_two_tex { "two-tex" }
                    else if use_one_bg_three { "one-bg-three" }
@@ -533,9 +589,8 @@ fn main() {
                    else if use_uniform { "uniform" }
                    else { "no-uniform" };
     println!("[smoke] mode: {}", mode_name);
-    let needs_uniform = use_uniform || use_vec3_probe || use_cross_stage || use_big_struct;
-    // Cross-stage and big-struct use VERTEX | FRAGMENT visibility.
-    let uniform_visibility = if use_cross_stage || use_big_struct {
+    let needs_uniform = use_uniform || use_vec3_probe || use_cross_stage || use_big_struct || use_vbo_big;
+    let uniform_visibility = if use_cross_stage || use_big_struct || use_vbo_big {
         wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
     } else {
         wgpu::ShaderStages::FRAGMENT
@@ -631,6 +686,14 @@ fn main() {
         c: [0.0; 3], _p3: 0.0,
     }; 16];
     big_lods[5].b[1] = 0.7;  // tile_scale.y at index 5
+    // For --vbo-big, set vol_min/vol_max so a unit-cube vertex buffer ends up
+    // in NDC range with view_proj = identity. Keeps vol_max.z = 0.9 which the
+    // fragment shader reads as the blue channel.
+    let (vol_min, vol_max) = if use_vbo_big {
+        ([-0.9_f32, -0.7, 0.4], [0.9_f32, 0.7, 0.9])
+    } else {
+        ([0.0_f32, 0.0, 0.0], [0.0_f32, 0.0, 0.9])
+    };
     let big = BigAll {
         view_proj: [[1.0, 0.0, 0.0, 0.0],
                     [0.0, 1.0, 0.0, 0.0],
@@ -642,8 +705,8 @@ fn main() {
             lods: big_lods,
         },
         vol: BigInnerVol {
-            vol_min: [0.0, 0.0, 0.0], rss: 0.0,
-            vol_max: [0.0, 0.0, 0.9], density: 0.0,
+            vol_min, rss: 0.0,
+            vol_max, density: 0.0,
             cpos: [0.0; 3], early: 0.0,
             dims: [0; 3], debug_mode: 0xCAFE,
         },
@@ -651,7 +714,7 @@ fn main() {
     let big_bytes: [u8; 944] = unsafe { std::mem::transmute(big) };
 
     let (uniform_layout, uniform_bg) = if needs_uniform {
-        let (size, bytes): (u64, &[u8]) = if use_big_struct {
+        let (size, bytes): (u64, &[u8]) = if use_big_struct || use_vbo_big {
             (944, &big_bytes)
         } else if use_vec3_probe {
             (48, &probe3_bytes)
@@ -1057,13 +1120,39 @@ fn main() {
         })
     })};
 
+    // VBO setup for --vbo-big: 3 cube-like vertices forming a triangle
+    // spanning most of the NDC region given the vol_min/vol_max we set above.
+    let vbo_data: [f32; 9] = [
+        0.0, 0.0, 0.5,  // → world (-0.9, -0.7, 0.65)
+        1.0, 0.0, 0.5,  // → world ( 0.9, -0.7, 0.65)
+        0.5, 1.0, 0.5,  // → world ( 0.0,  0.7, 0.65)
+    ];
+    let vbo = use_vbo_big.then(|| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("smoke-vbo"),
+            size: std::mem::size_of_val(&vbo_data) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    });
+    if let Some(b) = &vbo {
+        queue.write_buffer(b, 0, unsafe {
+            std::slice::from_raw_parts(vbo_data.as_ptr() as *const u8, std::mem::size_of_val(&vbo_data))
+        });
+    }
+    let vbo_layout = use_vbo_big.then(|| wgpu::VertexBufferLayout {
+        array_stride: 12,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 }],
+    });
+
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("smoke-pipeline"),
         layout: pipeline_layout.as_ref(),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[],
+            buffers: if let Some(l) = vbo_layout.as_ref() { std::slice::from_ref(l) } else { &[] },
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -1136,6 +1225,9 @@ fn main() {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
+        if let Some(b) = &vbo {
+            pass.set_vertex_buffer(0, b.slice(..));
+        }
         if let Some((_, bg)) = &two_tex {
             pass.set_bind_group(0, bg, &[]);
         } else if let Some((_, bg)) = &one_bg_three {
