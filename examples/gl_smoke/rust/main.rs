@@ -92,6 +92,39 @@ fn fs_main() -> @location(0) vec4<f32> {
 // 3D R16Float texture sample probe. Reads voxel (12,12,12) — known value ≈ 0.797.
 // If the sampled value is non-zero (gives bright purple-ish), 3D R16Float
 // sampling works. If sample returns 0 (black/clear), it's broken.
+// 2D-array R32Uint textureLoad probe (matches bovista's page_table sampling).
+// Loads texel (layer=2, y=2, x=3) — known value 0xCAFEBABE. If the load works,
+// outputs bright magenta; if it returns 0, outputs dim teal.
+const SHADER_TEX2DA_UINT: &str = r#"
+@group(0) @binding(0) var pt: texture_2d_array<u32>;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    let v = textureLoad(pt, vec2<i32>(3, 2), 2, 0).r;
+    if v == 0xCAFEBABEu {
+        return vec4<f32>(1.0, 0.0, 1.0, 1.0);  // magenta = read OK
+    }
+    // Encode the actual value modulo 256 into a channel so we can see what
+    // came back instead.
+    let lo = f32(v & 0xffu) / 255.0;
+    return vec4<f32>(0.0, lo + 0.2, 0.5, 1.0);
+}
+"#;
+
 const SHADER_TEX3D: &str = r#"
 @group(0) @binding(0) var t3d: texture_3d<f32>;
 @group(0) @binding(1) var s3d: sampler;
@@ -188,6 +221,7 @@ fn main() {
     let use_vec3_probe = args.iter().any(|a| a == "--vec3-probe");
     let with_depth = args.iter().any(|a| a == "--depth");
     let use_tex3d = args.iter().any(|a| a == "--tex3d");
+    let use_tex2da_uint = args.iter().any(|a| a == "--tex2da-uint");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -264,7 +298,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_tex3d {
+    let shader_src = if use_tex2da_uint {
+        SHADER_TEX2DA_UINT
+    } else if use_tex3d {
         SHADER_TEX3D
     } else if use_vec3_probe {
         SHADER_VEC3_PROBE
@@ -273,7 +309,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_tex3d { "tex3d" }
+    let mode_name = if use_tex2da_uint { "tex2da-uint" }
+                   else if use_tex3d { "tex3d" }
                    else if use_vec3_probe { "vec3-probe" }
                    else if use_uniform { "uniform" }
                    else { "no-uniform" };
@@ -444,7 +481,78 @@ fn main() {
         (None, None)
     };
 
-    let pipeline_layout = if let Some(bgl) = tex3d_layout.as_ref() {
+    // ── 2D-array R32Uint integer texture probe (matches bovista's page_table) ──
+    // 4 layers, each 4×4. Texel at (layer=2, x=3, y=2) is set to 0xCAFEBABE.
+    // The shader textureLoad's that location and returns bright if it reads
+    // 0xCAFEBABE, dark otherwise.
+    let (tex2da_uint_layout, tex2da_uint_bg) = if use_tex2da_uint {
+        const W: u32 = 4;
+        const H: u32 = 4;
+        const LAYERS: u32 = 4;
+        let total = (W * H * LAYERS) as usize;
+        let mut data = vec![0u32; total];
+        // Place a known marker at layer=2, y=2, x=3 (linear index = 2*16 + 2*4 + 3 = 43).
+        data[(2 * W * H + 2 * W + 3) as usize] = 0xCAFEBABEu32;
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("smoke-tex2da-uint"),
+            size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: LAYERS },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck_u32_to_bytes(&data),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(W * 4),
+                rows_per_image: Some(H),
+            },
+            wgpu::Extent3d { width: W, height: H, depth_or_array_layers: LAYERS },
+        );
+        let view = tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("smoke-bgl-2da-uint"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("smoke-bg-2da-uint"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+        (Some(layout), Some(bg))
+    } else { (None, None) };
+
+    let pipeline_layout = if let Some(bgl) = tex2da_uint_layout.as_ref() {
+        Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("smoke-pl"),
+            bind_group_layouts: &[bgl],
+            push_constant_ranges: &[],
+        }))
+    } else if let Some(bgl) = tex3d_layout.as_ref() {
         Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke-pl"),
             bind_group_layouts: &[bgl],
@@ -537,7 +645,9 @@ fn main() {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
-        if let Some(bg) = &tex3d_bg {
+        if let Some(bg) = &tex2da_uint_bg {
+            pass.set_bind_group(0, bg, &[]);
+        } else if let Some(bg) = &tex3d_bg {
             pass.set_bind_group(0, bg, &[]);
         } else if let Some(bg) = &uniform_bg {
             pass.set_bind_group(0, bg, &[]);
@@ -608,6 +718,10 @@ fn parse_clear(hex: &str) -> wgpu::Color {
     } else {
         wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }
     }
+}
+
+fn bytemuck_u32_to_bytes(data: &[u32]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
