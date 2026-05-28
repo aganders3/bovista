@@ -211,7 +211,11 @@ impl VolumeVisual {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
+                        // Rgba8Unorm packing for the page table (was R32Uint).
+                        // See page_table.rs for the rationale (NVIDIA Cg-compiler
+                        // bug on GL 3.30 compat profile when usampler* and
+                        // sampler* coexist in one fragment shader).
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
@@ -292,10 +296,7 @@ impl VolumeVisual {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
-                    // TEMP DIAGNOSTIC: blend disabled to test whether
-                    // PREMULTIPLIED_ALPHA_BLENDING is what's killing the HPC GL
-                    // path. Was: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING).
-                    blend: None,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -526,22 +527,6 @@ impl Visual for VolumeVisual {
             vt: vt_uniforms,
             vol: vol_uniforms,
         };
-        // ── one-shot layout diagnostic ─────────────────────────────────────
-        // Logs Rust offsets/sizes for the combined struct on the first prepare
-        // so we can compare against what naga emits in GLSL. Remove once the
-        // HPC GL path is confirmed working.
-        if self.frame_number == 1 {
-            let base = &combined as *const VolumeAllUniforms as usize;
-            let off = |p: usize| p - base;
-            eprintln!("[volume layout] size_of VolumeAllUniforms = {}", std::mem::size_of::<VolumeAllUniforms>());
-            eprintln!("[volume layout]   view_proj  offset = {}", off(&combined.view_proj as *const _ as usize));
-            eprintln!("[volume layout]   vt         offset = {} (size = {})", off(&combined.vt as *const _ as usize), std::mem::size_of::<VTUniforms>());
-            eprintln!("[volume layout]     vt.lods         offset = {}", off(&combined.vt.lods as *const _ as usize));
-            eprintln!("[volume layout]   vol        offset = {} (size = {})", off(&combined.vol as *const _ as usize), std::mem::size_of::<VolumeUniforms>());
-            eprintln!("[volume layout]     vol.debug_mode  offset = {}", off(&combined.vol.debug_mode as *const _ as usize));
-            eprintln!("[volume layout]   vol_min={:?} vol_max={:?} debug_mode={}",
-                      combined.vol.vol_min, combined.vol.vol_max, combined.vol.debug_mode);
-        }
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[combined]));
     }
 

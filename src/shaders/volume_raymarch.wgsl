@@ -80,7 +80,10 @@ struct VolumeAllUniforms {
 @group(0) @binding(0) var<uniform> uni: VolumeAllUniforms;
 @group(0) @binding(1) var atlas: texture_3d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
-@group(0) @binding(3) var page_table: texture_2d_array<u32>;
+// page_table is Rgba8Unorm (was R32Uint) so we can read it via plain
+// textureLoad without `usampler*`. See page_table.rs for the rationale.
+// Each texel is [slot_lo, slot_hi, resident_byte, 0] in normalized 0..1.
+@group(0) @binding(3) var page_table: texture_2d_array<f32>;
 @group(0) @binding(4) var colormap: texture_1d<f32>;
 @group(0) @binding(5) var colormap_sampler: sampler;
 
@@ -98,12 +101,43 @@ struct VertexOutput {
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    // TEMP DIAGNOSTIC: debug-mode early-return branches removed to test
-    // whether the if-return-if-return-if-return pattern in VS interacts
-    // badly with the volume's UBO reads on the HPC GL 3.30 path. Mac
-    // doesn't need this path. (mode 6/7/8 probes will no longer work
-    // while this is in place.)
-    _ = vi;
+    // ── Debug mode 6: fullscreen-triangle probe ──────────────────────────────
+    if uni.vol.debug_mode == 6u {
+        var pos = array<vec2f, 3>(
+            vec2f(-1.0, -1.0),
+            vec2f(-1.0,  3.0),
+            vec2f( 3.0, -1.0),
+        );
+        let xy = pos[vi % 3u];
+        out.clip_position = vec4f(xy, 0.5, 1.0);
+        out.world_pos = vec3f(0.0);
+        return out;
+    }
+    if uni.vol.debug_mode == 7u {
+        var pos = array<vec2f, 3>(
+            vec2f(-1.0, -1.0),
+            vec2f( 3.0, -1.0),
+            vec2f(-1.0,  3.0),
+        );
+        let xy = pos[vi % 3u];
+        out.clip_position = vec4f(xy, 0.5, 1.0);
+        out.world_pos = vec3f(0.0);
+        return out;
+    }
+    if uni.vol.debug_mode == 8u {
+        var pos = array<vec2f, 6>(
+            vec2f(-1.0, -1.0),
+            vec2f(-1.0,  3.0),
+            vec2f( 3.0, -1.0),
+            vec2f(-1.0, -1.0),
+            vec2f( 3.0, -1.0),
+            vec2f(-1.0,  3.0),
+        );
+        let xy = pos[vi % 6u];
+        out.clip_position = vec4f(xy, 0.5, 1.0);
+        out.world_pos = vec3f(0.0);
+        return out;
+    }
     let world = uni.vol.vol_min + in.position * (uni.vol.vol_max - uni.vol.vol_min);
     out.clip_position = uni.view_proj * vec4f(world, 1.0);
     out.world_pos = world;
@@ -136,11 +170,10 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
     let pt_x = i32(linear % uni.vt.page_table_width);
     let pt_y = i32(linear / uni.vt.page_table_width);
-    let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
-
-    if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
-
-    let slot        = entry & 0xFFFFu;
+    // page_table is Rgba8Unorm: [slot_lo/255, slot_hi/255, resident/255, 0].
+    let pt = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0);
+    if pt.b < 0.5 { return vec2f(0.0, -1.0); }
+    let slot = u32(pt.r * 255.0 + 0.5) | (u32(pt.g * 255.0 + 0.5) << 8u);
     let atlas_col   = slot % uni.vt.atlas_cols;
     let atlas_row   = (slot / uni.vt.atlas_cols) % uni.vt.atlas_rows;
     let atlas_layer = slot / (uni.vt.atlas_cols * uni.vt.atlas_rows);
@@ -174,44 +207,6 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // TEMP DIAGNOSTIC: short-circuit fs_main to do JUST the AABB slab test
-    // and return a color based on the outcome (no discard, no raymarch).
-    //   blue   → slab test passed (ray enters the volume box)
-    //   red    → slab test failed (ray misses)
-    // On Mac we'd see blue where the cube projects and red elsewhere on
-    // top of any clear color. If HPC shows all-red, the FS-side uniform
-    // reads (vol_min, vol_max, camera_pos) are wrong despite working in
-    // VS. If HPC shows blue inside the cube silhouette, the slab test is
-    // fine and the bug is further downstream in the raymarch.
-    // Same slab test (known to work). On success, sample the atlas DIRECTLY
-    // at uv=(0.5, 0.5, 0.5) — bypass the page table. If atlas sampling works,
-    // the synthetic 128³ cube data has v ≈ 1.0 at center → returns red. If
-    // sampling fails, we get black (or transparent).
-    let _ro = uni.vol.camera_pos;
-    let _rd = normalize(in.world_pos - uni.vol.camera_pos);
-    let _id = 1.0 / _rd;
-    let _tmn = (uni.vol.vol_min - _ro) * _id;
-    let _tmx = (uni.vol.vol_max - _ro) * _id;
-    let _t1 = min(_tmn, _tmx);
-    let _t2 = max(_tmn, _tmx);
-    let _te = max(max(_t1.x, _t1.y), _t1.z);
-    let _tx = min(min(_t2.x, _t2.y), _t2.z);
-    if _tx <= max(_te, 0.0) {
-        return vec4f(0.0, 0.0, 0.0, 1.0);
-    }
-    // Minimal repro: two independent texture ops with hardcoded coords.
-    // No uniform reads, no math, no conditional flow. If THIS still cyan-clears,
-    // having both texture-op types in one shader is the bug.
-    let sampled = textureSampleLevel(atlas, atlas_sampler, vec3f(0.5, 0.5, 0.5), 0.0).r;
-    let entry   = textureLoad(page_table, vec2<i32>(0, 0), 0, 0).x;
-    // Encode: R = atlas sample, G = page-table low byte, B = resident bit, A = 1.
-    return vec4f(
-        sampled,
-        f32(entry & 0xFFu) / 255.0,
-        f32((entry >> 24u) & 1u),
-        1.0,
-    );
-
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
         return vec4f(1.0, 0.0, 0.0, 1.0);

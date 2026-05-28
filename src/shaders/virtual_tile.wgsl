@@ -29,8 +29,9 @@ var atlas: texture_3d<f32>;
 @group(1) @binding(1)
 var atlas_sampler: sampler;
 
+// page_table is Rgba8Unorm (was R32Uint). See src/visuals/page_table.rs.
 @group(1) @binding(2)
-var page_table: texture_2d_array<u32>;
+var page_table: texture_2d_array<f32>;
 
 struct VTLodInfo {
     // Number of tiles (ceil) in (x, y, z) at this LOD — used for page-table index.
@@ -122,11 +123,10 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
     let pt_x = i32(linear % vt.page_table_width);
     let pt_y = i32(linear / vt.page_table_width);
-    let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
-
-    if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
-
-    let slot        = entry & 0xFFFFu;
+    // page_table is Rgba8Unorm: [slot_lo/255, slot_hi/255, resident/255, 0].
+    let pt = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0);
+    if pt.b < 0.5 { return vec2f(0.0, -1.0); }
+    let slot = u32(pt.r * 255.0 + 0.5) | (u32(pt.g * 255.0 + 0.5) << 8u);
     let atlas_col   = slot % vt.atlas_cols;
     let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
     let atlas_layer = slot / (vt.atlas_cols * vt.atlas_rows);
