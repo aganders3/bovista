@@ -10,7 +10,7 @@ license = "Apache-2.0"
 
 [dependencies]
 bovista-codegen = { path = "bovista-codegen" }
-wgpu = "23"
+wgpu = "26"
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = "0.29"
 winit = "0.30"

@@ -177,7 +177,7 @@ impl VirtualTextureData {
         let (tile_d, tile_h, tile_w) = self.tile_size;
 
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
@@ -188,7 +188,7 @@ impl VirtualTextureData {
                 aspect: wgpu::TextureAspect::All,
             },
             &data.data,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(data.width * data.bytes_per_voxel()),
                 rows_per_image: Some(data.height),

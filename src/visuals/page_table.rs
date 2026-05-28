@@ -83,14 +83,14 @@ impl PageTable {
         let px = linear % self.width;
         let py = linear / self.width;
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x: px, y: py, z: layer },
                 aspect: wgpu::TextureAspect::All,
             },
             &value.to_ne_bytes(),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.width * 4),
                 rows_per_image: None,

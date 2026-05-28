@@ -106,7 +106,7 @@ impl JsViewer {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or("Failed to find adapter")?;
+            .map_err(|_| JsValue::from_str("Failed to find adapter"))?;
 
         let adapter_limits = adapter.limits();
         let (device, queue) = adapter
@@ -122,8 +122,8 @@ impl JsViewer {
                             .using_resolution(adapter_limits)
                     },
                     memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
                 },
-                None,
             )
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to request device: {:?}", e)))?;

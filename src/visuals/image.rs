@@ -167,14 +167,14 @@ impl ImageVisual {
             view_formats: &[],
         });
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &colormap_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &colormap_data,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
             wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
         );
         let colormap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -446,14 +446,14 @@ impl Visual for ImageVisual {
         // Upload pending colormap if set
         if let Some(data) = self.pending_colormap.take() {
             queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &self.colormap_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 &data,
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
                 wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
             );
         }

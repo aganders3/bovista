@@ -89,7 +89,7 @@ impl PyViewer {
     /// Initialize the renderer (must be called before adding visuals)
     fn initialize(&mut self) -> PyResult<()> {
         // Create WGPU instance and request adapter/device
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
@@ -103,7 +103,7 @@ impl PyViewer {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
+        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -111,8 +111,8 @@ impl PyViewer {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
             },
-            None,
         ))
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create device: {}", e)))?;
 
@@ -136,7 +136,7 @@ impl PyViewer {
         };
 
         // Create instance first
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
@@ -219,7 +219,7 @@ impl PyViewer {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
-        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
+        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
 
         // Get surface capabilities and pick format
         let surface_caps = surface.get_capabilities(&adapter);
@@ -235,8 +235,8 @@ impl PyViewer {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
             },
-            None,
         ))
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create device: {}", e)))?;
 
@@ -458,7 +458,7 @@ impl PyViewer {
                     let size = window.inner_size();
 
                     // Create new wgpu instance for this window
-                    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
                         backends: wgpu::Backends::PRIMARY,
                         ..Default::default()
                     });
@@ -480,8 +480,8 @@ impl PyViewer {
                             required_features: wgpu::Features::empty(),
                             required_limits: wgpu::Limits::default(),
                             memory_hints: Default::default(),
+                            trace: wgpu::Trace::Off,
                         },
-                        None,
                     )).unwrap();
 
                     let surface_caps = surface.get_capabilities(&adapter);

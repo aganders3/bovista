@@ -53,8 +53,15 @@ fn main() {
         _        => wgpu::Backends::VULKAN | wgpu::Backends::GL | wgpu::Backends::METAL | wgpu::Backends::DX12,
     };
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    // Disable wgpu's indirect-draw validation compute pipeline: the bovista
+    // pipeline never issues indirect draws, and on NVIDIA's surfaceless GLES
+    // context the wgpu-23/24/25/26 validation pipeline fails to build
+    // (BUFFER_STORAGE/COMPUTE_SHADER missing in the probed feature set),
+    // which would fail device creation entirely.
+    let flags = wgpu::InstanceFlags::default() - wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL;
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends,
+        flags,
         ..Default::default()
     });
 
@@ -86,14 +93,16 @@ fn main() {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        })).filter(|a| bs.contains(wgpu::Backends::from(a.get_info().backend)))
+        }))
+        .ok()
+        .filter(|a: &wgpu::Adapter| bs.contains(wgpu::Backends::from(a.get_info().backend)))
     };
 
     let adapter = pick_for(backends)
         .or_else(|| {
             // request_adapter with the requested set returned nothing — fall
             // back to picking any adapter we already enumerated.
-            eprintln!("[headless] request_adapter({:?}) returned None; falling back to first enumerated adapter", backends);
+            eprintln!("[headless] request_adapter({:?}) returned no adapter; falling back to first enumerated adapter", backends);
             all_adapters.into_iter().next()
         })
         .expect("No usable GPU adapter (enumerate returned some but none picked — should be unreachable)");
@@ -111,8 +120,8 @@ fn main() {
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             memory_hints: Default::default(),
+            trace: wgpu::Trace::Off,
         },
-        None,
     )).expect("Failed to create device");
 
     let surface_format = wgpu::TextureFormat::Bgra8UnormSrgb;
@@ -350,15 +359,15 @@ fn render_one_frame(
         label: Some("headless-copy"),
     });
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: color_tex,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyBufferInfo {
             buffer: &staging,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(padded_row),
                 rows_per_image: Some(height),
@@ -372,7 +381,7 @@ fn render_one_frame(
     let slice = staging.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| { tx.send(r).unwrap(); });
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::Wait);
     rx.recv().unwrap().expect("buffer map failed");
 
     let mapped = slice.get_mapped_range();
