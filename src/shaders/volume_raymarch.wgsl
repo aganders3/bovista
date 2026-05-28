@@ -98,8 +98,27 @@ struct VertexOutput {
 }
 
 @vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vi: u32, in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
+    // ── Debug mode 6: fullscreen-triangle probe ──────────────────────────────
+    // Emit NDC clip positions directly from vertex_index. Bypasses the camera
+    // matrix, vol_min/vol_max uniforms, and the entire vertex buffer. If this
+    // renders (mode 6 returns solid green in fs_main) and the regular cube
+    // doesn't, the bug is in how the cube's clip positions get computed on
+    // this backend — most likely a uniform-layout issue affecting either
+    // VolumeUniforms (vol_min/vol_max) or CameraUniforms (view_proj).
+    // Winding (CW from outside) chosen so cull_mode=Front doesn't drop it.
+    if vol.debug_mode == 6u {
+        var pos = array<vec2f, 3>(
+            vec2f(-1.0, -1.0),
+            vec2f(-1.0,  3.0),
+            vec2f( 3.0, -1.0),
+        );
+        let xy = pos[vi % 3u];
+        out.clip_position = vec4f(xy, 0.5, 1.0);
+        out.world_pos = vec3f(0.0);
+        return out;
+    }
     // The unit-cube vertex is in [0,1]^3; scale it to the volume world-space AABB.
     let world = vol.vol_min + in.position * (vol.vol_max - vol.vol_min);
     out.clip_position = camera.view_proj * vec4f(world, 1.0);
@@ -187,6 +206,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if vol.debug_mode == 5u {
         let extent = (vol.vol_max - vol.vol_min) / 256.0;
         return vec4f(extent, 1.0);
+    }
+    // ── Debug mode 6: fullscreen-triangle probe (companion to vs_main) ─────
+    // The vertex shader emits a fullscreen triangle from vertex_index alone
+    // (no camera, no uniform reads). If the screen comes back green, the
+    // pipeline can rasterize a triangle on this backend — meaning our cube
+    // vertices must be coming out wrong due to a uniform or camera issue.
+    // If still blue, the rasterizer / cull / depth-test config itself is
+    // broken on this driver, not the shader uniforms.
+    if vol.debug_mode == 6u {
+        return vec4f(0.0, 1.0, 0.0, 1.0);
     }
 
     let ray_origin = vol.camera_pos;
