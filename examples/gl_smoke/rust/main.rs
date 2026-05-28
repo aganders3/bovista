@@ -20,14 +20,13 @@ use std::sync::mpsc;
 const WIDTH:  u32 = 512;
 const HEIGHT: u32 = 384;
 
-const SHADER: &str = r#"
+const SHADER_NO_UNIFORM: &str = r#"
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
 };
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    // Big triangle that covers the viewport (no vertex buffer needed).
     var ps = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(-1.0,  3.0),
@@ -44,6 +43,44 @@ fn fs_main() -> @location(0) vec4<f32> {
 }
 "#;
 
+// Same vertex shader, but the fragment color comes from a uniform.
+// If --uniform shows the expected magenta on a backend where the no-uniform
+// path shows green, uniforms are broken on that backend.
+const SHADER_UNIFORM: &str = r#"
+struct Probe {
+    color: vec4<f32>,
+    flags: vec4<u32>,
+};
+@group(0) @binding(0) var<uniform> probe: Probe;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    // If uniforms work, fs returns probe.color (we'll set magenta from Rust).
+    // If uniforms read as zero, fs returns (0,0,0,0) — transparent black,
+    // PNG viewers render that as white/clear-color showing through.
+    // flags.x == 0xDEADBEEF lets us cross-check that integer fields also read.
+    if probe.flags.x == 0xDEADBEEFu {
+        return probe.color;
+    }
+    // Uniform integer read failed — return solid red to distinguish.
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+"#;
+
 fn main() {
     env_logger::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -51,6 +88,7 @@ fn main() {
         .unwrap_or_else(|| "out.png".to_string());
     let backend_str = flag(&args, "--backend").unwrap_or_else(|| "auto".to_string());
     let clear_hex = flag(&args, "--clear").unwrap_or_else(|| "ff0000ff".to_string());
+    let use_uniform = args.iter().any(|a| a == "--uniform");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -112,14 +150,67 @@ fn main() {
     });
     let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
+    let shader_src = if use_uniform { SHADER_UNIFORM } else { SHADER_NO_UNIFORM };
+    println!("[smoke] mode: {}", if use_uniform { "uniform" } else { "no-uniform" });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("smoke-shader"),
-        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+    });
+
+    // ── Uniform setup (only used when --uniform) ───────────────────────────
+    // Probe { color: vec4<f32>, flags: vec4<u32> } = 32 bytes. We set
+    // color=(1,0,1,1) magenta and flags.x=0xDEADBEEF.
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct Probe {
+        color: [f32; 4],
+        flags: [u32; 4],
+    }
+    let probe = Probe { color: [1.0, 0.0, 1.0, 1.0], flags: [0xDEADBEEFu32, 0, 0, 0] };
+    let probe_bytes: [u8; 32] = unsafe { std::mem::transmute(probe) };
+
+    let (uniform_layout, uniform_bg) = if use_uniform {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("smoke-uniform"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buf, 0, &probe_bytes);
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("smoke-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("smoke-bg"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+        });
+        (Some(layout), Some(bg))
+    } else {
+        (None, None)
+    };
+
+    let pipeline_layout = uniform_layout.as_ref().map(|bgl| {
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("smoke-pl"),
+            bind_group_layouts: &[bgl],
+            push_constant_ranges: &[],
+        })
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("smoke-pipeline"),
-        layout: None,
+        layout: pipeline_layout.as_ref(),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
@@ -176,6 +267,9 @@ fn main() {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
+        if let Some(bg) = &uniform_bg {
+            pass.set_bind_group(0, bg, &[]);
+        }
         pass.draw(0..3, 0..1);
     }
 
