@@ -101,6 +101,61 @@ fn fs_main() -> @location(0) vec4<f32> {
 // bind group at separate binding slots. If --three-bgs salmoned on HPC
 // because wgpu-hal-gles drops bind groups 1 and 2 silently, this should
 // come back mid-gray (the expected color when all three reads work).
+// Big-struct probe: replicates bovista's VolumeAllUniforms layout
+// (cross-stage + nested vt with array<Sub,16> + nested vol). Fragment
+// outputs (read-OK indicators) per channel.
+const SHADER_BIG_STRUCT: &str = r#"
+struct BigSub {
+    a: vec3<f32>, _p1: f32,
+    b: vec3<f32>, _p2: f32,
+    c: vec3<f32>, _p3: f32,
+}
+struct BigInnerVt {
+    u0: u32, u1: u32, f0: f32, f1: f32, f2: f32, u2: u32,
+    f3: f32, f4: f32, u3: u32, u4: u32, u5: u32, u6: u32,
+    lods: array<BigSub, 16>,
+}
+struct BigInnerVol {
+    vol_min: vec3<f32>, rss: f32,
+    vol_max: vec3<f32>, density: f32,
+    cpos: vec3<f32>, early: f32,
+    dims: vec3<u32>, debug_mode: u32,
+}
+struct BigAll {
+    view_proj: mat4x4<f32>,
+    vt: BigInnerVt,
+    vol: BigInnerVol,
+}
+@group(0) @binding(0) var<uniform> big: BigAll;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    // Touch fields so the compiler emits them in VS too.
+    if big.vol.debug_mode == 0u {
+        out.pos.w = 1.0;
+    }
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    var r = 0.0;
+    if big.vol.debug_mode == 0xCAFEu { r = 0.5; }
+    let g = big.vt.lods[5].b.y;     // expect 0.7
+    let b = big.vol.vol_max.z;       // expect 0.9
+    return vec4<f32>(r, g, b, 1.0);
+}
+"#;
+
 // Cross-stage uniform probe. VS reads probe.flags.x (forces the compiler
 // to declare the uniform block in the VS too); FS reads probe.color.
 // Same data layout as SHADER_UNIFORM. If FS returns magenta, cross-stage
@@ -369,6 +424,7 @@ fn main() {
     let use_one_bg_three = args.iter().any(|a| a == "--one-bg-three");
     let use_two_tex = args.iter().any(|a| a == "--two-tex");
     let use_cross_stage = args.iter().any(|a| a == "--cross-stage");
+    let use_big_struct = args.iter().any(|a| a == "--big-struct");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -445,7 +501,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_cross_stage {
+    let shader_src = if use_big_struct {
+        SHADER_BIG_STRUCT
+    } else if use_cross_stage {
         SHADER_CROSS_STAGE
     } else if use_two_tex {
         SHADER_TWO_TEX
@@ -464,7 +522,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_cross_stage { "cross-stage" }
+    let mode_name = if use_big_struct { "big-struct" }
+                   else if use_cross_stage { "cross-stage" }
                    else if use_two_tex { "two-tex" }
                    else if use_one_bg_three { "one-bg-three" }
                    else if use_three_bgs { "three-bgs" }
@@ -474,9 +533,9 @@ fn main() {
                    else if use_uniform { "uniform" }
                    else { "no-uniform" };
     println!("[smoke] mode: {}", mode_name);
-    let needs_uniform = use_uniform || use_vec3_probe || use_cross_stage;
-    // Cross-stage uses VERTEX | FRAGMENT visibility; others stay FRAGMENT-only.
-    let uniform_visibility = if use_cross_stage {
+    let needs_uniform = use_uniform || use_vec3_probe || use_cross_stage || use_big_struct;
+    // Cross-stage and big-struct use VERTEX | FRAGMENT visibility.
+    let uniform_visibility = if use_cross_stage || use_big_struct {
         wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
     } else {
         wgpu::ShaderStages::FRAGMENT
@@ -523,8 +582,78 @@ fn main() {
     };
     let probe3_bytes: [u8; 48] = unsafe { std::mem::transmute(probe3) };
 
+    // Big-struct probe — same shape as bovista's VolumeAllUniforms:
+    //   view_proj : mat4 (64)
+    //   inner_vt  : { 12×u32/f32 header (48) + array<Sub, 16> (16×48 = 768) }
+    //   inner_vol : { vec3+f32 × 4 = 64 }
+    // Total 944 bytes. We set:
+    //   inner_vt.lods[5].tile_scale.y = 0.7
+    //   inner_vol.vol_max.z = 0.9
+    //   inner_vol.debug_mode = 0xCAFE
+    // Shader reads those exact fields, both in VS (just to force the block
+    // to declare) and in FS (where output comes from). Returns:
+    //   r = (read inner_vol.debug_mode == 0xCAFE)             → 0.5 or 0
+    //   g = inner_vt.lods[5].tile_scale.y                     → 0.7 or 0
+    //   b = inner_vol.vol_max.z                               → 0.9 or 0
+    // Mac reference: green-cyan (linear 0.5, 0.7, 0.9, 1.0).
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct BigSub {
+        a: [f32; 3], _p1: f32,
+        b: [f32; 3], _p2: f32,
+        c: [f32; 3], _p3: f32,
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct BigInnerVt {
+        u0: u32, u1: u32, f0: f32, f1: f32, f2: f32, u2: u32,
+        f3: f32, f4: f32, u3: u32, u4: u32, u5: u32, u6: u32,
+        lods: [BigSub; 16],
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct BigInnerVol {
+        vol_min: [f32; 3], rss: f32,
+        vol_max: [f32; 3], density: f32,
+        cpos: [f32; 3], early: f32,
+        dims: [u32; 3], debug_mode: u32,
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct BigAll {
+        view_proj: [[f32; 4]; 4],
+        vt: BigInnerVt,
+        vol: BigInnerVol,
+    }
+    let mut big_lods = [BigSub {
+        a: [0.0; 3], _p1: 0.0,
+        b: [0.0; 3], _p2: 0.0,
+        c: [0.0; 3], _p3: 0.0,
+    }; 16];
+    big_lods[5].b[1] = 0.7;  // tile_scale.y at index 5
+    let big = BigAll {
+        view_proj: [[1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0]],
+        vt: BigInnerVt {
+            u0: 0, u1: 0, f0: 0.0, f1: 0.0, f2: 0.0, u2: 0,
+            f3: 0.0, f4: 0.0, u3: 0, u4: 0, u5: 0, u6: 0,
+            lods: big_lods,
+        },
+        vol: BigInnerVol {
+            vol_min: [0.0, 0.0, 0.0], rss: 0.0,
+            vol_max: [0.0, 0.0, 0.9], density: 0.0,
+            cpos: [0.0; 3], early: 0.0,
+            dims: [0; 3], debug_mode: 0xCAFE,
+        },
+    };
+    let big_bytes: [u8; 944] = unsafe { std::mem::transmute(big) };
+
     let (uniform_layout, uniform_bg) = if needs_uniform {
-        let (size, bytes): (u64, &[u8]) = if use_vec3_probe {
+        let (size, bytes): (u64, &[u8]) = if use_big_struct {
+            (944, &big_bytes)
+        } else if use_vec3_probe {
             (48, &probe3_bytes)
         } else {
             (32, &probe_bytes)
