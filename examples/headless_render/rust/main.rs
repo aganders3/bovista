@@ -43,9 +43,16 @@ fn main() {
     let frames: u32 = flag_u32(&args, "--frames", default_frames);
     let fps: u32 = flag_u32(&args, "--fps", 30);
     let backend = flag_str(&args, "--backend", "auto");
+    // --debug-mode 0=normal DVR, 1=LOD wireframes, 2=atlas-direct, 3=step heatmap.
+    // Mode 1 is useful for diagnosing all-black GLES output: if wireframes still
+    // render, geometry/depth path is fine and the problem is volume sampling.
+    let debug_mode = flag_u32(&args, "--debug-mode", 0);
+    // Default clear is black; --clear ffff00ff lets you confirm the framebuffer
+    // readback path independently of what the volume visual paints.
+    let clear_rgba_hex = flag_str(&args, "--clear", "00000000");
 
-    println!("[headless] output={} {}x{} frames={} backend={}",
-             output, width, height, frames, backend);
+    println!("[headless] output={} {}x{} frames={} backend={} debug_mode={} clear={}",
+             output, width, height, frames, backend, debug_mode, clear_rgba_hex);
 
     let backends = match backend.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -181,7 +188,7 @@ fn main() {
         translation: (-half, -half, -half),
     };
 
-    let volume = VolumeVisual::new(
+    let mut volume = VolumeVisual::new(
         renderer.device(),
         renderer.queue(),
         renderer.surface_format(),
@@ -191,6 +198,12 @@ fn main() {
         loader,
     );
     *pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
+    match debug_mode {
+        1 => volume.set_debug_mode(true),
+        2 => volume.set_atlas_debug_mode(true),
+        3 => volume.set_step_debug_mode(true),
+        _ => {}
+    }
 
     let mut scene = Scene::new();
     scene.add(Arc::new(Mutex::new(volume)));
@@ -206,13 +219,25 @@ fn main() {
     camera.far = radius * 4.0;
     camera.projection_mode = ProjectionMode::Perspective;
 
+    let clear = parse_clear(&clear_rgba_hex);
+
     // ── Output ──────────────────────────────────────────────────────────────
     if is_video {
         render_to_ffmpeg(&renderer, &mut scene, &mut camera, &color_tex, &color_view,
-                          &depth_view, width, height, frames, fps, &output, radius);
+                          &depth_view, width, height, frames, fps, &output, radius, clear);
     } else {
         render_single_png(&renderer, &mut scene, &mut camera, &color_tex, &color_view,
-                          &depth_view, width, height, &output);
+                          &depth_view, width, height, &output, clear);
+    }
+}
+
+fn parse_clear(hex: &str) -> wgpu::Color {
+    let h = hex.trim_start_matches('#');
+    let parse = |i| u8::from_str_radix(&h[i..i+2], 16).unwrap_or(0) as f64 / 255.0;
+    if h.len() >= 8 {
+        wgpu::Color { r: parse(0), g: parse(2), b: parse(4), a: parse(6) }
+    } else {
+        wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }
     }
 }
 
@@ -225,6 +250,7 @@ fn render_single_png(
     depth_view: &wgpu::TextureView,
     width: u32, height: u32,
     output_path: &str,
+    clear: wgpu::Color,
 ) {
     // Warm up: the VT loader runs at the *end* of prepare(), so the tile
     // doesn't get into the atlas until the *next* prepare(). Render 3 frames
@@ -232,7 +258,7 @@ fn render_single_png(
     let mut last_bgra: Vec<u8> = Vec::new();
     for frame in 0..3 {
         last_bgra = render_one_frame(renderer, scene, camera, color_tex, color_view,
-                                     depth_view, width, height, frame);
+                                     depth_view, width, height, frame, clear);
     }
 
     // BGRA → RGBA for PNG.
@@ -263,6 +289,7 @@ fn render_to_ffmpeg(
     frames: u32, fps: u32,
     output_path: &str,
     radius: f32,
+    clear: wgpu::Color,
 ) {
     let size_arg = format!("{}x{}", width, height);
     let fps_arg = fps.to_string();
@@ -290,7 +317,7 @@ fn render_to_ffmpeg(
     // Two warm-up frames so the atlas is populated before frame 0 ships.
     for warmup in 0..2 {
         let _ = render_one_frame(renderer, scene, camera, color_tex, color_view,
-                                 depth_view, width, height, warmup);
+                                 depth_view, width, height, warmup, clear);
     }
 
     for frame in 0..frames {
@@ -299,7 +326,7 @@ fn render_to_ffmpeg(
         camera.position = glam::Vec3::new(radius * theta.cos(), radius * 0.25, radius * theta.sin());
 
         let bgra = render_one_frame(renderer, scene, camera, color_tex, color_view,
-                                    depth_view, width, height, (frame + 2) as u64);
+                                    depth_view, width, height, (frame + 2) as u64, clear);
         if let Err(e) = stdin.write_all(&bgra) {
             eprintln!("[headless] ffmpeg stdin closed at frame {}: {}", frame, e);
             break;
@@ -319,6 +346,7 @@ fn render_one_frame(
     depth_view: &wgpu::TextureView,
     width: u32, height: u32,
     frame_number: u64,
+    clear: wgpu::Color,
 ) -> Vec<u8> {
     let _ = frame_number;
     let device = renderer.device();
@@ -338,7 +366,6 @@ fn render_one_frame(
     };
     scene.prepare(device, queue, &camera_info);
 
-    let clear = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
     renderer.render(scene, color_view, depth_view, clear);
 
     // Copy color texture → staging buffer with 256-byte row alignment.
