@@ -98,63 +98,12 @@ struct VertexOutput {
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    // ── Debug mode 6: fullscreen-triangle probe ──────────────────────────────
-    // Emit NDC clip positions directly from vertex_index. Bypasses the camera
-    // matrix, vol_min/vol_max uniforms, and the entire vertex buffer. If this
-    // renders (mode 6 returns solid green in fs_main) and the regular cube
-    // doesn't, the bug is in how the cube's clip positions get computed on
-    // this backend — most likely a uniform-layout issue affecting either
-    // VolumeUniforms (vol_min/vol_max) or CameraUniforms (view_proj).
-    // Winding (CW from outside) chosen so cull_mode=Front doesn't drop it.
-    if uni.vol.debug_mode == 6u {
-        // CW-from-outside in WGSL space.
-        var pos = array<vec2f, 3>(
-            vec2f(-1.0, -1.0),
-            vec2f(-1.0,  3.0),
-            vec2f( 3.0, -1.0),
-        );
-        let xy = pos[vi % 3u];
-        out.clip_position = vec4f(xy, 0.5, 1.0);
-        out.world_pos = vec3f(0.0);
-        return out;
-    }
-    // ── Debug mode 7: opposite winding ──────────────────────────────────────
-    // If mode 6 fails on GLES but mode 7 renders, the front_face / cull
-    // inversion that wgpu-hal-gles does to compensate for naga's Y-flip is
-    // mis-targeted on this driver.
-    if uni.vol.debug_mode == 7u {
-        // CCW-from-outside in WGSL space.
-        var pos = array<vec2f, 3>(
-            vec2f(-1.0, -1.0),
-            vec2f( 3.0, -1.0),
-            vec2f(-1.0,  3.0),
-        );
-        let xy = pos[vi % 3u];
-        out.clip_position = vec4f(xy, 0.5, 1.0);
-        out.world_pos = vec3f(0.0);
-        return out;
-    }
-    // ── Debug mode 8: both windings overlapping ────────────────────────────
-    // Vertices 0..2 are CW, 3..5 are CCW. Whichever direction is culled,
-    // the other should survive. If both are culled, the cull state itself
-    // is in a broken setting that drops all triangles regardless of winding.
-    if uni.vol.debug_mode == 8u {
-        var pos = array<vec2f, 6>(
-            // CW from outside
-            vec2f(-1.0, -1.0),
-            vec2f(-1.0,  3.0),
-            vec2f( 3.0, -1.0),
-            // CCW from outside
-            vec2f(-1.0, -1.0),
-            vec2f( 3.0, -1.0),
-            vec2f(-1.0,  3.0),
-        );
-        let xy = pos[vi % 6u];
-        out.clip_position = vec4f(xy, 0.5, 1.0);
-        out.world_pos = vec3f(0.0);
-        return out;
-    }
-    // The unit-cube vertex is in [0,1]^3; scale it to the volume world-space AABB.
+    // TEMP DIAGNOSTIC: debug-mode early-return branches removed to test
+    // whether the if-return-if-return-if-return pattern in VS interacts
+    // badly with the volume's UBO reads on the HPC GL 3.30 path. Mac
+    // doesn't need this path. (mode 6/7/8 probes will no longer work
+    // while this is in place.)
+    _ = vi;
     let world = uni.vol.vol_min + in.position * (uni.vol.vol_max - uni.vol.vol_min);
     out.clip_position = uni.view_proj * vec4f(world, 1.0);
     out.world_pos = world;
