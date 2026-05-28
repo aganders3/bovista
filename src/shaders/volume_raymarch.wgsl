@@ -199,24 +199,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if _tx <= max(_te, 0.0) {
         return vec4f(0.0, 0.0, 0.0, 1.0);
     }
-    // Slab passed + atlas sampling works (purple-pink on HPC) — keep going.
-    // Now read the page table for lod=0, tile (0,0,0). Our example loaded
-    // exactly one tile at slot 0; page_table entry should be
-    //   (1u << 24) | slot = 0x01000000  → entry >> 24 == 1 (resident).
-    // Color encoding:
-    //   resident bit set, slot 0   → yellow (1.0, 1.0, 0.0)
-    //   resident bit set, other    → orange-ish (1.0, 0.5, 0.0)
-    //   resident bit not set       → cyan (0.0, 1.0, 1.0)
-    let _e = textureLoad(page_table, vec2<i32>(0, 0), 0, 0);
-    let resident = (_e.x >> 24u) != 0u;
-    let slot     = _e.x & 0xFFFFu;
-    if resident && slot == 0u {
-        return vec4f(1.0, 1.0, 0.0, 1.0);
+    // Atlas and page-table primitives both confirmed on HPC. Now run
+    // try_lod() at lod=0, vol_uv=(0.5, 0.5, 0.5) — exercises the full
+    // sample_vvt sub-path: vt.lods[i] array element reads, coord math,
+    // textureLoad + textureSampleLevel together.
+    let r = try_lod(vec3f(0.5, 0.5, 0.5), 0);
+    // r.x = sampled value, r.y = lod (-1 if not resident).
+    if r.y < 0.0 {
+        return vec4f(1.0, 0.0, 0.0, 1.0);   // red: not resident
     }
-    if resident {
-        return vec4f(1.0, 0.5, 0.0, 1.0);
-    }
-    return vec4f(0.0, 1.0, 1.0, 1.0);
+    // resident: encode sampled value
+    //   v=0 → dim teal       (0.0, 0.4, 0.4, 1.0)
+    //   v=1 → bright magenta (1.0, 0.0, 1.0, 1.0)
+    return vec4f(r.x, 0.4 - r.x * 0.4, 0.4 + r.x * 0.6, 1.0);
 
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
