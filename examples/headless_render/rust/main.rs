@@ -58,14 +58,48 @@ fn main() {
         ..Default::default()
     });
 
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    })).expect("No GPU adapter found");
+    // Enumerate every adapter wgpu can see across every backend, so a missing
+    // adapter is diagnosable instead of a bare "None". Run with
+    //   RUST_LOG=wgpu_hal=debug,wgpu_core=info
+    // to get wgpu's own reasons for skipping a backend.
+    let all_adapters: Vec<_> = instance.enumerate_adapters(wgpu::Backends::all());
+    println!("[headless] enumerate_adapters across all backends → {} adapter(s)", all_adapters.len());
+    for a in &all_adapters {
+        let i = a.get_info();
+        println!("  - {} (backend={:?} type={:?} driver={:?} vendor=0x{:x})",
+                 i.name, i.backend, i.device_type, i.driver, i.vendor);
+    }
+    if all_adapters.is_empty() {
+        eprintln!("\n[headless] No adapters at all. On a Linux GPU node, check:");
+        eprintln!("   ldconfig -p | grep -E 'libvulkan|libEGL'");
+        eprintln!("   ls /usr/share/vulkan/icd.d/      # NVIDIA: nvidia_icd.json");
+        eprintln!("   vulkaninfo --summary             # Vulkan health check");
+        eprintln!("   eglinfo -B                       # EGL/GL health check (mesa-utils)");
+        eprintln!("   nvidia-smi -L                    # GPU visible to driver");
+        eprintln!("Re-run this binary with RUST_LOG=wgpu_hal=debug for wgpu's own reasons.");
+        std::process::exit(1);
+    }
+
+    // Try the user-selected (or auto) backend set, then degrade gracefully.
+    let pick_for = |bs: wgpu::Backends| -> Option<wgpu::Adapter> {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })).filter(|a| bs.contains(wgpu::Backends::from(a.get_info().backend)))
+    };
+
+    let adapter = pick_for(backends)
+        .or_else(|| {
+            // request_adapter with the requested set returned nothing — fall
+            // back to picking any adapter we already enumerated.
+            eprintln!("[headless] request_adapter({:?}) returned None; falling back to first enumerated adapter", backends);
+            all_adapters.into_iter().next()
+        })
+        .expect("No usable GPU adapter (enumerate returned some but none picked — should be unreachable)");
 
     let info = adapter.get_info();
-    println!("[headless] adapter: {} (backend={:?} type={:?} driver={})",
+    println!("[headless] selected: {} (backend={:?} type={:?} driver={})",
              info.name, info.backend, info.device_type, info.driver);
     if matches!(info.device_type, wgpu::DeviceType::Cpu) {
         eprintln!("[headless] WARNING: software adapter selected — rendering will be very slow");
