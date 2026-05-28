@@ -97,6 +97,44 @@ fn fs_main() -> @location(0) vec4<f32> {
 // outputs bright magenta; if it returns 0, outputs dim teal.
 // Three-bind-group probe. Each group contributes one color channel and one
 // magic constant. Output is bright if all three are read correctly.
+// Same data as SHADER_THREE_BGS but all three uniforms live in one
+// bind group at separate binding slots. If --three-bgs salmoned on HPC
+// because wgpu-hal-gles drops bind groups 1 and 2 silently, this should
+// come back mid-gray (the expected color when all three reads work).
+const SHADER_ONE_BG_THREE: &str = r#"
+struct GroupUbo {
+    magic: u32,
+    rgba: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> g0: GroupUbo;
+@group(0) @binding(1) var<uniform> g1: GroupUbo;
+@group(0) @binding(2) var<uniform> g2: GroupUbo;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    var rgba = g0.rgba + g1.rgba + g2.rgba;
+    var alpha_ok = 0.0;
+    if g0.magic == 0xCAFE0001u { alpha_ok = alpha_ok + 0.34; }
+    if g1.magic == 0xCAFE0002u { alpha_ok = alpha_ok + 0.33; }
+    if g2.magic == 0xCAFE0003u { alpha_ok = alpha_ok + 0.33; }
+    return vec4<f32>(rgba.r, rgba.g, rgba.b, alpha_ok);
+}
+"#;
+
 const SHADER_THREE_BGS: &str = r#"
 struct GroupUbo {
     magic: u32,
@@ -259,6 +297,7 @@ fn main() {
     let use_tex3d = args.iter().any(|a| a == "--tex3d");
     let use_tex2da_uint = args.iter().any(|a| a == "--tex2da-uint");
     let use_three_bgs = args.iter().any(|a| a == "--three-bgs");
+    let use_one_bg_three = args.iter().any(|a| a == "--one-bg-three");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -335,7 +374,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_three_bgs {
+    let shader_src = if use_one_bg_three {
+        SHADER_ONE_BG_THREE
+    } else if use_three_bgs {
         SHADER_THREE_BGS
     } else if use_tex2da_uint {
         SHADER_TEX2DA_UINT
@@ -348,7 +389,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_three_bgs { "three-bgs" }
+    let mode_name = if use_one_bg_three { "one-bg-three" }
+                   else if use_three_bgs { "three-bgs" }
                    else if use_tex2da_uint { "tex2da-uint" }
                    else if use_tex3d { "tex3d" }
                    else if use_vec3_probe { "vec3-probe" }
@@ -632,7 +674,68 @@ fn main() {
         Some((l0, b0, l1, b1, l2, b2))
     } else { None };
 
-    let pipeline_layout = if let Some((l0, _, l1, _, l2, _)) = &three_bgs_layouts_bgs {
+    // ── One-bind-group with three uniform entries probe ─────────────────
+    // The workaround we're considering for bovista: collapse 3 bind groups
+    // into 1 with 3 separate uniform bindings. Same data content as the
+    // --three-bgs probe so the expected color is identical.
+    let one_bg_three = if use_one_bg_three {
+        let make_buf = |magic: u32, rgba: [f32; 4], label: &str| {
+            let ubo = GroupUbo { magic, _pad: [0; 3], rgba };
+            let bytes: [u8; 32] = unsafe { std::mem::transmute(ubo) };
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&buf, 0, &bytes);
+            buf
+        };
+        let b0 = make_buf(0xCAFE0001u32, [0.5, 0.0, 0.0, 0.0], "ubo0");
+        let b1 = make_buf(0xCAFE0002u32, [0.0, 0.5, 0.0, 0.0], "ubo1");
+        let b2 = make_buf(0xCAFE0003u32, [0.0, 0.0, 0.5, 0.0], "ubo2");
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("one-bg-three-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("one-bg-three-bg"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: b0.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: b1.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: b2.as_entire_binding() },
+            ],
+        });
+        Some((layout, bg))
+    } else { None };
+
+    let pipeline_layout = if let Some((l, _)) = &one_bg_three {
+        Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("smoke-pl-1bg3"),
+            bind_group_layouts: &[l],
+            push_constant_ranges: &[],
+        }))
+    } else if let Some((l0, _, l1, _, l2, _)) = &three_bgs_layouts_bgs {
         Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke-pl-3bgs"),
             bind_group_layouts: &[l0, l1, l2],
@@ -737,7 +840,9 @@ fn main() {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
-        if let Some((_, b0, _, b1, _, b2)) = &three_bgs_layouts_bgs {
+        if let Some((_, bg)) = &one_bg_three {
+            pass.set_bind_group(0, bg, &[]);
+        } else if let Some((_, b0, _, b1, _, b2)) = &three_bgs_layouts_bgs {
             pass.set_bind_group(0, b0, &[]);
             pass.set_bind_group(1, b1, &[]);
             pass.set_bind_group(2, b2, &[]);
