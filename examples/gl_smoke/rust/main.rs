@@ -101,6 +101,36 @@ fn fs_main() -> @location(0) vec4<f32> {
 // bind group at separate binding slots. If --three-bgs salmoned on HPC
 // because wgpu-hal-gles drops bind groups 1 and 2 silently, this should
 // come back mid-gray (the expected color when all three reads work).
+// Two-texture probe. If both textures read independently we get yellow
+// (R from tex A, G from tex B). If they alias to one texture unit on this
+// driver, we'd see red-only or green-only.
+const SHADER_TWO_TEX: &str = r#"
+@group(0) @binding(0) var ta: texture_2d<f32>;
+@group(0) @binding(1) var tb: texture_2d<f32>;
+@group(0) @binding(2) var sm: sampler;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    let a = textureSampleLevel(ta, sm, vec2<f32>(0.5, 0.5), 0.0).r;
+    let b = textureSampleLevel(tb, sm, vec2<f32>(0.5, 0.5), 0.0).r;
+    return vec4<f32>(a, b, 0.0, 1.0);
+}
+"#;
+
 const SHADER_ONE_BG_THREE: &str = r#"
 struct GroupUbo {
     magic: u32,
@@ -298,6 +328,7 @@ fn main() {
     let use_tex2da_uint = args.iter().any(|a| a == "--tex2da-uint");
     let use_three_bgs = args.iter().any(|a| a == "--three-bgs");
     let use_one_bg_three = args.iter().any(|a| a == "--one-bg-three");
+    let use_two_tex = args.iter().any(|a| a == "--two-tex");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -374,7 +405,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_one_bg_three {
+    let shader_src = if use_two_tex {
+        SHADER_TWO_TEX
+    } else if use_one_bg_three {
         SHADER_ONE_BG_THREE
     } else if use_three_bgs {
         SHADER_THREE_BGS
@@ -389,7 +422,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_one_bg_three { "one-bg-three" }
+    let mode_name = if use_two_tex { "two-tex" }
+                   else if use_one_bg_three { "one-bg-three" }
                    else if use_three_bgs { "three-bgs" }
                    else if use_tex2da_uint { "tex2da-uint" }
                    else if use_tex3d { "tex3d" }
@@ -674,6 +708,84 @@ fn main() {
         Some((l0, b0, l1, b1, l2, b2))
     } else { None };
 
+    // ── Two textures in one bind group probe ───────────────────────────
+    // Same bind group has two separate texture bindings. Each texture has
+    // a unique single-pixel value. Fragment shader samples both and
+    // combines: R from tex A, G from tex B, B = 0, A = 1. If both reads
+    // are alive on this driver: bright yellow. If only one is read
+    // (whichever happens to win the texture-unit lottery): red or green.
+    let two_tex = if use_two_tex {
+        let make_tex = |val: u8, label: &str| {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &t, mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &[val],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(1), rows_per_image: Some(1) },
+                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            );
+            t.create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let view_a = make_tex(0xFF, "texA");  // value = 1.0 (red contributor)
+        let view_b = make_tex(0xC0, "texB");  // value ~ 0.75 (green contributor)
+        let samp = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("smoke-2tex-samp"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("two-tex-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("two-tex-bg"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view_a) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view_b) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&samp) },
+            ],
+        });
+        Some((layout, bg))
+    } else { None };
+
     // ── One-bind-group with three uniform entries probe ─────────────────
     // The workaround we're considering for bovista: collapse 3 bind groups
     // into 1 with 3 separate uniform bindings. Same data content as the
@@ -729,7 +841,13 @@ fn main() {
         Some((layout, bg))
     } else { None };
 
-    let pipeline_layout = if let Some((l, _)) = &one_bg_three {
+    let pipeline_layout = if let Some((l, _)) = &two_tex {
+        Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("smoke-pl-2tex"),
+            bind_group_layouts: &[l],
+            push_constant_ranges: &[],
+        }))
+    } else if let Some((l, _)) = &one_bg_three {
         Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke-pl-1bg3"),
             bind_group_layouts: &[l],
@@ -840,7 +958,9 @@ fn main() {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
-        if let Some((_, bg)) = &one_bg_three {
+        if let Some((_, bg)) = &two_tex {
+            pass.set_bind_group(0, bg, &[]);
+        } else if let Some((_, bg)) = &one_bg_three {
             pass.set_bind_group(0, bg, &[]);
         } else if let Some((_, b0, _, b1, _, b2)) = &three_bgs_layouts_bgs {
             pass.set_bind_group(0, b0, &[]);
