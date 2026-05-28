@@ -183,6 +183,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // reads (vol_min, vol_max, camera_pos) are wrong despite working in
     // VS. If HPC shows blue inside the cube silhouette, the slab test is
     // fine and the bug is further downstream in the raymarch.
+    // Same slab test (known to work). On success, sample the atlas DIRECTLY
+    // at uv=(0.5, 0.5, 0.5) — bypass the page table. If atlas sampling works,
+    // the synthetic 128³ cube data has v ≈ 1.0 at center → returns red. If
+    // sampling fails, we get black (or transparent).
     let _ro = uni.vol.camera_pos;
     let _rd = normalize(in.world_pos - uni.vol.camera_pos);
     let _id = 1.0 / _rd;
@@ -193,9 +197,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let _te = max(max(_t1.x, _t1.y), _t1.z);
     let _tx = min(min(_t2.x, _t2.y), _t2.z);
     if _tx <= max(_te, 0.0) {
-        return vec4f(1.0, 0.0, 0.0, 1.0);
+        return vec4f(0.0, 0.0, 0.0, 1.0);
     }
-    return vec4f(0.0, 0.5, 1.0, 1.0);
+    // Sample atlas at the center. Encoding chosen so v=0 vs v=1 are distinct
+    // and don't collide with the orange clear color.
+    //   v=0.0 (atlas empty / sample broken) → bright green-cyan (0.1, 1.0, 0.5)
+    //   v=1.0 (cube interior, sample works)  → purple-pink     (0.7, 0.0, 0.5)
+    let v0 = textureSampleLevel(atlas, atlas_sampler, vec3f(0.5, 0.5, 0.5), 0.0).r;
+    return vec4f(0.1 + v0 * 0.6, 1.0 - v0, 0.5, 1.0);
 
     // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
     if uni.vol.debug_mode == 4u {
