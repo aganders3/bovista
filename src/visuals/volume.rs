@@ -211,12 +211,7 @@ impl VolumeVisual {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        // Rgba8Unorm packing for the page table (was R32Uint).
-                        // See page_table.rs for the rationale (NVIDIA Cg
-                        // compiler bug). filterable: true so the shader can
-                        // sample it with the same atlas_sampler (the shader
-                        // uses nearest UVs to preserve exact bytes).
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Uint,
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },

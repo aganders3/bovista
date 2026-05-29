@@ -29,9 +29,8 @@ var atlas: texture_3d<f32>;
 @group(1) @binding(1)
 var atlas_sampler: sampler;
 
-// page_table is Rgba8Unorm (was R32Uint). See src/visuals/page_table.rs.
 @group(1) @binding(2)
-var page_table: texture_2d_array<f32>;
+var page_table: texture_2d_array<u32>;
 
 struct VTLodInfo {
     // Number of tiles (ceil) in (x, y, z) at this LOD — used for page-table index.
@@ -121,17 +120,11 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let vol_in_tiles = min(vol_uv / vt.lods[lod].tile_scale, vec3f(grid) - vec3f(1e-5));
     let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
     let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
-    let pt_x = linear % vt.page_table_width;
-    let pt_y = linear / vt.page_table_width;
-    // page_table is Rgba8Unorm: [slot_lo/255, slot_hi/255, resident/255, 0].
-    // Sample via textureSampleLevel (not textureLoad) to avoid mixing
-    // texture-access functions in one shader — see volume_raymarch.wgsl
-    // and examples/gl_smoke --tex3d-plus-2darr for the NVIDIA GL bug.
-    let pt_dims = vec2f(textureDimensions(page_table, 0));
-    let pt_uv = (vec2f(f32(pt_x), f32(pt_y)) + vec2f(0.5)) / pt_dims;
-    let pt = textureSampleLevel(page_table, atlas_sampler, pt_uv, lod, 0.0);
-    if pt.b < 0.5 { return vec2f(0.0, -1.0); }
-    let slot = u32(pt.r * 255.0 + 0.5) | (u32(pt.g * 255.0 + 0.5) << 8u);
+    let pt_x = i32(linear % vt.page_table_width);
+    let pt_y = i32(linear / vt.page_table_width);
+    let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
+    if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
+    let slot = entry & 0xFFFFu;
     let atlas_col   = slot % vt.atlas_cols;
     let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
     let atlas_layer = slot / (vt.atlas_cols * vt.atlas_rows);
@@ -143,8 +136,11 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
 
-    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
-                 f32(lod));
+    // Read via textureLoad (not textureSampleLevel) — see volume_raymarch.wgsl
+    // for the NVIDIA GL 3.30 compat bug rationale.
+    let adim = vec3f(textureDimensions(atlas, 0));
+    let acoord = vec3i(vec3f(u, v, w) * adim);
+    return vec2f(textureLoad(atlas, acoord, 0).r, f32(lod));
 }
 
 // Walk the page table to find the best resident LOD for this fragment.
@@ -179,7 +175,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let lod_idx = result.y;   // -1 if nothing resident
 
     let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-    let color    = textureSample(colormap, colormap_sampler, adjusted);
+    let color    = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
 
     var out: vec4f;
     if vt.debug_mode != 0u {

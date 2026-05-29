@@ -1,26 +1,23 @@
-// Virtual-texture page table backed by a wgpu 2D-array texture.
+// Virtual-texture page table backed by a wgpu R32Uint 2D-array texture.
 //
 // Layout:
 //   - One array layer per LOD level.
 //   - Width  = min(max_linear, max_texture_dimension_2d).
 //   - Height = ceil(max_linear / width).
-//   - Format: Rgba8Unorm. Each texel packs:
-//       R = slot's low byte  (slot & 0xFF)
-//       G = slot's high byte ((slot >> 8) & 0xFF)
-//       B = resident byte    (255 if resident, 0 otherwise)
-//       A = 0  (reserved)
-//     This avoids `usampler*` in the shader — a combination of `usampler*`
-//     (integer textures) and regular `sampler*` (float textures) in the
-//     same fragment shader trips a long-standing NVIDIA Cg-compiler bug
-//     on the GL 3.30 compat profile that surfaces as silently empty
-//     fragments. Float-format textures read via `textureLoad` (no
-//     filtering, no sampler binding) sidestep the bug while keeping the
-//     same access semantics.
+//   - Each texel encodes a single tile: `(resident_bit << 24) | (atlas_slot & 0xFFFF)`.
+//     A resident_bit of 0 means "not loaded"; the shader falls back to the next coarser LOD.
 //
 // Coordinate mapping (must match the shader):
 //   linear_index = tz * gy * gx + ty * gx + tx
 //   texel_x = linear_index % width
 //   texel_y = linear_index / width
+//
+// NOTE: NVIDIA's GL 3.30 compat compiler (CoreWeave L40 nodes via headless
+// EGL) silently produces no fragments when a fragment shader mixes
+// `textureSampleLevel` and `textureLoad`. To avoid that, the volume and
+// image shaders read BOTH the atlas (R16Float 3D) and this page table via
+// `textureLoad`. Means the atlas loses linear filtering; bovista was
+// already using Nearest atlas filtering so no quality change.
 
 use crate::visuals::virtual_texture::LodLevelConfig;
 
@@ -67,7 +64,7 @@ impl PageTable {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::R32Uint,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -84,24 +81,18 @@ impl PageTable {
     pub fn update(&self, queue: &wgpu::Queue, lod: usize, tz: u32, ty: u32, tx: u32, slot: u32) {
         let (gx, gy, _gz) = self.lod_grids[lod];
         let linear = tz * gy * gx + ty * gx + tx;
-        // Pack [slot_lo, slot_hi, resident_byte, reserved] as Rgba8Unorm.
-        let bytes: [u8; 4] = [
-            (slot & 0xff) as u8,
-            ((slot >> 8) & 0xff) as u8,
-            0xff,  // resident
-            0,
-        ];
-        self.write_texel(queue, lod as u32, linear, bytes);
+        let value: u32 = (1u32 << 24) | (slot & 0xFFFF);
+        self.write_texel(queue, lod as u32, linear, value);
     }
 
     /// Mark a tile as non-resident (clear its entry).
     pub fn clear(&self, queue: &wgpu::Queue, lod: usize, tz: u32, ty: u32, tx: u32) {
         let (gx, gy, _gz) = self.lod_grids[lod];
         let linear = tz * gy * gx + ty * gx + tx;
-        self.write_texel(queue, lod as u32, linear, [0, 0, 0, 0]);
+        self.write_texel(queue, lod as u32, linear, 0u32);
     }
 
-    fn write_texel(&self, queue: &wgpu::Queue, layer: u32, linear: u32, bytes: [u8; 4]) {
+    fn write_texel(&self, queue: &wgpu::Queue, layer: u32, linear: u32, value: u32) {
         let px = linear % self.width;
         let py = linear / self.width;
         queue.write_texture(
@@ -111,7 +102,7 @@ impl PageTable {
                 origin: wgpu::Origin3d { x: px, y: py, z: layer },
                 aspect: wgpu::TextureAspect::All,
             },
-            &bytes,
+            &value.to_ne_bytes(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.width * 4),

@@ -80,10 +80,7 @@ struct VolumeAllUniforms {
 @group(0) @binding(0) var<uniform> uni: VolumeAllUniforms;
 @group(0) @binding(1) var atlas: texture_3d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
-// page_table is Rgba8Unorm (was R32Uint) so we can read it via plain
-// textureLoad without `usampler*`. See page_table.rs for the rationale.
-// Each texel is [slot_lo, slot_hi, resident_byte, 0] in normalized 0..1.
-@group(0) @binding(3) var page_table: texture_2d_array<f32>;
+@group(0) @binding(3) var page_table: texture_2d_array<u32>;
 @group(0) @binding(4) var colormap: texture_1d<f32>;
 @group(0) @binding(5) var colormap_sampler: sampler;
 
@@ -168,19 +165,11 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let vol_in_tiles = min(vol_uv / uni.vt.lods[lod].tile_scale, vec3f(grid) - vec3f(1e-5));
     let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
     let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
-    let pt_x = linear % uni.vt.page_table_width;
-    let pt_y = linear / uni.vt.page_table_width;
-    // page_table is Rgba8Unorm: [slot_lo/255, slot_hi/255, resident/255, 0].
-    // We deliberately use textureSampleLevel (with nearest filtering via
-    // atlas_sampler) instead of textureLoad so the fragment shader only
-    // uses textureSampleLevel — the NVIDIA GL 3.30 compat compiler trips
-    // when textureSampleLevel and textureLoad coexist in one shader. See
-    // examples/gl_smoke --tex3d-plus-2darr for the minimal repro.
-    let pt_dims = vec2f(textureDimensions(page_table, 0));
-    let pt_uv = (vec2f(f32(pt_x), f32(pt_y)) + vec2f(0.5)) / pt_dims;
-    let pt = textureSampleLevel(page_table, atlas_sampler, pt_uv, lod, 0.0);
-    if pt.b < 0.5 { return vec2f(0.0, -1.0); }
-    let slot = u32(pt.r * 255.0 + 0.5) | (u32(pt.g * 255.0 + 0.5) << 8u);
+    let pt_x = i32(linear % uni.vt.page_table_width);
+    let pt_y = i32(linear / uni.vt.page_table_width);
+    let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
+    if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
+    let slot = entry & 0xFFFFu;
     let atlas_col   = slot % uni.vt.atlas_cols;
     let atlas_row   = (slot / uni.vt.atlas_cols) % uni.vt.atlas_rows;
     let atlas_layer = slot / (uni.vt.atlas_cols * uni.vt.atlas_rows);
@@ -191,8 +180,13 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * uni.vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * uni.vt.atlas_tile_pitch_z;
 
-    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
-                 f32(lod));
+    // Read via textureLoad (not textureSampleLevel) so the shader uses only
+    // one texture-access function — NVIDIA's GL 3.30 compat compiler trips
+    // when textureSampleLevel and textureLoad coexist in one fragment shader.
+    // Sampler was already Nearest/Nearest so the visual result matches.
+    let adim = vec3f(textureDimensions(atlas, 0));
+    let acoord = vec3i(vec3f(u, v, w) * adim);
+    return vec2f(textureLoad(atlas, acoord, 0).r, f32(lod));
 }
 
 fn sample_vvt(vol_uv: vec3f) -> vec2f {
@@ -289,10 +283,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Bypass the page table entirely — sample the raw packed atlas texture.
         // Useful for verifying atlas allocation and what data is actually loaded.
         if uni.vol.debug_mode == 2u {
-            let raw      = textureSampleLevel(atlas, atlas_sampler, vol_uv, 0.0).r;
+            let adim2 = vec3f(textureDimensions(atlas, 0));
+            let raw = textureLoad(atlas, vec3i(vol_uv * adim2), 0).r;
             let adjusted = clamp((raw - uni.vt.contrast_min) / (uni.vt.contrast_max - uni.vt.contrast_min), 0.0, 1.0);
             if adjusted > 0.01 {
-                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+                let cs         = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
                 let extinction = cs.a * uni.vol.density_scale * step_size;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;
@@ -359,7 +354,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 );
                 // Same opacity model as normal DVR → no artificial saturation.
                 if adjusted > 0.01 {
-                    let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+                    let cs         = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
                     let extinction = cs.a * uni.vol.density_scale * advance;
                     let alpha      = 1.0 - exp(-extinction);
                     accum_color += (1.0 - accum_alpha) * alpha * tint;
@@ -377,7 +372,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // alpha from the colormap's low end and render as opaque black.
             // Also skips the colormap fetch in sparse/below-threshold regions.
             if adjusted > 0.01 {
-                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+                let cs         = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
                 let extinction = cs.a * uni.vol.density_scale * advance;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;
