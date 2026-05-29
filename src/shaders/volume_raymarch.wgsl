@@ -168,10 +168,17 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let vol_in_tiles = min(vol_uv / uni.vt.lods[lod].tile_scale, vec3f(grid) - vec3f(1e-5));
     let tc = clamp(vec3i(vol_in_tiles), vec3i(0), vec3i(grid) - vec3i(1));
     let linear = u32(tc.z) * grid.y * grid.x + u32(tc.y) * grid.x + u32(tc.x);
-    let pt_x = i32(linear % uni.vt.page_table_width);
-    let pt_y = i32(linear / uni.vt.page_table_width);
+    let pt_x = linear % uni.vt.page_table_width;
+    let pt_y = linear / uni.vt.page_table_width;
     // page_table is Rgba8Unorm: [slot_lo/255, slot_hi/255, resident/255, 0].
-    let pt = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0);
+    // We deliberately use textureSampleLevel (with nearest filtering via
+    // atlas_sampler) instead of textureLoad so the fragment shader only
+    // uses textureSampleLevel — the NVIDIA GL 3.30 compat compiler trips
+    // when textureSampleLevel and textureLoad coexist in one shader. See
+    // examples/gl_smoke --tex3d-plus-2darr for the minimal repro.
+    let pt_dims = vec2f(textureDimensions(page_table, 0));
+    let pt_uv = (vec2f(f32(pt_x), f32(pt_y)) + vec2f(0.5)) / pt_dims;
+    let pt = textureSampleLevel(page_table, atlas_sampler, pt_uv, lod, 0.0);
     if pt.b < 0.5 { return vec2f(0.0, -1.0); }
     let slot = u32(pt.r * 255.0 + 0.5) | (u32(pt.g * 255.0 + 0.5) << 8u);
     let atlas_col   = slot % uni.vt.atlas_cols;

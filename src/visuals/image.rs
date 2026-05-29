@@ -219,8 +219,9 @@ impl ImageVisual {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         // Rgba8Unorm packing for the page table (was R32Uint).
-                        // See page_table.rs.
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        // See page_table.rs. filterable: true so we can sample
+                        // it with the existing atlas_sampler.
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
