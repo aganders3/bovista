@@ -136,11 +136,8 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
 
-    // Read via textureLoad (not textureSampleLevel) — see volume_raymarch.wgsl
-    // for the NVIDIA GL 3.30 compat bug rationale.
-    let adim = vec3f(textureDimensions(atlas, 0));
-    let acoord = vec3i(vec3f(u, v, w) * adim);
-    return vec2f(textureLoad(atlas, acoord, 0).r, f32(lod));
+    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
+                 f32(lod));
 }
 
 // Walk the page table to find the best resident LOD for this fragment.
@@ -175,7 +172,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let lod_idx = result.y;   // -1 if nothing resident
 
     let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-    let color    = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
+    let color    = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
 
     var out: vec4f;
     if vt.debug_mode != 0u {

@@ -180,13 +180,8 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * uni.vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * uni.vt.atlas_tile_pitch_z;
 
-    // Read via textureLoad (not textureSampleLevel) so the shader uses only
-    // one texture-access function — NVIDIA's GL 3.30 compat compiler trips
-    // when textureSampleLevel and textureLoad coexist in one fragment shader.
-    // Sampler was already Nearest/Nearest so the visual result matches.
-    let adim = vec3f(textureDimensions(atlas, 0));
-    let acoord = vec3i(vec3f(u, v, w) * adim);
-    return vec2f(textureLoad(atlas, acoord, 0).r, f32(lod));
+    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
+                 f32(lod));
 }
 
 fn sample_vvt(vol_uv: vec3f) -> vec2f {
@@ -283,11 +278,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Bypass the page table entirely — sample the raw packed atlas texture.
         // Useful for verifying atlas allocation and what data is actually loaded.
         if uni.vol.debug_mode == 2u {
-            let adim2 = vec3f(textureDimensions(atlas, 0));
-            let raw = textureLoad(atlas, vec3i(vol_uv * adim2), 0).r;
+            let raw      = textureSampleLevel(atlas, atlas_sampler, vol_uv, 0.0).r;
             let adjusted = clamp((raw - uni.vt.contrast_min) / (uni.vt.contrast_max - uni.vt.contrast_min), 0.0, 1.0);
             if adjusted > 0.01 {
-                let cs         = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
+                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
                 let extinction = cs.a * uni.vol.density_scale * step_size;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;
@@ -354,7 +348,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 );
                 // Same opacity model as normal DVR → no artificial saturation.
                 if adjusted > 0.01 {
-                    let cs         = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
+                    let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
                     let extinction = cs.a * uni.vol.density_scale * advance;
                     let alpha      = 1.0 - exp(-extinction);
                     accum_color += (1.0 - accum_alpha) * alpha * tint;
@@ -372,7 +366,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // alpha from the colormap's low end and render as opaque black.
             // Also skips the colormap fetch in sparse/below-threshold regions.
             if adjusted > 0.01 {
-                let cs         = textureLoad(colormap, i32(clamp((adjusted) * f32(textureDimensions(colormap, 0)), 0.0, f32(textureDimensions(colormap, 0)) - 1.0)), 0);
+                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
                 let extinction = cs.a * uni.vol.density_scale * advance;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;
