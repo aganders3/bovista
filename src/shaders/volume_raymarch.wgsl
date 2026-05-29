@@ -67,7 +67,7 @@ struct VolumeUniforms {
     /// Full-volume voxel dimensions at LOD 0 (x, y, z).
     lod0_dims: vec3<u32>,
     /// 0=normal DVR, 1=LOD tint + tile wireframe, 2=atlas direct,
-    /// 3=step heatmap, 4=red probe, 5=uniform echo, 6/7/8=geometry probes.
+    /// 3=step heatmap.
     debug_mode: u32,
 }
 
@@ -96,45 +96,8 @@ struct VertexOutput {
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32, in: VertexInput) -> VertexOutput {
+fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    // ── Debug mode 6: fullscreen-triangle probe ──────────────────────────────
-    if uni.vol.debug_mode == 6u {
-        var pos = array<vec2f, 3>(
-            vec2f(-1.0, -1.0),
-            vec2f(-1.0,  3.0),
-            vec2f( 3.0, -1.0),
-        );
-        let xy = pos[vi % 3u];
-        out.clip_position = vec4f(xy, 0.5, 1.0);
-        out.world_pos = vec3f(0.0);
-        return out;
-    }
-    if uni.vol.debug_mode == 7u {
-        var pos = array<vec2f, 3>(
-            vec2f(-1.0, -1.0),
-            vec2f( 3.0, -1.0),
-            vec2f(-1.0,  3.0),
-        );
-        let xy = pos[vi % 3u];
-        out.clip_position = vec4f(xy, 0.5, 1.0);
-        out.world_pos = vec3f(0.0);
-        return out;
-    }
-    if uni.vol.debug_mode == 8u {
-        var pos = array<vec2f, 6>(
-            vec2f(-1.0, -1.0),
-            vec2f(-1.0,  3.0),
-            vec2f( 3.0, -1.0),
-            vec2f(-1.0, -1.0),
-            vec2f( 3.0, -1.0),
-            vec2f(-1.0,  3.0),
-        );
-        let xy = pos[vi % 6u];
-        out.clip_position = vec4f(xy, 0.5, 1.0);
-        out.world_pos = vec3f(0.0);
-        return out;
-    }
     let world = uni.vol.vol_min + in.position * (uni.vol.vol_max - uni.vol.vol_min);
     out.clip_position = uni.view_proj * vec4f(world, 1.0);
     out.world_pos = world;
@@ -203,37 +166,6 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // ── Debug mode 4: pure-red probe (no uniform reads, no AABB test) ───────
-    if uni.vol.debug_mode == 4u {
-        return vec4f(1.0, 0.0, 0.0, 1.0);
-    }
-    // ── Debug mode 5: uniform-echo probe ────────────────────────────────────
-    // Encodes the volume's AABB extent in the red/green/blue channels. If you
-    // get black with mode 5 but red with mode 4, the uniform buffer is being
-    // read at wrong offsets — std140 vs WGSL packing mismatch on this driver.
-    // Expected on a 128³ cube: a soft greyish color (extent ≈ 128 / 256 = 0.5
-    // each).
-    if uni.vol.debug_mode == 5u {
-        let extent = (uni.vol.vol_max - uni.vol.vol_min) / 256.0;
-        return vec4f(extent, 1.0);
-    }
-    // ── Debug mode 6: fullscreen-triangle probe (companion to vs_main) ─────
-    // The vertex shader emits a fullscreen triangle from vertex_index alone
-    // (no camera, no uniform reads). If the screen comes back green, the
-    // pipeline can rasterize a triangle on this backend — meaning our cube
-    // vertices must be coming out wrong due to a uniform or camera issue.
-    // If still blue, the rasterizer / cull / depth-test config itself is
-    // broken on this driver, not the shader uniforms.
-    if uni.vol.debug_mode == 6u {
-        return vec4f(0.0, 1.0, 0.0, 1.0);
-    }
-    if uni.vol.debug_mode == 7u {
-        return vec4f(1.0, 1.0, 0.0, 1.0);  // yellow
-    }
-    if uni.vol.debug_mode == 8u {
-        return vec4f(0.0, 1.0, 1.0, 1.0);  // cyan
-    }
-
     let ray_origin = uni.vol.camera_pos;
     let ray_dir    = normalize(in.world_pos - uni.vol.camera_pos);
 

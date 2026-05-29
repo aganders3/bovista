@@ -386,13 +386,6 @@ impl VolumeVisual {
         self.debug_mode = if debug { 1 } else { 0 };
     }
 
-    /// Set the debug mode by exact value. See volume_raymarch.wgsl for the
-    /// mode→behaviour mapping. Intended for offscreen diagnostics; the
-    /// boolean setters above remain the supported public API.
-    pub fn set_debug_mode_raw(&mut self, mode: u32) {
-        self.debug_mode = mode;
-    }
-
     /// Enable atlas-direct debug mode (mode 2): bypasses the page table and samples the
     /// raw packed atlas texture. Useful for verifying atlas allocation and loaded data.
     /// False restores normal DVR (mode 0).
