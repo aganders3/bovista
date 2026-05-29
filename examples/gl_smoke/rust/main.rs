@@ -247,6 +247,39 @@ fn fs_main() -> @location(0) vec4<f32> {
 }
 "#;
 
+// 3D-sample + 2D-array-load probe — exactly the volume shader's broken
+// combination after the page-table refactor: textureSampleLevel on a
+// 3D float texture AND textureLoad on a 2D-array float texture in the
+// same fragment shader.
+const SHADER_TEX3D_PLUS_2DARR: &str = r#"
+@group(0) @binding(0) var t3d:    texture_3d<f32>;
+@group(0) @binding(1) var s3d:    sampler;
+@group(0) @binding(2) var t2darr: texture_2d_array<f32>;
+
+struct VsOut { @builtin(position) pos: vec4<f32> };
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var ps = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+        vec2<f32>( 3.0, -1.0),
+    );
+    var out: VsOut;
+    out.pos = vec4<f32>(ps[vi % 3u], 0.5, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    let sampled = textureSampleLevel(t3d, s3d, vec3<f32>(0.75, 0.75, 0.75), 0.0).r;
+    let loaded  = textureLoad(t2darr, vec2<i32>(0, 0), 0, 0);
+    // sampled ~ 0.797 (R), loaded.r = 0.5 (G channel), loaded.b = 1.0 (B chan)
+    // Expected: linear (0.80, 0.50, 1.00, 1.00) — pastel cyan/sky.
+    return vec4<f32>(sampled, loaded.r, loaded.b, 1.0);
+}
+"#;
+
 // Two-texture probe. If both textures read independently we get yellow
 // (R from tex A, G from tex B). If they alias to one texture unit on this
 // driver, we'd see red-only or green-only.
@@ -478,6 +511,7 @@ fn main() {
     let use_cross_stage = args.iter().any(|a| a == "--cross-stage");
     let use_big_struct = args.iter().any(|a| a == "--big-struct");
     let use_vbo_big = args.iter().any(|a| a == "--vbo-big");
+    let use_tex3d_plus_2darr = args.iter().any(|a| a == "--tex3d-plus-2darr");
 
     let backends = match backend_str.as_str() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -554,7 +588,9 @@ fn main() {
     });
     println!("[smoke] depth: {}", if with_depth { "on" } else { "off" });
 
-    let shader_src = if use_vbo_big {
+    let shader_src = if use_tex3d_plus_2darr {
+        SHADER_TEX3D_PLUS_2DARR
+    } else if use_vbo_big {
         SHADER_VBO_BIG
     } else if use_big_struct {
         SHADER_BIG_STRUCT
@@ -577,7 +613,8 @@ fn main() {
     } else {
         SHADER_NO_UNIFORM
     };
-    let mode_name = if use_vbo_big { "vbo-big" }
+    let mode_name = if use_tex3d_plus_2darr { "tex3d-plus-2darr" }
+                   else if use_vbo_big { "vbo-big" }
                    else if use_big_struct { "big-struct" }
                    else if use_cross_stage { "cross-stage" }
                    else if use_two_tex { "two-tex" }
@@ -750,6 +787,92 @@ fn main() {
     } else {
         (None, None)
     };
+
+    // ── 3D + 2D-array probe (mirrors volume's textureSampleLevel +
+    //    textureLoad combination after the page-table refactor) ──────────────
+    let tex3d_plus_2darr = if use_tex3d_plus_2darr {
+        const N: u32 = 16;
+        let total = (N * N * N) as usize;
+        let mut bytes = Vec::with_capacity(total * 2);
+        for z in 0..N { for y in 0..N { for x in 0..N {
+            let v = (x + y * N + z * N * N) as f32 / (N * N * N) as f32;
+            let h = half::f16::from_f32(v).to_bits();
+            bytes.push((h & 0xff) as u8); bytes.push((h >> 8) as u8);
+        }}}
+        let tex3d = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("smoke-tex3d-A"),
+            size: wgpu::Extent3d { width: N, height: N, depth_or_array_layers: N },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex3d, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(N * 2), rows_per_image: Some(N) },
+            wgpu::Extent3d { width: N, height: N, depth_or_array_layers: N },
+        );
+        let view3d = tex3d.create_view(&wgpu::TextureViewDescriptor::default());
+        let samp3d = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("smoke-samp3d-A"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest, min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // 2D-array Rgba8Unorm with known marker at (layer=0, x=0, y=0)
+        // = [0x80, 0x40, 0xFF, 0x00] = (0.5, 0.25, 1.0, 0.0).
+        let arr_w: u32 = 4; let arr_h: u32 = 4; let arr_layers: u32 = 2;
+        let mut arr_bytes = vec![0u8; (arr_w * arr_h * arr_layers * 4) as usize];
+        arr_bytes[0] = 0x80; arr_bytes[1] = 0x40; arr_bytes[2] = 0xff; arr_bytes[3] = 0x00;
+        let tex2da = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("smoke-tex2da-A"),
+            size: wgpu::Extent3d { width: arr_w, height: arr_h, depth_or_array_layers: arr_layers },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex2da, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &arr_bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(arr_w * 4), rows_per_image: Some(arr_h) },
+            wgpu::Extent3d { width: arr_w, height: arr_h, depth_or_array_layers: arr_layers },
+        );
+        let view2da = tex2da.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("smoke-tex3d-2darr-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false },
+                    count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false },
+                    count: None },
+            ],
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("smoke-tex3d-2darr-bg"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view3d) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&samp3d) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view2da) },
+            ],
+        });
+        Some((layout, bg))
+    } else { None };
 
     // ── 3D texture setup (only used when --tex3d) ────────────────────────
     // Match bovista's atlas: 16x16x16 R16Float volume with a known
@@ -1082,7 +1205,13 @@ fn main() {
         Some((layout, bg))
     } else { None };
 
-    let pipeline_layout = if let Some((l, _)) = &two_tex {
+    let pipeline_layout = if let Some((l, _)) = &tex3d_plus_2darr {
+        Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("smoke-pl-3d-2darr"),
+            bind_group_layouts: &[l],
+            push_constant_ranges: &[],
+        }))
+    } else if let Some((l, _)) = &two_tex {
         Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke-pl-2tex"),
             bind_group_layouts: &[l],
@@ -1228,7 +1357,9 @@ fn main() {
         if let Some(b) = &vbo {
             pass.set_vertex_buffer(0, b.slice(..));
         }
-        if let Some((_, bg)) = &two_tex {
+        if let Some((_, bg)) = &tex3d_plus_2darr {
+            pass.set_bind_group(0, bg, &[]);
+        } else if let Some((_, bg)) = &two_tex {
             pass.set_bind_group(0, bg, &[]);
         } else if let Some((_, bg)) = &one_bg_three {
             pass.set_bind_group(0, bg, &[]);
