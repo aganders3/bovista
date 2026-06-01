@@ -30,8 +30,9 @@
 //! Set BOVISTA_FORCE_LIBX264=1 to skip the NVENC probe and always use libx264.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -133,7 +134,7 @@ fn main() {
     };
     let cache_capacity = cache_override.unwrap_or(setup.cache_capacity);
 
-    let mut volume = VolumeVisual::new(
+    let volume = VolumeVisual::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
         renderer.camera_bind_group_layout(),
         setup.lods.clone(), cache_capacity as usize, setup.loader,
@@ -149,23 +150,28 @@ fn main() {
         .min(lod0.voxel_size.2)
         .max(1e-9);
     let base_density = 0.5 / voxel_min;
-    let final_density = base_density * density_mult;
-    volume.set_density_scale(final_density);
-    volume.set_contrast_limits(contrast_min, contrast_max);
     println!(
-        "[orbit] density={:.2} (base {:.2} × {}), contrast=[{:.3}, {:.3}]",
-        final_density, base_density, density_mult, contrast_min, contrast_max,
+        "[orbit] base_density={:.2} (× {} init); contrast=[{:.3}, {:.3}] init",
+        base_density, density_mult, contrast_min, contrast_max,
     );
 
-    let mut scene = Scene::new();
-    scene.add(Arc::new(Mutex::new(volume)));
+    // Shared view state — the render loop reads each frame, HTTP `/set`
+    // writes from slider events on the served HTML page.
+    let view_state = Arc::new(ViewState::new(
+        1.0,           // zoom (× world_max for camera radius)
+        contrast_min,
+        contrast_max,
+        density_mult,
+        1.0,           // orbit_speed (× 1 revolution per 12s)
+    ));
 
-    // Camera radius: 2× the largest world extent (~Python OME-Zarr example
-    // camera distance). Closer than this and typical pyramids resolve to LOD 0
-    // everywhere, which thrashes the VT atlas as the camera orbits.
+    let volume_arc = Arc::new(Mutex::new(volume));
+    let mut scene = Scene::new();
+    scene.add(volume_arc.clone());
+
+    // Camera setup. Radius is recomputed each frame from view_state.zoom().
     let (wz, wy, wx) = setup.world_extents;
     let world_max = wz.max(wy).max(wx);
-    let radius = world_max * 2.0;
     let mut camera = Camera::new(width as f32 / height as f32);
     camera.target = glam::Vec3::ZERO;
     camera.up = glam::Vec3::Y;
@@ -177,33 +183,49 @@ fn main() {
     camera.projection_mode = ProjectionMode::Perspective;
 
     // ── HTTP server ─────────────────────────────────────────────────────────
-    // The render thread (this thread) and the HTTP accept thread share an
-    // optional ChildStdin. When a client is connected, `active` holds their
-    // fresh ffmpeg's stdin and frames flow into it. When no client is
-    // connected, the render loop idles. Each new client gets its own ffmpeg,
-    // so the moov atom + first keyframe are emitted fresh per connection.
+    // Routes (single accept loop, thread-per-connection):
+    //   GET /              → HTML page with <video> + sliders
+    //   GET /stream        → fragmented MP4 (single client)
+    //   GET /set?key=val…  → update ViewState, returns 204
+    //
+    // The render thread (this thread) holds a single ChildStdin in `active`
+    // for the current /stream client; idles when no client is connected.
     let active: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
-    spawn_http_server(port, width, height, fps, active.clone());
+    spawn_http_server(port, width, height, fps, active.clone(), view_state.clone());
 
-    println!("[orbit] ready; connect to http://localhost:{}/ (Ctrl-C to stop)", port);
+    println!("[orbit] ready; open http://localhost:{}/ (Ctrl-C to stop)", port);
 
     // ── Render loop ─────────────────────────────────────────────────────────
-    let start = Instant::now();
     let frame_dt = Duration::from_secs_f32(1.0 / fps as f32);
     let idle_sleep = Duration::from_millis(100);
+    // Orbit angle accumulator (so changing orbit speed mid-flight doesn't
+    // teleport the camera — only changes its rate going forward).
+    let mut theta: f32 = 0.0;
+    let mut last_tick = Instant::now();
 
     loop {
         // Skip the render entirely when nobody's watching.
         if active.lock().unwrap().is_none() {
             std::thread::sleep(idle_sleep);
+            last_tick = Instant::now();
             continue;
         }
 
         let tick = Instant::now();
+        let dt = tick.duration_since(last_tick).as_secs_f32();
+        last_tick = tick;
 
-        // Orbit at one revolution per 12s, tilted slightly above XZ.
-        let t = start.elapsed().as_secs_f32();
-        let theta = t * (std::f32::consts::TAU / 12.0);
+        // Apply current view state to the volume (cheap; writes only on next
+        // prepare() submission).
+        {
+            let mut v = volume_arc.lock().unwrap();
+            v.set_contrast_limits(view_state.contrast_min(), view_state.contrast_max());
+            v.set_density_scale(base_density * view_state.density_mult());
+        }
+
+        // Camera orbit (one revolution per 12s × orbit_speed).
+        theta += dt * (std::f32::consts::TAU / 12.0) * view_state.orbit_speed();
+        let radius = world_max * 2.0 * view_state.zoom();
         camera.position = glam::Vec3::new(
             radius * theta.cos(),
             radius * 0.30,
@@ -470,8 +492,56 @@ fn probe_encoder(name: &str) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HTTP server. Single client at a time; each connection gets a fresh ffmpeg
-// so the moov + leading keyframe are emitted at the start of every stream.
+// Shared view state — atomic f32-as-bits so HTTP handlers and the render
+// thread can both touch it without a mutex on the hot path.
+
+struct ViewState {
+    zoom:         AtomicU32,
+    contrast_min: AtomicU32,
+    contrast_max: AtomicU32,
+    density_mult: AtomicU32,
+    orbit_speed:  AtomicU32,
+}
+
+impl ViewState {
+    fn new(zoom: f32, cmin: f32, cmax: f32, dens: f32, speed: f32) -> Self {
+        Self {
+            zoom:         AtomicU32::new(zoom.to_bits()),
+            contrast_min: AtomicU32::new(cmin.to_bits()),
+            contrast_max: AtomicU32::new(cmax.to_bits()),
+            density_mult: AtomicU32::new(dens.to_bits()),
+            orbit_speed:  AtomicU32::new(speed.to_bits()),
+        }
+    }
+    fn zoom(&self)         -> f32 { f32::from_bits(self.zoom.load(Ordering::Relaxed)) }
+    fn contrast_min(&self) -> f32 { f32::from_bits(self.contrast_min.load(Ordering::Relaxed)) }
+    fn contrast_max(&self) -> f32 { f32::from_bits(self.contrast_max.load(Ordering::Relaxed)) }
+    fn density_mult(&self) -> f32 { f32::from_bits(self.density_mult.load(Ordering::Relaxed)) }
+    fn orbit_speed(&self)  -> f32 { f32::from_bits(self.orbit_speed.load(Ordering::Relaxed)) }
+
+    /// Apply `key=value` from the /set query string. Unknown keys ignored.
+    fn apply(&self, key: &str, value: f32) {
+        let cell = match key {
+            "zoom"         => &self.zoom,
+            "contrast_min" => &self.contrast_min,
+            "contrast_max" => &self.contrast_max,
+            "density_mult" => &self.density_mult,
+            "orbit_speed"  => &self.orbit_speed,
+            _ => return,
+        };
+        cell.store(value.to_bits(), Ordering::Relaxed);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP server.
+//   GET /              → HTML control page (video + sliders)
+//   GET /stream        → fragmented MP4 (one client at a time; fresh ffmpeg
+//                        spawned per connection so each gets a moov + IDR).
+//   GET /set?k=v&…     → mutate ViewState; returns 204
+//
+// One thread per connection so slider updates aren't blocked by the long-lived
+// /stream client.
 
 fn spawn_http_server(
     port: u16,
@@ -479,63 +549,182 @@ fn spawn_http_server(
     height: u32,
     fps: u32,
     active: Arc<Mutex<Option<ChildStdin>>>,
+    view_state: Arc<ViewState>,
 ) {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .unwrap_or_else(|e| panic!("bind 0.0.0.0:{} failed: {}", port, e));
 
     std::thread::spawn(move || {
         for incoming in listener.incoming() {
-            let Ok(mut socket) = incoming else { continue };
-
-            // Drain the request line + headers (we don't parse them).
-            let mut buf = [0u8; 1024];
-            let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
-            let _ = socket.read(&mut buf);
-            let _ = socket.set_read_timeout(None);
-
-            // Refuse a second concurrent client; we only mux one ffmpeg.
-            if active.lock().unwrap().is_some() {
-                let _ = socket.write_all(
-                    b"HTTP/1.0 503 Service Unavailable\r\n\
-                      Content-Type: text/plain\r\n\
-                      Connection: close\r\n\
-                      \r\n\
-                      Another client is already streaming.\n",
-                );
-                continue;
-            }
-
-            // Spawn a per-client ffmpeg so this client receives a complete
-            // fMP4 from the first byte (fresh moov + IDR frame).
-            let mut ffmpeg = spawn_ffmpeg(width, height, fps);
-            let stdin = ffmpeg.stdin.take().expect("ffmpeg stdin");
-            let mut stdout = ffmpeg.stdout.take().expect("ffmpeg stdout");
-
-            *active.lock().unwrap() = Some(stdin);
-
-            println!("[orbit] HTTP client connected; streaming fMP4");
-            let header_ok = socket.write_all(
-                b"HTTP/1.0 200 OK\r\n\
-                  Content-Type: video/mp4\r\n\
-                  Cache-Control: no-store\r\n\
-                  Access-Control-Allow-Origin: *\r\n\
-                  Connection: close\r\n\
-                  \r\n",
-            ).is_ok();
-
-            if header_ok {
-                let _ = std::io::copy(&mut stdout, &mut socket);
-            }
-
-            // Client disconnected (or ffmpeg died). Release the slot and
-            // tear down this ffmpeg so the next connection starts cleanly.
-            *active.lock().unwrap() = None;
-            let _ = ffmpeg.kill();
-            let _ = ffmpeg.wait();
-            println!("[orbit] HTTP client disconnected; server idle, waiting for next client");
+            let Ok(socket) = incoming else { continue };
+            let active = active.clone();
+            let view_state = view_state.clone();
+            std::thread::spawn(move || {
+                handle_request(socket, width, height, fps, active, view_state);
+            });
         }
     });
 }
+
+fn handle_request(
+    mut socket: TcpStream,
+    width: u32, height: u32, fps: u32,
+    active: Arc<Mutex<Option<ChildStdin>>>,
+    view_state: Arc<ViewState>,
+) {
+    // Read the request line + headers (up to first blank line).
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
+    let mut buf = [0u8; 2048];
+    let n = socket.read(&mut buf).unwrap_or(0);
+    let _ = socket.set_read_timeout(None);
+    if n == 0 {
+        return;
+    }
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let path = request.lines().next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+
+    if path == "/" || path.starts_with("/?") {
+        serve_html(&mut socket, &view_state);
+    } else if path == "/stream" {
+        serve_stream(&mut socket, width, height, fps, active);
+    } else if let Some(query) = path.strip_prefix("/set?") {
+        serve_set(&mut socket, query, &view_state);
+    } else {
+        let _ = socket.write_all(
+            b"HTTP/1.0 404 Not Found\r\n\
+              Content-Length: 0\r\n\
+              Connection: close\r\n\r\n",
+        );
+    }
+}
+
+fn serve_html(socket: &mut TcpStream, view: &ViewState) {
+    let body = INDEX_HTML
+        .replace("{{ZOOM}}",         &format!("{}", view.zoom()))
+        .replace("{{CONTRAST_MIN}}", &format!("{}", view.contrast_min()))
+        .replace("{{CONTRAST_MAX}}", &format!("{}", view.contrast_max()))
+        .replace("{{DENSITY_MULT}}", &format!("{}", view.density_mult()))
+        .replace("{{ORBIT_SPEED}}",  &format!("{}", view.orbit_speed()));
+    let header = format!(
+        "HTTP/1.0 200 OK\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n",
+        body.len(),
+    );
+    let _ = socket.write_all(header.as_bytes());
+    let _ = socket.write_all(body.as_bytes());
+}
+
+fn serve_stream(
+    socket: &mut TcpStream,
+    width: u32, height: u32, fps: u32,
+    active: Arc<Mutex<Option<ChildStdin>>>,
+) {
+    if active.lock().unwrap().is_some() {
+        let _ = socket.write_all(
+            b"HTTP/1.0 503 Service Unavailable\r\n\
+              Content-Type: text/plain\r\n\
+              Connection: close\r\n\r\n\
+              Another client is already streaming.\n",
+        );
+        return;
+    }
+
+    let mut ffmpeg = spawn_ffmpeg(width, height, fps);
+    let stdin = ffmpeg.stdin.take().expect("ffmpeg stdin");
+    let mut stdout = ffmpeg.stdout.take().expect("ffmpeg stdout");
+
+    *active.lock().unwrap() = Some(stdin);
+
+    println!("[orbit] HTTP /stream client connected; streaming fMP4");
+    let header_ok = socket.write_all(
+        b"HTTP/1.0 200 OK\r\n\
+          Content-Type: video/mp4\r\n\
+          Cache-Control: no-store\r\n\
+          Access-Control-Allow-Origin: *\r\n\
+          Connection: close\r\n\r\n",
+    ).is_ok();
+
+    if header_ok {
+        let _ = std::io::copy(&mut stdout, socket);
+    }
+
+    *active.lock().unwrap() = None;
+    let _ = ffmpeg.kill();
+    let _ = ffmpeg.wait();
+    println!("[orbit] /stream client disconnected; idle");
+}
+
+fn serve_set(socket: &mut TcpStream, query: &str, view: &ViewState) {
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if let Ok(f) = v.parse::<f32>() {
+                view.apply(k, f);
+            }
+        }
+    }
+    let _ = socket.write_all(
+        b"HTTP/1.0 204 No Content\r\n\
+          Cache-Control: no-store\r\n\
+          Access-Control-Allow-Origin: *\r\n\
+          Connection: close\r\n\r\n",
+    );
+}
+
+const INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>bovista orbit</title>
+<style>
+  body { background:#111; color:#ccc; font:13px/1.4 ui-monospace,monospace; margin:20px; }
+  h1 { margin:0 0 12px 0; font-size:14px; color:#888; font-weight:normal; }
+  video { display:block; max-width:100%; background:#000; border:1px solid #333; }
+  .row { display:flex; align-items:center; gap:10px; margin:6px 0; }
+  .row label  { width:120px; color:#aaa; }
+  .row input  { flex:1; }
+  .row .val   { width:80px; text-align:right; color:#fff; }
+</style>
+</head><body>
+<h1>bovista orbit_stream</h1>
+<video src="/stream" autoplay muted controls></video>
+<div id="controls">
+  <div class="row"><label>zoom</label>
+    <input type="range" id="zoom" min="0.25" max="4" step="0.05" value="{{ZOOM}}">
+    <span class="val" id="zoom_val"></span></div>
+  <div class="row"><label>contrast min</label>
+    <input type="range" id="contrast_min" min="0" max="0.5" step="0.0005" value="{{CONTRAST_MIN}}">
+    <span class="val" id="contrast_min_val"></span></div>
+  <div class="row"><label>contrast max</label>
+    <input type="range" id="contrast_max" min="0.001" max="1" step="0.0005" value="{{CONTRAST_MAX}}">
+    <span class="val" id="contrast_max_val"></span></div>
+  <div class="row"><label>density ×</label>
+    <input type="range" id="density_mult" min="0.05" max="10" step="0.05" value="{{DENSITY_MULT}}">
+    <span class="val" id="density_mult_val"></span></div>
+  <div class="row"><label>orbit speed ×</label>
+    <input type="range" id="orbit_speed" min="0" max="4" step="0.05" value="{{ORBIT_SPEED}}">
+    <span class="val" id="orbit_speed_val"></span></div>
+</div>
+<script>
+const fmt = { zoom: v=>(+v).toFixed(2)+'×',
+              contrast_min: v=>(+v).toFixed(4),
+              contrast_max: v=>(+v).toFixed(4),
+              density_mult: v=>(+v).toFixed(2)+'×',
+              orbit_speed:  v=>(+v).toFixed(2)+'×' };
+for (const id of Object.keys(fmt)) {
+  const el  = document.getElementById(id);
+  const lbl = document.getElementById(id+'_val');
+  const update = ()=>{ lbl.textContent = fmt[id](el.value);
+                       fetch('/set?'+id+'='+el.value); };
+  el.oninput = update;
+  lbl.textContent = fmt[id](el.value);
+}
+</script>
+</body></html>
+"#;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI flag parsing (tiny inline; no clap dep)
