@@ -77,14 +77,13 @@ name = "gl_smoke"
 path = "examples/gl_smoke/rust/main.rs"
 required-features = []
 
-# Pin wgpu-hal to a forked branch that requests an OpenGL *core* profile
-# context on the GLES backend. Required for the HPC headless GL path:
-# NVIDIA's compatibility-profile GLSL frontend (the "Cg compiler") has
-# miscompile bugs that silently break fragment shaders mixing different
-# texture-access functions. The core-profile frontend doesn't. Patch
-# branch: https://github.com/aganders3/wgpu/tree/force-gl-core-profile
-# Only wgpu-hal is patched; the other wgpu-* crates use the published
-# version that wgpu-core/wgpu pin against (the fork branch is on
-# wgpu-hal-v26.0.6, matching what wgpu-core 26.0.1 wants).
-[patch.crates-io]
-wgpu-hal = { git = "https://github.com/aganders3/wgpu", branch = "force-gl-core-profile" }
+# TEMP: dropping the wgpu-hal patch to test whether it's actually required
+# for the HPC GL path now that bovista's shader/UBO refactors are in.
+# If this build renders the cube on HPC, the patch is "future-proofing"
+# rather than a bug fix and we can decide what to do with it on those
+# merits. If it fails, the patch is required for our specific shaders.
+#
+# Stash to put back:
+#   [patch.crates-io]
+#   wgpu-hal = { git = "https://github.com/aganders3/wgpu",
+#                branch = "force-gl-core-profile" }
