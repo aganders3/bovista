@@ -77,14 +77,13 @@ name = "gl_smoke"
 path = "examples/gl_smoke/rust/main.rs"
 required-features = []
 
-# Pin wgpu-hal to a forked branch that auto-descends through desktop GL
-# versions (preferring core profile) when opening the EGL context.
-# Verified load-bearing for the HPC GL path: without this patch, the
-# default 3.3 context on NVIDIA's Linux driver routes through the legacy
-# "Cg compiler" GLSL frontend and bovista's volume shader produces no
-# fragments. With the patch (4.6 core auto-selected), the shader compiles
-# and runs correctly.
+# Pin wgpu-hal to a forked branch that adds EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR
+# to the existing GL 3.3 context-creation request. On NVIDIA Linux this
+# kicks the driver into the modern GLSL frontend (vs. the legacy "Cg
+# compiler" path triggered when the profile mask is absent), which is
+# required for our shaders to render correctly on HPC.
 #
-# Branch: https://github.com/aganders3/wgpu/tree/force-gl-core-profile
+# Branch: https://github.com/aganders3/wgpu/tree/add-gl-profile-mask
+# (Two-line minimal fix — the upstream PR candidate.)
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/aganders3/wgpu", branch = "force-gl-core-profile" }
+wgpu-hal = { git = "https://github.com/aganders3/wgpu", branch = "add-gl-profile-mask" }
