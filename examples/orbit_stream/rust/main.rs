@@ -154,10 +154,12 @@ fn main() {
     let mut scene = Scene::new();
     scene.add(Arc::new(Mutex::new(volume)));
 
-    // Camera radius: 2.5× half the largest world extent — fits any LOD-0 volume.
+    // Camera radius: 2× the largest world extent (~Python OME-Zarr example
+    // camera distance). Closer than this and typical pyramids resolve to LOD 0
+    // everywhere, which thrashes the VT atlas as the camera orbits.
     let (wz, wy, wx) = setup.world_extents;
     let world_max = wz.max(wy).max(wx);
-    let radius = world_max * 1.25;
+    let radius = world_max * 2.0;
     let mut camera = Camera::new(width as f32 / height as f32);
     camera.target = glam::Vec3::ZERO;
     camera.up = glam::Vec3::Y;
@@ -832,7 +834,9 @@ mod ome_zarr {
             loader,
             pending_slot,
             world_extents,
-            cache_capacity: 1024,
+            // Comfortably bigger than a single LOD's tile count for the
+            // OME-Zarr datasets we care about. Override with --cache-tiles.
+            cache_capacity: 4096,
         })
     }
 
