@@ -47,6 +47,12 @@ fn main() {
     env_logger::init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    const KNOWN_FLAGS: &[&str] = &[
+        "--width", "--height", "--fps", "--port", "--backend",
+        "--zarr", "--cache-tiles",
+        "--contrast-min", "--contrast-max", "--density-mult",
+    ];
+    check_unknown_flags(&args, KNOWN_FLAGS);
     let width: u32 = flag_u32(&args, "--width", 1024);
     let height: u32 = flag_u32(&args, "--height", 768);
     let fps: u32 = flag_u32(&args, "--fps", 30);
@@ -540,6 +546,26 @@ fn flag_u32(args: &[String], name: &str, default: u32) -> u32 {
 fn flag_str(args: &[String], name: &str, default: &str) -> String {
     flag_str_opt(args, name).unwrap_or_else(|| default.to_string())
 }
+fn check_unknown_flags(args: &[String], known: &[&str]) {
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a.starts_with("--") {
+            let name = a.split('=').next().unwrap();
+            if !known.contains(&name) {
+                eprintln!("[orbit] error: unknown flag {:?}", a);
+                eprintln!("[orbit] known flags: {}", known.join(", "));
+                std::process::exit(2);
+            }
+            // Skip the value token if it's a separate arg.
+            if !a.contains('=') && i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
 fn flag_str_opt(args: &[String], name: &str) -> Option<String> {
     let eq = format!("{}=", name);
     let mut i = 0;
