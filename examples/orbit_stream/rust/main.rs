@@ -84,6 +84,10 @@ fn main() {
     })).expect("no GPU adapter found");
     let info = adapter.get_info();
     println!("[orbit] adapter: {} ({:?}, type {:?})", info.name, info.backend, info.device_type);
+    // On GL backends, driver_info contains the GL_VERSION + GLSL_VERSION
+    // strings. If you see "via Cg compiler" the EGL profile-mask patch
+    // didn't take effect — modern NVIDIA shows "4.6.0 NVIDIA …" instead.
+    println!("[orbit] driver: {} / {}", info.driver, info.driver_info);
 
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("orbit-device"),

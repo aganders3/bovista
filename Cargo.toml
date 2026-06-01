@@ -35,6 +35,13 @@ png = "0.17"
 # OME-Zarr loading for the orbit_stream example. zarrs default features cover
 # filesystem + common codecs (blosc, gzip, zstd, sharding, crc32c); zarrs_http
 # adds a synchronous HTTP store so we can stream remote datasets directly.
+#
+# Note: zarrs_http → reqwest → openssl-sys. On hosts that don't ship
+# libssl-dev, point the build at a prebuilt OpenSSL via env vars, e.g.:
+#
+#   export OPENSSL_DIR=$HOME/.pixi/envs/openssl
+#
+# or set features = ["vendored"] on openssl-sys to build OpenSSL from source.
 zarrs = "0.23"
 zarrs_http = "0.3"
 serde_json = "1"
