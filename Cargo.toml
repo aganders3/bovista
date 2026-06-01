@@ -77,13 +77,14 @@ name = "gl_smoke"
 path = "examples/gl_smoke/rust/main.rs"
 required-features = []
 
-# TEMP: dropping the wgpu-hal patch to test whether it's actually required
-# for the HPC GL path now that bovista's shader/UBO refactors are in.
-# If this build renders the cube on HPC, the patch is "future-proofing"
-# rather than a bug fix and we can decide what to do with it on those
-# merits. If it fails, the patch is required for our specific shaders.
+# Pin wgpu-hal to a forked branch that auto-descends through desktop GL
+# versions (preferring core profile) when opening the EGL context.
+# Verified load-bearing for the HPC GL path: without this patch, the
+# default 3.3 context on NVIDIA's Linux driver routes through the legacy
+# "Cg compiler" GLSL frontend and bovista's volume shader produces no
+# fragments. With the patch (4.6 core auto-selected), the shader compiles
+# and runs correctly.
 #
-# Stash to put back:
-#   [patch.crates-io]
-#   wgpu-hal = { git = "https://github.com/aganders3/wgpu",
-#                branch = "force-gl-core-profile" }
+# Branch: https://github.com/aganders3/wgpu/tree/force-gl-core-profile
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/aganders3/wgpu", branch = "force-gl-core-profile" }
