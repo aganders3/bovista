@@ -432,13 +432,21 @@ fn spawn_ffmpeg(width: u32, height: u32, fps: u32) -> Child {
     let gop = fps.to_string();
     let (vcodec, codec_args): (&str, Vec<String>) = if nvenc_available {
         ("h264_nvenc", vec![
-            "-preset".into(),     "p1".into(),
-            "-tune".into(),       "ll".into(),
-            "-rc".into(),         "vbr".into(),
-            "-b:v".into(),        "8M".into(),
-            "-g".into(),          gop.clone(),
-            "-keyint_min".into(), gop.clone(),
-            "-no-scenecut".into(),"1".into(),
+            "-preset".into(),       "p1".into(),
+            // Ultra-low-latency tune disables lookahead + B-frames at the
+            // tune-preset level (Turing+ / Ada Lovelace required).
+            "-tune".into(),         "ull".into(),
+            "-rc".into(),           "cbr".into(),
+            "-b:v".into(),          "8M".into(),
+            // Belt-and-braces: explicitly forbid B-frames + lookahead so the
+            // encoder can't introduce frame-reordering latency.
+            "-bf".into(),           "0".into(),
+            "-rc-lookahead".into(), "0".into(),
+            "-delay".into(),        "0".into(),
+            "-zerolatency".into(),  "1".into(),
+            "-g".into(),            gop.clone(),
+            "-keyint_min".into(),   gop.clone(),
+            "-no-scenecut".into(),  "1".into(),
         ])
     } else {
         ("libx264", vec![
@@ -690,7 +698,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 </style>
 </head><body>
 <h1>bovista orbit_stream</h1>
-<video src="/stream" autoplay muted controls></video>
+<video id="live" src="/stream" autoplay muted playsinline></video>
 <div id="controls">
   <div class="row"><label>zoom</label>
     <input type="range" id="zoom" min="0.25" max="4" step="0.05" value="{{ZOOM}}">
@@ -709,6 +717,18 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <span class="val" id="orbit_speed_val"></span></div>
 </div>
 <script>
+// Keep the <video> pinned to the live edge: every 500 ms, if we've drifted
+// more than 0.5 s behind the latest buffered frame, snap forward. Without
+// this, the browser will quietly buffer and you end up watching minutes-old
+// frames.
+const live = document.getElementById('live');
+setInterval(()=>{
+  const b = live.buffered;
+  if (b.length === 0) return;
+  const tip = b.end(b.length - 1);
+  if (tip - live.currentTime > 0.5) live.currentTime = tip - 0.05;
+}, 500);
+
 const fmt = { zoom: v=>(+v).toFixed(2)+'×',
               contrast_min: v=>(+v).toFixed(4),
               contrast_max: v=>(+v).toFixed(4),
