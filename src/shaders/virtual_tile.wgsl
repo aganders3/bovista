@@ -72,8 +72,9 @@ var<uniform> vt: VTUniforms;
 
 // ── Group 2: colormap LUT ────────────────────────────────────────────────────
 
+// 2D 256×1 — see volume_raymarch.wgsl for the naga GL 1D-Rgba8Unorm bug.
 @group(2) @binding(0)
-var colormap: texture_1d<f32>;
+var colormap: texture_2d<f32>;
 
 @group(2) @binding(1)
 var colormap_sampler: sampler;
@@ -172,7 +173,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let lod_idx = result.y;   // -1 if nothing resident
 
     let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-    let color    = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+    let color    = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);
 
     var out: vec4f;
     if vt.debug_mode != 0u {

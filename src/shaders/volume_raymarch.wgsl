@@ -81,7 +81,10 @@ struct VolumeAllUniforms {
 @group(0) @binding(1) var atlas: texture_3d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
 @group(0) @binding(3) var page_table: texture_2d_array<u32>;
-@group(0) @binding(4) var colormap: texture_1d<f32>;
+// 2D 256×1 instead of 1D 256 — works around a naga GLSL bug where 1D
+// Rgba8Unorm textures sampled on NVIDIA GL 4.6 zero out the RGB channels
+// (alpha is preserved).
+@group(0) @binding(4) var colormap: texture_2d<f32>;
 @group(0) @binding(5) var colormap_sampler: sampler;
 
 // ── Vertex stage ──────────────────────────────────────────────────────────────
@@ -213,7 +216,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let raw      = textureSampleLevel(atlas, atlas_sampler, vol_uv, 0.0).r;
             let adjusted = clamp((raw - uni.vt.contrast_min) / (uni.vt.contrast_max - uni.vt.contrast_min), 0.0, 1.0);
             if adjusted > 0.01 {
-                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+                let cs         = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);
                 let extinction = cs.a * uni.vol.density_scale * step_size;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;
@@ -280,7 +283,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 );
                 // Same opacity model as normal DVR → no artificial saturation.
                 if adjusted > 0.01 {
-                    let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+                    let cs         = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);
                     let extinction = cs.a * uni.vol.density_scale * advance;
                     let alpha      = 1.0 - exp(-extinction);
                     accum_color += (1.0 - accum_alpha) * alpha * tint;
@@ -298,7 +301,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // alpha from the colormap's low end and render as opaque black.
             // Also skips the colormap fetch in sparse/below-threshold regions.
             if adjusted > 0.01 {
-                let cs         = textureSampleLevel(colormap, colormap_sampler, adjusted, 0.0);
+                let cs         = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);
                 let extinction = cs.a * uni.vol.density_scale * advance;
                 let alpha      = 1.0 - exp(-extinction);
                 accum_color += (1.0 - accum_alpha) * alpha * cs.rgb;

@@ -138,17 +138,19 @@ impl VolumeVisual {
         });
 
         // Default colormap: grayscale with proportional alpha (matches kiln's grayscale TF).
-        // TEMP: pure red ramp (R=255, G=0, B=0, A=v) so we can verify whether the
-        // GL backend is reading colormap RGB at all. Revert before merging.
+        // Stored as a 2D 256×1 texture rather than a 1D 256 texture because naga's
+        // GLSL output silently zeroes the RGB channels of 1D Rgba8Unorm textures on
+        // NVIDIA GL 4.6 (only the alpha channel survives), turning the volume into
+        // an alpha-only silhouette.
         let colormap_data: Vec<u8> = (0u32..256)
-            .flat_map(|i| { let _v = i as u8; [255u8, 0u8, 0u8, i as u8] })
+            .flat_map(|i| { let v = i as u8; [v, v, v, v] })
             .collect();
         let colormap_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Volume Colormap Texture"),
             size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
-            dimension: wgpu::TextureDimension::D1,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
@@ -224,7 +226,7 @@ impl VolumeVisual {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D1,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
                     count: None,

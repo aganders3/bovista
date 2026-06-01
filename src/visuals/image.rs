@@ -138,7 +138,7 @@ impl ImageVisual {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D1,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
                     count: None,
@@ -161,7 +161,8 @@ impl ImageVisual {
             size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
-            dimension: wgpu::TextureDimension::D1,
+            // 2D (not 1D) — see volume.rs for the naga/GL 1D-Rgba8Unorm bug.
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
