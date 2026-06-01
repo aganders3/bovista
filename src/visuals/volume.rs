@@ -138,8 +138,10 @@ impl VolumeVisual {
         });
 
         // Default colormap: grayscale with proportional alpha (matches kiln's grayscale TF).
+        // TEMP: pure red ramp (R=255, G=0, B=0, A=v) so we can verify whether the
+        // GL backend is reading colormap RGB at all. Revert before merging.
         let colormap_data: Vec<u8> = (0u32..256)
-            .flat_map(|i| { let v = i as u8; [v, v, v, v] })
+            .flat_map(|i| { let _v = i as u8; [255u8, 0u8, 0u8, i as u8] })
             .collect();
         let colormap_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Volume Colormap Texture"),
