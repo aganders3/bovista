@@ -884,10 +884,19 @@ mod ome_zarr {
 
         // The tile size we publish to bovista must be uniform across LODs.
         // Use LOD 0's regular chunk size as the canonical tile size.
+        // We want tiles small enough that the GPU atlas stays bounded. Each
+        // tile is tz*ty*tx*2 bytes (R16Float); at MAX_TILE_AXIS=128 that's
+        // 4 MB/tile, so a 4096-slot atlas tops out at ~16 GB. If the on-disk
+        // chunk is smaller along an axis, use the chunk size so we don't
+        // require multiple chunk reads per tile; otherwise clamp.
+        const MAX_TILE_AXIS: u64 = 128;
         let lod0_chunk = lod0_arr.chunk_shape(&vec![0; ndim])?;
-        let tile_z = u32::try_from(lod0_chunk[z_idx].get()).unwrap_or(64);
-        let tile_y = u32::try_from(lod0_chunk[y_idx].get()).unwrap_or(64);
-        let tile_x = u32::try_from(lod0_chunk[x_idx].get()).unwrap_or(64);
+        let clamp = |chunk_dim: u64| -> u32 {
+            u32::try_from(chunk_dim.min(MAX_TILE_AXIS)).unwrap_or(64)
+        };
+        let tile_z = clamp(lod0_chunk[z_idx].get());
+        let tile_y = clamp(lod0_chunk[y_idx].get());
+        let tile_x = clamp(lod0_chunk[x_idx].get());
 
         for (i, ds) in datasets_meta.iter().enumerate() {
             let path = dataset_path(ds, i)?;
