@@ -170,6 +170,22 @@ impl VirtualTextureData {
 
     // ── Tile management ──────────────────────────────────────────────────────
 
+    /// Drop all resident tiles. The atlas texture data isn't zeroed (it'll be
+    /// overwritten as tiles re-load), but every page-table entry is cleared so
+    /// the shader stops sampling stale slots in the meantime.
+    ///
+    /// Use this when the underlying data has changed in a way the loader can't
+    /// express through TileKey alone (e.g. switching OME-Zarr timepoints).
+    pub fn clear_atlas(&mut self, queue: &Queue) {
+        for (key, _slot) in self.slot_map.drain() {
+            self.page_table.clear(queue, key.lod_level, key.z, key.y, key.x);
+        }
+        self.lru_map.clear();
+        self.requested_keys.clear();
+        self.pending_chunks.lock().unwrap().clear();
+        self.atlas_allocator.reset();
+    }
+
     fn write_tile_to_atlas(&self, queue: &Queue, slot: u32, data: &TileData) {
         let col   = slot % self.atlas_cols;
         let row   = (slot / self.atlas_cols) % self.atlas_rows;

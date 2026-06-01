@@ -52,6 +52,7 @@ fn main() {
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles",
         "--contrast-min", "--contrast-max", "--density-mult",
+        "--timepoint",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
     let width: u32 = flag_u32(&args, "--width", 1024);
@@ -121,9 +122,21 @@ fn main() {
     let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_view = renderer.create_depth_texture(width, height);
 
+    // Shared view state — the render loop reads each frame, HTTP `/set`
+    // writes from slider events on the served HTML page. Constructed before
+    // the OME-Zarr open so the loader can capture it (the zarr loader reads
+    // view_state.timepoint() per tile request).
+    let view_state = Arc::new(ViewState::new(
+        1.0,           // zoom (× world_max for camera radius)
+        contrast_min,
+        contrast_max,
+        density_mult,
+        1.0,           // orbit_speed (× 1 revolution per 12s)
+    ));
+
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
-        Some(path) => match ome_zarr::open(path) {
+        Some(path) => match ome_zarr::open(path, view_state.clone()) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -133,6 +146,7 @@ fn main() {
         None => synthetic_setup(),
     };
     let cache_capacity = cache_override.unwrap_or(setup.cache_capacity);
+    let n_timepoints = setup.n_timepoints;
 
     let volume = VolumeVisual::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
@@ -154,16 +168,6 @@ fn main() {
         "[orbit] base_density={:.2} (× {} init); contrast=[{:.3}, {:.3}] init",
         base_density, density_mult, contrast_min, contrast_max,
     );
-
-    // Shared view state — the render loop reads each frame, HTTP `/set`
-    // writes from slider events on the served HTML page.
-    let view_state = Arc::new(ViewState::new(
-        1.0,           // zoom (× world_max for camera radius)
-        contrast_min,
-        contrast_max,
-        density_mult,
-        1.0,           // orbit_speed (× 1 revolution per 12s)
-    ));
 
     let volume_arc = Arc::new(Mutex::new(volume));
     let mut scene = Scene::new();
@@ -191,7 +195,7 @@ fn main() {
     // The render thread (this thread) holds a single ChildStdin in `active`
     // for the current /stream client; idles when no client is connected.
     let active: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
-    spawn_http_server(port, width, height, fps, active.clone(), view_state.clone());
+    spawn_http_server(port, width, height, fps, active.clone(), view_state.clone(), n_timepoints);
 
     println!("[orbit] ready; open http://localhost:{}/ (Ctrl-C to stop)", port);
 
@@ -202,6 +206,9 @@ fn main() {
     // teleport the camera — only changes its rate going forward).
     let mut theta: f32 = 0.0;
     let mut last_tick = Instant::now();
+    // Last seen t_generation so we can detect timepoint changes and flush
+    // the atlas exactly once per change (rather than every frame).
+    let mut last_t_gen: u32 = view_state.t_generation();
 
     loop {
         // Skip the render entirely when nobody's watching.
@@ -216,11 +223,18 @@ fn main() {
         last_tick = tick;
 
         // Apply current view state to the volume (cheap; writes only on next
-        // prepare() submission).
+        // prepare() submission). If the timepoint changed, flush the atlas
+        // so visible tiles re-request with the new t.
         {
             let mut v = volume_arc.lock().unwrap();
             v.set_contrast_limits(view_state.contrast_min(), view_state.contrast_max());
             v.set_density_scale(base_density * view_state.density_mult());
+            let gen = view_state.t_generation();
+            if gen != last_t_gen {
+                v.clear_atlas(renderer.queue());
+                last_t_gen = gen;
+                println!("[orbit] timepoint → {} (atlas flushed)", view_state.timepoint());
+            }
         }
 
         // Camera orbit (one revolution per 12s × orbit_speed).
@@ -355,6 +369,8 @@ struct SceneSetup {
     world_extents: (f32, f32, f32),
     /// Default atlas slot count for the visual; CLI `--cache-tiles` overrides.
     cache_capacity: u32,
+    /// Number of timepoints if axes include a "t" axis, else 1.
+    n_timepoints: u32,
 }
 
 fn synthetic_setup() -> SceneSetup {
@@ -391,6 +407,7 @@ fn synthetic_setup() -> SceneSetup {
         pending_slot,
         world_extents: (VOLUME_DIM as f32, VOLUME_DIM as f32, VOLUME_DIM as f32),
         cache_capacity: 1,
+        n_timepoints: 1,
     }
 }
 
@@ -509,6 +526,13 @@ struct ViewState {
     contrast_max: AtomicU32,
     density_mult: AtomicU32,
     orbit_speed:  AtomicU32,
+    /// Current OME-Zarr timepoint (or 0 for non-temporal data). The zarr
+    /// loader reads this for every tile request; the render loop watches
+    /// `t_generation` and flushes the atlas when it bumps.
+    timepoint:    AtomicU32,
+    /// Increments whenever `timepoint` changes so the render loop can call
+    /// VolumeVisual::clear_atlas() once per change (rather than every frame).
+    t_generation: AtomicU32,
 }
 
 impl ViewState {
@@ -519,6 +543,8 @@ impl ViewState {
             contrast_max: AtomicU32::new(cmax.to_bits()),
             density_mult: AtomicU32::new(dens.to_bits()),
             orbit_speed:  AtomicU32::new(speed.to_bits()),
+            timepoint:    AtomicU32::new(0),
+            t_generation: AtomicU32::new(0),
         }
     }
     fn zoom(&self)         -> f32 { f32::from_bits(self.zoom.load(Ordering::Relaxed)) }
@@ -526,9 +552,19 @@ impl ViewState {
     fn contrast_max(&self) -> f32 { f32::from_bits(self.contrast_max.load(Ordering::Relaxed)) }
     fn density_mult(&self) -> f32 { f32::from_bits(self.density_mult.load(Ordering::Relaxed)) }
     fn orbit_speed(&self)  -> f32 { f32::from_bits(self.orbit_speed.load(Ordering::Relaxed)) }
+    fn timepoint(&self)    -> u32 { self.timepoint.load(Ordering::Relaxed) }
+    fn t_generation(&self) -> u32 { self.t_generation.load(Ordering::Relaxed) }
 
     /// Apply `key=value` from the /set query string. Unknown keys ignored.
     fn apply(&self, key: &str, value: f32) {
+        if key == "timepoint" {
+            let new_t = value.max(0.0) as u32;
+            let old_t = self.timepoint.swap(new_t, Ordering::Relaxed);
+            if new_t != old_t {
+                self.t_generation.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
         let cell = match key {
             "zoom"         => &self.zoom,
             "contrast_min" => &self.contrast_min,
@@ -558,6 +594,7 @@ fn spawn_http_server(
     fps: u32,
     active: Arc<Mutex<Option<ChildStdin>>>,
     view_state: Arc<ViewState>,
+    n_timepoints: u32,
 ) {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .unwrap_or_else(|e| panic!("bind 0.0.0.0:{} failed: {}", port, e));
@@ -568,7 +605,7 @@ fn spawn_http_server(
             let active = active.clone();
             let view_state = view_state.clone();
             std::thread::spawn(move || {
-                handle_request(socket, width, height, fps, active, view_state);
+                handle_request(socket, width, height, fps, active, view_state, n_timepoints);
             });
         }
     });
@@ -579,6 +616,7 @@ fn handle_request(
     width: u32, height: u32, fps: u32,
     active: Arc<Mutex<Option<ChildStdin>>>,
     view_state: Arc<ViewState>,
+    n_timepoints: u32,
 ) {
     // Read the request line + headers (up to first blank line).
     let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
@@ -594,7 +632,7 @@ fn handle_request(
         .unwrap_or("/");
 
     if path == "/" || path.starts_with("/?") {
-        serve_html(&mut socket, &view_state);
+        serve_html(&mut socket, &view_state, n_timepoints);
     } else if path == "/stream" {
         serve_stream(&mut socket, width, height, fps, active);
     } else if let Some(query) = path.strip_prefix("/set?") {
@@ -608,13 +646,19 @@ fn handle_request(
     }
 }
 
-fn serve_html(socket: &mut TcpStream, view: &ViewState) {
+fn serve_html(socket: &mut TcpStream, view: &ViewState, n_timepoints: u32) {
+    // Hide the t-slider entirely on non-temporal datasets.
+    let t_row_style = if n_timepoints > 1 { "" } else { "display:none;" };
+    let t_max = n_timepoints.saturating_sub(1).max(0);
     let body = INDEX_HTML
         .replace("{{ZOOM}}",         &format!("{}", view.zoom()))
         .replace("{{CONTRAST_MIN}}", &format!("{}", view.contrast_min()))
         .replace("{{CONTRAST_MAX}}", &format!("{}", view.contrast_max()))
         .replace("{{DENSITY_MULT}}", &format!("{}", view.density_mult()))
-        .replace("{{ORBIT_SPEED}}",  &format!("{}", view.orbit_speed()));
+        .replace("{{ORBIT_SPEED}}",  &format!("{}", view.orbit_speed()))
+        .replace("{{TIMEPOINT}}",    &format!("{}", view.timepoint()))
+        .replace("{{T_MAX}}",        &format!("{}", t_max))
+        .replace("{{T_STYLE}}",      t_row_style);
     let header = format!(
         "HTTP/1.0 200 OK\r\n\
          Content-Type: text/html; charset=utf-8\r\n\
@@ -715,25 +759,41 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   <div class="row"><label>orbit speed ×</label>
     <input type="range" id="orbit_speed" min="0" max="4" step="0.05" value="{{ORBIT_SPEED}}">
     <span class="val" id="orbit_speed_val"></span></div>
+  <div class="row" style="{{T_STYLE}}"><label>timepoint</label>
+    <input type="range" id="timepoint" min="0" max="{{T_MAX}}" step="1" value="{{TIMEPOINT}}">
+    <span class="val" id="timepoint_val"></span></div>
 </div>
 <script>
-// Keep the <video> pinned to the live edge: every 500 ms, if we've drifted
-// more than 0.5 s behind the latest buffered frame, snap forward. Without
-// this, the browser will quietly buffer and you end up watching minutes-old
-// frames.
+// Pin the <video> to the live edge without seeking on every tick — seeking
+// to tip-ε re-buffers and produces a stutter loop. Instead drift toward
+// live via playbackRate, and only hard-seek when we're absurdly far behind.
 const live = document.getElementById('live');
+let chasing = false;
 setInterval(()=>{
   const b = live.buffered;
   if (b.length === 0) return;
   const tip = b.end(b.length - 1);
-  if (tip - live.currentTime > 0.5) live.currentTime = tip - 0.05;
-}, 500);
+  const lag = tip - live.currentTime;
+  if (lag > 4.0) {
+    // Way behind (probably a stall): jump close to live but leave headroom.
+    live.currentTime = Math.max(0, tip - 0.5);
+    live.playbackRate = 1.0;
+    chasing = false;
+  } else if (lag > 1.0 && !chasing) {
+    live.playbackRate = 1.1;
+    chasing = true;
+  } else if (lag < 0.4 && chasing) {
+    live.playbackRate = 1.0;
+    chasing = false;
+  }
+}, 1000);
 
 const fmt = { zoom: v=>(+v).toFixed(2)+'×',
               contrast_min: v=>(+v).toFixed(4),
               contrast_max: v=>(+v).toFixed(4),
               density_mult: v=>(+v).toFixed(2)+'×',
-              orbit_speed:  v=>(+v).toFixed(2)+'×' };
+              orbit_speed:  v=>(+v).toFixed(2)+'×',
+              timepoint:    v=>String(v|0) };
 for (const id of Object.keys(fmt)) {
   const el  = document.getElementById(id);
   const lbl = document.getElementById(id+'_val');
@@ -811,7 +871,7 @@ mod ome_zarr {
     use zarrs::group::Group;
     use zarrs::storage::ReadableStorageTraits;
 
-    use super::SceneSetup;
+    use super::{SceneSetup, ViewState};
 
     /// Max number of zarr-chunk reads we'll have in flight at once. Keeps remote
     /// HTTP stores from drowning in connections; the visual gets `Rejected` for
@@ -827,11 +887,16 @@ mod ome_zarr {
         z_idx: usize,
         y_idx: usize,
         x_idx: usize,
+        /// Index of the "t" axis, if present.
+        t_idx: Option<usize>,
         /// Volume dims in (z, y, x) voxel order at this LOD.
         volume_zyx: (u64, u64, u64),
     }
 
-    pub fn open(path_or_url: &str) -> Result<SceneSetup, Box<dyn Error>> {
+    pub fn open(
+        path_or_url: &str,
+        view_state: Arc<ViewState>,
+    ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
         {
@@ -887,6 +952,11 @@ mod ome_zarr {
         let lod0_path = dataset_path(&datasets_meta[0], 0)?;
         let lod0_arr = Array::open(store.clone(), &absolute_path(&lod0_path))?;
         let ndim = lod0_arr.shape().len();
+
+        let t_idx: Option<usize> = axes.iter().position(|a| a == "t");
+        let n_timepoints: u32 = t_idx
+            .map(|i| u32::try_from(lod0_arr.shape()[i]).unwrap_or(1).max(1))
+            .unwrap_or(1);
 
         let (z_idx, y_idx, x_idx) = match (
             axes.iter().position(|a| a == "z"),
@@ -995,6 +1065,7 @@ mod ome_zarr {
                 z_idx,
                 y_idx,
                 x_idx,
+                t_idx,
                 volume_zyx: (vz, vy, vx),
             });
         }
@@ -1054,8 +1125,10 @@ mod ome_zarr {
             let levels = levels_for_loader.clone();
             let lod_cfg = lods_for_loader[lod].clone();
             let inflight = inflight_for_loader.clone();
+            let view_state = view_state.clone();
             thread::spawn(move || {
-                let result = read_tile(&levels[lod], &lod_cfg, key);
+                let t = view_state.timepoint();
+                let result = read_tile(&levels[lod], &lod_cfg, key, t);
                 match result {
                     Ok(tile_data) => {
                         pending.lock().unwrap().insert(key, tile_data);
@@ -1073,6 +1146,8 @@ mod ome_zarr {
             ChunkStatus::Accepted
         });
 
+        println!("[orbit] OME-Zarr: t axis has {} timepoint(s)", n_timepoints);
+
         Ok(SceneSetup {
             lods,
             loader,
@@ -1081,6 +1156,7 @@ mod ome_zarr {
             // Comfortably bigger than a single LOD's tile count for the
             // OME-Zarr datasets we care about. Override with --cache-tiles.
             cache_capacity: 4096,
+            n_timepoints,
         })
     }
 
@@ -1103,6 +1179,7 @@ mod ome_zarr {
         level: &Level,
         lod_cfg: &LodLevelConfig,
         key: TileKey,
+        timepoint: u32,
     ) -> Result<TileData, Box<dyn Error + Send + Sync>> {
         let (tz, ty, tx) = lod_cfg.tile_size;
         let (vz, vy, vx) = level.volume_zyx;
@@ -1122,12 +1199,18 @@ mod ome_zarr {
         let extent_y = (y1 - y0) as u32;
         let extent_x = (x1 - x0) as u32;
 
-        // Build an N-D subset where non-spatial axes are pinned to 0..1.
+        // Build an N-D subset where non-spatial axes are pinned to 0..1 (or to
+        // the current timepoint for the t axis if the data has one).
         let ndim = level.array.shape().len();
         let mut ranges: Vec<std::ops::Range<u64>> = (0..ndim).map(|_| 0..1).collect();
         ranges[level.z_idx] = z0..z1;
         ranges[level.y_idx] = y0..y1;
         ranges[level.x_idx] = x0..x1;
+        if let Some(ti) = level.t_idx {
+            let tmax = level.array.shape()[ti].saturating_sub(1) as u32;
+            let t = timepoint.min(tmax) as u64;
+            ranges[ti] = t..(t + 1);
+        }
         let subset = ArraySubset::new_with_ranges(&ranges);
 
         // Match by Zarr v3 name string; covers both v2 and v3 sources because

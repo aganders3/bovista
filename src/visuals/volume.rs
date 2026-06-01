@@ -418,6 +418,13 @@ impl VolumeVisual {
     pub fn pending_chunks(&self) -> Option<PendingChunks> {
         Some(self.strategy.pending_chunks.clone())
     }
+
+    /// Drop every loaded tile so the next frame re-requests visible tiles.
+    /// Intended for cases where the source data has changed without changing
+    /// the volume geometry — switching OME-Zarr timepoints, for instance.
+    pub fn clear_atlas(&mut self, queue: &wgpu::Queue) {
+        self.strategy.clear_atlas(queue);
+    }
 }
 
 impl Visual for VolumeVisual {
