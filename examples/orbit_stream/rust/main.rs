@@ -1736,13 +1736,21 @@ mod ome_zarr {
         // `pending_chunks` so they're already in slot_map by the time the
         // user advances to them. No sidecar cache — bovista's atlas IS the
         // cache, indexed by (lod, t, z, y, x) via the new TileKey.
+        //
+        // Critically, prefetch tracks its OWN inflight set (not shared with
+        // the regular loader). Otherwise prefetch fills the inflight HashSet
+        // with future-t work and the regular loader's `inflight.len() >=
+        // max_inflight` cap fires immediately for every current-t request,
+        // starving the on-screen tiles.
         let visible_set = VisibleSet::new(prefetch_cap.max(2048));
+        let prefetch_inflight: Arc<Mutex<HashSet<TileKey>>> =
+            Arc::new(Mutex::new(HashSet::new()));
         if n_timepoints > 1 {
             spawn_prefetcher(
                 levels.clone(),
                 lods.clone(),
                 visible_set.clone(),
-                inflight.clone(),
+                prefetch_inflight.clone(),
                 pending_slot.clone(),
                 view_state.clone(),
                 n_timepoints,
@@ -1923,7 +1931,7 @@ mod ome_zarr {
                     let sig = (current, visible_n, inflight_n);
                     if last_signature.as_ref() != Some(&sig) {
                         println!(
-                            "[stats] t={} visible_spatial={} inflight={}",
+                            "[stats] t={} visible_spatial={} prefetch_inflight={}",
                             current, visible_n, inflight_n,
                         );
                         last_signature = Some(sig);
