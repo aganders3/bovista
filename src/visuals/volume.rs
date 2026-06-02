@@ -438,6 +438,15 @@ impl VolumeVisual {
 
     pub fn presentation_t(&self) -> u32 { self.strategy.presentation_t() }
     pub fn desired_t(&self)      -> u32 { self.strategy.desired_t() }
+
+    /// Snapshot of the spatial tile keys bovista currently considers
+    /// visible (TileKey entries with t=0, i.e. (lod, z, y, x) only). Used
+    /// by external prefetchers to know which keys to populate for adjacent
+    /// timepoints. Cheaper than maintaining our own shadow of this set,
+    /// and always up to date with the camera.
+    pub fn visible_spatial_keys(&self) -> Vec<crate::visuals::gpu_structs::TileKey> {
+        self.strategy.visible_tile_keys.iter().copied().collect()
+    }
 }
 
 impl Visual for VolumeVisual {

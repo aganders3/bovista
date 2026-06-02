@@ -193,6 +193,9 @@ fn main() {
     };
     let cache_capacity = cache_override.unwrap_or(setup.cache_capacity);
     let n_timepoints = setup.n_timepoints;
+    // Bind a clone of the prefetcher's visible-snapshot here so the render
+    // loop can refresh it without re-locking setup.
+    let setup_visible_snapshot = setup.visible_snapshot.clone();
 
     let volume = VolumeVisual::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
@@ -352,6 +355,15 @@ fn main() {
             &color_tex, &color_view, &depth_view,
             width, height,
         );
+        // Refresh the visible-spatial snapshot the prefetcher reads.
+        // scene.prepare just updated bovista's visible_tile_keys; snapshot
+        // it now so the prefetcher always works on fresh geometry rather
+        // than an accumulating shadow of stale camera positions.
+        {
+            let v = volume_arc.lock().unwrap();
+            let snap = v.visible_spatial_keys();
+            *setup_visible_snapshot.lock().unwrap() = snap;
+        }
         // Attribute scene.prepare() time (which includes process_pending_chunks
         // → queue.write_texture for every newly-arrived tile) to the current
         // flush, if any.
@@ -536,6 +548,9 @@ struct SceneSetup {
     cache_capacity: u32,
     /// Number of timepoints if axes include a "t" axis, else 1.
     n_timepoints: u32,
+    /// Shared with the prefetcher: render thread refreshes this each frame
+    /// with bovista's current visible spatial set. Empty if no prefetcher.
+    visible_snapshot: Arc<Mutex<Vec<TileKey>>>,
 }
 
 fn synthetic_setup() -> SceneSetup {
@@ -573,6 +588,7 @@ fn synthetic_setup() -> SceneSetup {
         world_extents: (VOLUME_DIM as f32, VOLUME_DIM as f32, VOLUME_DIM as f32),
         cache_capacity: 1,
         n_timepoints: 1,
+        visible_snapshot: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
@@ -1505,28 +1521,6 @@ mod ome_zarr {
         volume_zyx: (u64, u64, u64),
     }
 
-    /// Set of TileKeys the regular loader has been asked to load recently.
-    /// The prefetcher uses this as its "what's visible right now" hint to
-    /// decide which tiles to preload for adjacent timepoints. Bounded so
-    /// stale camera positions don't accumulate forever.
-    pub struct VisibleSet {
-        keys:   Mutex<HashSet<TileKey>>,
-        cap:    usize,
-    }
-    impl VisibleSet {
-        fn new(cap: usize) -> Arc<Self> {
-            Arc::new(Self { keys: Mutex::new(HashSet::new()), cap })
-        }
-        fn note(&self, key: TileKey) {
-            let mut k = self.keys.lock().unwrap();
-            if k.len() >= self.cap { k.clear(); }
-            k.insert(key);
-        }
-        fn snapshot(&self) -> Vec<TileKey> {
-            self.keys.lock().unwrap().iter().copied().collect()
-        }
-    }
-
     pub fn open(
         path_or_url: &str,
         view_state: Arc<ViewState>,
@@ -1734,22 +1728,20 @@ mod ome_zarr {
 
         // Prefetcher: pushes future-timepoint tiles directly into bovista's
         // `pending_chunks` so they're already in slot_map by the time the
-        // user advances to them. No sidecar cache — bovista's atlas IS the
-        // cache, indexed by (lod, t, z, y, x) via the new TileKey.
-        //
-        // Critically, prefetch tracks its OWN inflight set (not shared with
-        // the regular loader). Otherwise prefetch fills the inflight HashSet
-        // with future-t work and the regular loader's `inflight.len() >=
-        // max_inflight` cap fires immediately for every current-t request,
-        // starving the on-screen tiles.
-        let visible_set = VisibleSet::new(prefetch_cap.max(2048));
+        // user advances to them. Reads from a shared visible-keys snapshot
+        // refreshed by the render thread each frame — that's bovista's
+        // *actual* current visible set, not an accumulating shadow, so the
+        // prefetcher always works on fresh geometry. Prefetch inflight is
+        // tracked separately so it can't starve the regular loader's
+        // max_inflight budget.
         let prefetch_inflight: Arc<Mutex<HashSet<TileKey>>> =
             Arc::new(Mutex::new(HashSet::new()));
+        let visible_snapshot: Arc<Mutex<Vec<TileKey>>> = Arc::new(Mutex::new(Vec::new()));
         if n_timepoints > 1 {
             spawn_prefetcher(
                 levels.clone(),
                 lods.clone(),
-                visible_set.clone(),
+                visible_snapshot.clone(),
                 prefetch_inflight.clone(),
                 pending_slot.clone(),
                 view_state.clone(),
@@ -1765,17 +1757,12 @@ mod ome_zarr {
         let levels_for_loader = levels.clone();
         let inflight_for_loader = inflight.clone();
         let flush_diag_for_loader = flush_diag.clone();
-        let visible_for_loader = visible_set.clone();
         let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
             let lod = req.lod_level.unwrap_or(0);
             if lod >= levels_for_loader.len() {
                 return ChunkStatus::Rejected;
             }
             let key = TileKey { lod_level: lod, t: req.t, z: req.z, y: req.y, x: req.x };
-
-            // Tell the prefetcher this key is currently relevant so it
-            // covers it for adjacent timepoints next sweep.
-            visible_for_loader.note(key);
 
             // Need the pending queue (set after volume creation).
             let pending = match pending_for_loader.lock().unwrap().clone() {
@@ -1807,9 +1794,15 @@ mod ome_zarr {
             let view_state = view_state.clone();
             let flush_diag = flush_diag_for_loader.clone();
             thread::spawn(move || {
-                // The timepoint to read is on the request itself now —
-                // bovista calls us with the right t for both the current
-                // displayed t and any future-t we requested via prefetch.
+                // Abort early if the user has scrubbed away from this
+                // timepoint in the meantime — by the time we'd decode and
+                // upload, it'd be irrelevant and just LRU-evicted. Lets the
+                // pipeline drain quickly during rapid scrubbing.
+                let current = view_state.timepoint();
+                if (key.t as i32 - current as i32).unsigned_abs() > 4 {
+                    inflight.lock().unwrap().remove(&key);
+                    return;
+                }
                 let decode_start = std::time::Instant::now();
                 let result = read_tile(&levels[lod], &lod_cfg, key, key.t);
                 let decode_ns = decode_start.elapsed().as_nanos() as u64;
@@ -1842,6 +1835,7 @@ mod ome_zarr {
             // OME-Zarr datasets we care about. Override with --cache-tiles.
             cache_capacity: 4096,
             n_timepoints,
+            visible_snapshot,
         })
     }
 
@@ -1867,7 +1861,7 @@ mod ome_zarr {
     fn spawn_prefetcher(
         levels: Arc<Vec<Level>>,
         lods: Vec<LodLevelConfig>,
-        visible: Arc<VisibleSet>,
+        visible_snapshot: Arc<Mutex<Vec<TileKey>>>,
         inflight: Arc<Mutex<HashSet<TileKey>>>,
         pending_slot: Arc<Mutex<Option<PendingChunks>>>,
         view_state: Arc<ViewState>,
@@ -1923,7 +1917,7 @@ mod ome_zarr {
                 thread::sleep(Duration::from_millis(200));
                 tick = tick.wrapping_add(1);
                 let current = view_state.timepoint() as i32;
-                let keys = visible.snapshot();
+                let keys = visible_snapshot.lock().unwrap().clone();
 
                 if tick % 5 == 0 {
                     let inflight_n = inflight.lock().unwrap().len();
