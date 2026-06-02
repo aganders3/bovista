@@ -1167,7 +1167,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   .row .val   { width:80px; text-align:right; color:#fff; }
 </style>
 </head><body>
-<h1>bovista orbit_stream</h1>
+<h1>bovista orbit_stream <span style="float:right;color:#666">lag: <span id="lag_val">—</span></span></h1>
 <video id="live" src="/stream" autoplay muted playsinline></video>
 <div id="controls">
   <div class="row"><label>zoom</label>
@@ -1190,29 +1190,51 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <span class="val" id="timepoint_val"></span></div>
 </div>
 <script>
-// Pin the <video> to the live edge without seeking on every tick — seeking
-// to tip-ε re-buffers and produces a stutter loop. Instead drift toward
-// live via playbackRate, and only hard-seek when we're absurdly far behind.
+// Live-edge tracking. Two regimes:
+//   - Tab visible: gently drift toward live via playbackRate when 1-2s
+//     behind, hard-seek if >2s behind.
+//   - Tab returns from hidden: jump straight to live, because browsers
+//     keep buffering bytes for backgrounded tabs while pausing decode,
+//     so currentTime can be 10s+ behind the buffer tip.
+// Also show the current lag in the UI so it's visible what's happening.
 const live = document.getElementById('live');
+const lagLabel = document.getElementById('lag_val');
 let chasing = false;
-setInterval(()=>{
+
+function snapToLive(min_headroom = 0.1) {
+  const b = live.buffered;
+  if (b.length === 0) return false;
+  const tip = b.end(b.length - 1);
+  live.currentTime = Math.max(0, tip - min_headroom);
+  live.playbackRate = 1.0;
+  chasing = false;
+  return true;
+}
+
+function tick() {
   const b = live.buffered;
   if (b.length === 0) return;
   const tip = b.end(b.length - 1);
   const lag = tip - live.currentTime;
-  if (lag > 4.0) {
-    // Way behind (probably a stall): jump close to live but leave headroom.
-    live.currentTime = Math.max(0, tip - 0.5);
-    live.playbackRate = 1.0;
-    chasing = false;
-  } else if (lag > 1.0 && !chasing) {
-    live.playbackRate = 1.1;
+  if (lagLabel) lagLabel.textContent = lag.toFixed(2) + 's';
+  if (lag > 2.0) {
+    snapToLive(0.2);
+  } else if (lag > 0.6 && !chasing) {
+    live.playbackRate = 1.25;
     chasing = true;
-  } else if (lag < 0.4 && chasing) {
+  } else if (lag < 0.25 && chasing) {
     live.playbackRate = 1.0;
     chasing = false;
   }
-}, 1000);
+}
+setInterval(tick, 500);
+
+// On returning from a hidden tab, jump straight to live. Browsers pause
+// video decode but keep buffering, so we typically come back many
+// seconds behind.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) snapToLive(0.2);
+});
 
 const fmt = { zoom: v=>(+v).toFixed(2)+'×',
               contrast_min: v=>(+v).toFixed(4),
