@@ -374,16 +374,22 @@ impl VirtualTextureData {
             .collect();
         candidates.sort_by_key(|k| *self.lru_map.get(k).unwrap_or(&0));
 
-        // Phase 2: spatial visible, but t ∉ {presentation, desired}.
-        // Critical for keeping the current frame snappy when the atlas
-        // is full of prefetched neighbors.
+        // Phase 2: spatial visible, t ∉ {presentation, desired}, AND the
+        // page table isn't currently pointing at this slot. The last
+        // condition matters because after `maybe_advance_presentation`
+        // flips presentation_t to desired_t, the page-table entries for
+        // not-yet-loaded spatials STILL point at the previous t's slots
+        // (graceful old-data fallback). Evicting those displayed slots
+        // before the new-t tiles arrive blacks out the screen — exactly
+        // the symptom the prior code produced.
         if candidates.len() < num_to_remove {
-            let mut other_t: Vec<TileKey> = self.slot_map.keys()
-                .filter(|k| {
+            let mut other_t: Vec<TileKey> = self.slot_map.iter()
+                .filter(|(k, &slot)| {
                     self.visible_tile_keys.contains(&k.spatial())
                         && k.t != cur_ts.0 && k.t != cur_ts.1
+                        && self.page_table_slot.get(&k.spatial()) != Some(&slot)
                 })
-                .copied()
+                .map(|(k, _)| *k)
                 .collect();
             other_t.sort_by(|a, b| {
                 // Prefer evicting tiles farther from the current/desired t.

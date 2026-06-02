@@ -1777,13 +1777,19 @@ mod ome_zarr {
             // `pending_chunks` lookups, so we don't need a sidecar cache
             // path here. If we're called, the tile genuinely needs I/O.)
 
-            // Dedupe + bound concurrency.
+            // Dedupe + bound concurrency. The cap is PER-T: each timepoint
+            // gets its own max_inflight budget, so when the user changes t
+            // the new requests aren't blocked by stale t-N workers still
+            // mid-decode. Old workers finish quickly and release naturally;
+            // the brief over-subscription is far better than the user
+            // staring at a frozen frame.
             {
                 let mut inflight = inflight_for_loader.lock().unwrap();
                 if inflight.contains(&key) {
                     return ChunkStatus::AlreadyPending;
                 }
-                if inflight.len() >= max_inflight {
+                let same_t = inflight.iter().filter(|k| k.t == key.t).count();
+                if same_t >= max_inflight {
                     return ChunkStatus::Rejected;
                 }
                 inflight.insert(key);
