@@ -246,15 +246,20 @@ impl VirtualTextureData {
             self.write_tile_to_atlas(queue, slot, &data);
 
             let TileKey { lod_level, z, y, x } = key;
-            let (gx, gy, _gz) = {
-                let (gz2, gy2, gx2) = self.levels[lod_level].grid_size();
-                (gx2, gy2, gz2)
-            };
-            let linear = z * gy * gx + y * gx + x;
-            eprintln!("VT load: lod={lod_level} ({x},{y},{z}) linear={linear} slot={slot} \
-                col={} row={} layer={}", slot % self.atlas_cols,
-                (slot / self.atlas_cols) % self.atlas_rows,
-                slot / (self.atlas_cols * self.atlas_rows));
+            if log::log_enabled!(log::Level::Trace) {
+                let (gx, gy, _gz) = {
+                    let (gz2, gy2, gx2) = self.levels[lod_level].grid_size();
+                    (gx2, gy2, gz2)
+                };
+                let linear = z * gy * gx + y * gx + x;
+                log::trace!(
+                    "VT load: lod={lod_level} ({x},{y},{z}) linear={linear} slot={slot} \
+                     col={} row={} layer={}",
+                    slot % self.atlas_cols,
+                    (slot / self.atlas_cols) % self.atlas_rows,
+                    slot / (self.atlas_cols * self.atlas_rows),
+                );
+            }
             self.page_table.update(queue, lod_level, z, y, x, slot);
 
             self.slot_map.insert(key, slot);
