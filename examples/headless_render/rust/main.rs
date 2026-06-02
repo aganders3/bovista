@@ -166,7 +166,7 @@ fn main() {
         };
         let key = TileKey {
             lod_level: req.lod_level.unwrap_or(0),
-            z: req.z, y: req.y, x: req.x,
+            t: req.t, z: req.z, y: req.y, x: req.x,
         };
         pc.lock().unwrap().insert(key, TileData {
             data: (*tile_bytes_for_loader).clone(),

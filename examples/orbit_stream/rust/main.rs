@@ -319,23 +319,22 @@ fn main() {
             v.set_density_scale(base_density * view_state.density_mult());
             let gen = view_state.t_generation();
             if gen != last_t_gen {
-                // If a previous flush hasn't settled yet, print whatever
-                // numbers we have so the user gets *some* signal per flush
-                // — back-to-back slider changes were previously suppressing
-                // the [flush] line for all but the last one.
                 if flush_active {
                     print_flush_summary(&flush_diag, "interrupted");
                 }
-                v.clear_atlas(renderer.queue());
+                // Wait-to-swap: bovista keeps showing the previous timepoint
+                // until every visible spatial tile is present at the new t.
+                // No clear, no flicker — adjacent timepoints stay resident
+                // in the atlas as a free cache.
+                v.set_desired_timepoint(view_state.timepoint());
                 last_t_gen = gen;
                 let t_ns = view_state.ns_since_start();
                 flush_diag.start(t_ns);
                 flush_active = true;
                 flush_started_ns = t_ns;
                 printed_loaded_snapshot = false;
-                println!("[orbit] timepoint → {} (atlas flushed at t={:.3}s)",
-                         view_state.timepoint(),
-                         t_ns as f64 / 1e9);
+                println!("[orbit] timepoint → {} (desired; presentation will swap when loaded)",
+                         view_state.timepoint());
             }
         }
 
@@ -550,7 +549,7 @@ fn synthetic_setup() -> SceneSetup {
         };
         let key = TileKey {
             lod_level: req.lod_level.unwrap_or(0),
-            z: req.z, y: req.y, x: req.x,
+            t: req.t, z: req.z, y: req.y, x: req.x,
         };
         pc.lock().unwrap().insert(key, TileData {
             data: (*tile_bytes_for_loader).clone(),
@@ -1468,7 +1467,6 @@ fn flag_str_opt(args: &[String], name: &str) -> Option<String> {
 mod ome_zarr {
     use std::collections::HashSet;
     use std::error::Error;
-    use std::num::NonZeroUsize;
     use std::sync::{Arc, Mutex};
     use std::sync::mpsc;
     use std::thread;
@@ -1480,7 +1478,6 @@ mod ome_zarr {
     use bovista::visuals::virtual_texture::PendingChunks;
     use bovista::visuals::LodLevelConfig;
 
-    use lru::LruCache;
     use zarrs::array::{Array, ArraySubset};
     use zarrs::group::Group;
     use zarrs::storage::ReadableStorageTraits;
@@ -1506,37 +1503,6 @@ mod ome_zarr {
         t_idx: Option<usize>,
         /// Volume dims in (z, y, x) voxel order at this LOD.
         volume_zyx: (u64, u64, u64),
-    }
-
-    /// Cache of pre-decoded tiles, keyed on (timepoint, TileKey). Populated
-    /// by the prefetcher; consumed by the regular loader on cache-hit.
-    type CacheKey = (u32, TileKey);
-    pub struct PrefetchCache {
-        entries:  Mutex<LruCache<CacheKey, TileData>>,
-        inflight: Mutex<HashSet<CacheKey>>,
-    }
-    impl PrefetchCache {
-        fn new(capacity: usize) -> Arc<Self> {
-            Arc::new(Self {
-                entries:  Mutex::new(LruCache::new(NonZeroUsize::new(capacity.max(1)).unwrap())),
-                inflight: Mutex::new(HashSet::new()),
-            })
-        }
-        fn take(&self, key: &CacheKey) -> Option<TileData> {
-            self.entries.lock().unwrap().pop(key)
-        }
-        fn put(&self, key: CacheKey, data: TileData) {
-            self.entries.lock().unwrap().put(key, data);
-        }
-        /// Returns true if we successfully claimed this key for fetching;
-        /// false if it's already cached or already being fetched.
-        fn try_claim(&self, key: CacheKey) -> bool {
-            if self.entries.lock().unwrap().contains(&key) { return false; }
-            self.inflight.lock().unwrap().insert(key)
-        }
-        fn release(&self, key: &CacheKey) {
-            self.inflight.lock().unwrap().remove(key);
-        }
     }
 
     /// Set of TileKeys the regular loader has been asked to load recently.
@@ -1766,38 +1732,38 @@ mod ome_zarr {
         let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
         let lods_for_loader = lods.clone();
 
-        // Prefetcher infrastructure: caches decoded tiles for adjacent
-        // timepoints so sequential scrubbing / playback turns into cache
-        // hits in the regular loader (no zarrs I/O, just GPU upload).
-        let prefetch_cache = PrefetchCache::new(prefetch_cap);
+        // Prefetcher: pushes future-timepoint tiles directly into bovista's
+        // `pending_chunks` so they're already in slot_map by the time the
+        // user advances to them. No sidecar cache — bovista's atlas IS the
+        // cache, indexed by (lod, t, z, y, x) via the new TileKey.
         let visible_set = VisibleSet::new(prefetch_cap.max(2048));
         if n_timepoints > 1 {
             spawn_prefetcher(
                 levels.clone(),
                 lods.clone(),
                 visible_set.clone(),
-                prefetch_cache.clone(),
+                inflight.clone(),
+                pending_slot.clone(),
                 view_state.clone(),
                 n_timepoints,
                 /* workers */ 4,
                 /* lookahead */ 2,
-                pending_slot.clone(),
             );
-            println!("[orbit] prefetcher: 4 workers, ±2 timepoints, cache {} tiles", prefetch_cap);
+            println!("[orbit] prefetcher: 4 workers, ±2 timepoints (push to atlas via pending)");
         }
+        let _ = prefetch_cap;
 
         let pending_for_loader = pending_slot.clone();
         let levels_for_loader = levels.clone();
         let inflight_for_loader = inflight.clone();
         let flush_diag_for_loader = flush_diag.clone();
-        let prefetch_cache_for_loader = prefetch_cache.clone();
         let visible_for_loader = visible_set.clone();
         let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
             let lod = req.lod_level.unwrap_or(0);
             if lod >= levels_for_loader.len() {
                 return ChunkStatus::Rejected;
             }
-            let key = TileKey { lod_level: lod, z: req.z, y: req.y, x: req.x };
+            let key = TileKey { lod_level: lod, t: req.t, z: req.z, y: req.y, x: req.x };
 
             // Tell the prefetcher this key is currently relevant so it
             // covers it for adjacent timepoints next sweep.
@@ -1809,15 +1775,11 @@ mod ome_zarr {
                 None => return ChunkStatus::Rejected,
             };
 
-            // Cache-hit path: data already decoded by the prefetcher.
-            // Skip the worker spawn entirely; just hand it straight to
-            // bovista's pending queue and Accept.
-            let t = view_state.timepoint();
-            if let Some(tile_data) = prefetch_cache_for_loader.take(&(t, key)) {
-                pending.lock().unwrap().insert(key, tile_data);
-                flush_diag_for_loader.note_tile(view_state.ns_since_start(), 0);
-                return ChunkStatus::Accepted;
-            }
+            // (Prefetched tiles for adjacent timepoints land directly in
+            // bovista's `pending_chunks` and slot_map — bovista itself
+            // short-circuits this loader callback via `requested_keys` /
+            // `pending_chunks` lookups, so we don't need a sidecar cache
+            // path here. If we're called, the tile genuinely needs I/O.)
 
             // Dedupe + bound concurrency.
             {
@@ -1837,9 +1799,11 @@ mod ome_zarr {
             let view_state = view_state.clone();
             let flush_diag = flush_diag_for_loader.clone();
             thread::spawn(move || {
-                let t = view_state.timepoint();
+                // The timepoint to read is on the request itself now —
+                // bovista calls us with the right t for both the current
+                // displayed t and any future-t we requested via prefetch.
                 let decode_start = std::time::Instant::now();
-                let result = read_tile(&levels[lod], &lod_cfg, key, t);
+                let result = read_tile(&levels[lod], &lod_cfg, key, key.t);
                 let decode_ns = decode_start.elapsed().as_nanos() as u64;
                 match result {
                     Ok(tile_data) => {
@@ -1896,110 +1860,71 @@ mod ome_zarr {
         levels: Arc<Vec<Level>>,
         lods: Vec<LodLevelConfig>,
         visible: Arc<VisibleSet>,
-        cache: Arc<PrefetchCache>,
+        inflight: Arc<Mutex<HashSet<TileKey>>>,
+        pending_slot: Arc<Mutex<Option<PendingChunks>>>,
         view_state: Arc<ViewState>,
         n_timepoints: u32,
         workers: usize,
         lookahead: i32,
-        pending_slot: Arc<Mutex<Option<PendingChunks>>>,
     ) {
         // Bounded queue keeps the dispatcher from running away.
-        let (tx, rx) = mpsc::sync_channel::<CacheKey>(256);
+        let (tx, rx) = mpsc::sync_channel::<TileKey>(256);
         let rx = Arc::new(Mutex::new(rx));
 
-        // Worker pool.
+        // Worker pool. Workers read tile data and push directly into
+        // bovista's `pending_chunks`. From bovista's perspective there's
+        // no difference between a "prefetched" tile and one requested via
+        // the regular loader callback — both flow through process_pending
+        // and land in slot_map.
         for _ in 0..workers {
             let rx = rx.clone();
             let levels = levels.clone();
             let lods = lods.clone();
-            let cache = cache.clone();
             let view_state = view_state.clone();
             let pending_slot = pending_slot.clone();
+            let inflight = inflight.clone();
             thread::spawn(move || loop {
-                let cache_key = match rx.lock().unwrap().recv() {
+                let key: TileKey = match rx.lock().unwrap().recv() {
                     Ok(k) => k,
                     Err(_) => break,
                 };
-                let (t, tile_key) = cache_key;
-                // If the user has already advanced past this timepoint and
-                // out of our window, skip — the cache slot would be evicted
-                // before being useful.
+                // If the user has moved far away from this timepoint, skip —
+                // the tile would just get LRU-evicted before being seen.
                 let current = view_state.timepoint();
-                let dist = (t as i32 - current as i32).abs();
+                let dist = (key.t as i32 - current as i32).abs();
                 if dist > lookahead + 1 {
-                    cache.release(&cache_key);
+                    inflight.lock().unwrap().remove(&key);
                     continue;
                 }
-                let lod_cfg = &lods[tile_key.lod_level];
-                match read_tile(&levels[tile_key.lod_level], lod_cfg, tile_key, t) {
-                    Ok(tile_data) => {
-                        // If this is for the CURRENT timepoint, the user
-                        // already moved here while we were decoding. Push
-                        // straight into pending so it lands on screen
-                        // immediately, instead of sitting in the cache for
-                        // a request that may never come.
-                        if t == view_state.timepoint() {
-                            if let Some(p) = pending_slot.lock().unwrap().clone() {
-                                p.lock().unwrap().insert(tile_key, tile_data);
-                                cache.release(&cache_key);
-                                continue;
-                            }
-                        }
-                        cache.put(cache_key, tile_data);
+                let lod_cfg = &lods[key.lod_level];
+                if let Ok(tile_data) = read_tile(&levels[key.lod_level], lod_cfg, key, key.t) {
+                    if let Some(p) = pending_slot.lock().unwrap().clone() {
+                        p.lock().unwrap().insert(key, tile_data);
                     }
-                    Err(_) => { /* swallow prefetch errors; non-fatal */ }
                 }
-                cache.release(&cache_key);
+                inflight.lock().unwrap().remove(&key);
             });
         }
 
-        // Dispatcher: every 200 ms, walk the visible set and try to enqueue
-        // (t±offset, key) for each unfilled, unclaimed cache slot. Every 5
-        // dispatcher ticks (~1 s) emit a one-line [stats] heartbeat so the
-        // user has a continuous signal of what the cache and prefetcher are
-        // doing between [flush] events.
+        // Dispatcher: every 200 ms, walk the visible spatial set and queue
+        // each (lod, t±offset, z, y, x) that's not already in flight.
         thread::spawn(move || {
             let mut tick: u32 = 0;
-            // Only re-emit [stats] when the state actually changes — avoids
-            // spamming the log every few seconds when the cache is stable.
-            let mut last_signature: Option<(i32, usize, usize, usize)> = None;
+            let mut last_signature: Option<(i32, usize, usize)> = None;
             loop {
                 thread::sleep(Duration::from_millis(200));
                 tick = tick.wrapping_add(1);
                 let current = view_state.timepoint() as i32;
                 let keys = visible.snapshot();
 
-                // ── Stats heartbeat ─────────────────────────────────────────
-                // Only consider a stats print every ~1 s (5 × 200ms ticks).
                 if tick % 5 == 0 {
-                    let (total, by_offset) = {
-                        let entries = cache.entries.lock().unwrap();
-                        let mut counts: std::collections::HashMap<i32, u32> =
-                            std::collections::HashMap::new();
-                        for ((t, _), _) in entries.iter() {
-                            let off = *t as i32 - current;
-                            *counts.entry(off).or_insert(0) += 1;
-                        }
-                        (entries.len(), counts)
-                    };
-                    let inflight = cache.inflight.lock().unwrap().len();
+                    let inflight_n = inflight.lock().unwrap().len();
                     let visible_n = keys.len();
-
-                    // Signature for change detection: timepoint, visible
-                    // count, cache size, inflight count. If nothing has
-                    // moved, skip the print.
-                    let sig = (current, visible_n, total, inflight);
+                    let sig = (current, visible_n, inflight_n);
                     if last_signature.as_ref() != Some(&sig) {
-                        let mut buf = String::new();
-                        for off in -lookahead..=lookahead {
-                            if off == 0 { continue; }
-                            let n = by_offset.get(&off).copied().unwrap_or(0);
-                            let sign = if off > 0 { "+" } else { "" };
-                            buf.push_str(&format!(" {}{}:{}", sign, off, n));
-                        }
                         println!(
-                            "[stats] t={} visible={} cache={}/{} inflight={} prefetch:{}",
-                            current, visible_n, total, capacity_hint(&cache), inflight, buf,
+                            "[stats] t={} visible_spatial={} inflight={}",
+                            current, visible_n, inflight_n,
                         );
                         last_signature = Some(sig);
                     }
@@ -2007,8 +1932,7 @@ mod ome_zarr {
 
                 if keys.is_empty() { continue; }
 
-                // Closer offsets first so the very next likely timepoint is
-                // primed before far-out ones.
+                // Closer offsets first.
                 let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
                 offsets.sort_by_key(|o| o.abs());
 
@@ -2016,22 +1940,21 @@ mod ome_zarr {
                     let target = current + offset;
                     if target < 0 || target >= n_timepoints as i32 { continue; }
                     let t = target as u32;
-                    for &key in &keys {
-                        let cache_key = (t, key);
-                        if !cache.try_claim(cache_key) { continue; }
-                        if tx.try_send(cache_key).is_err() {
-                            // Queue full — release and wait for next tick.
-                            cache.release(&cache_key);
+                    for spatial in &keys {
+                        let key = TileKey {
+                            lod_level: spatial.lod_level, t,
+                            z: spatial.z, y: spatial.y, x: spatial.x,
+                        };
+                        // Claim inflight slot atomically; skip if already loading.
+                        if !inflight.lock().unwrap().insert(key) { continue; }
+                        if tx.try_send(key).is_err() {
+                            inflight.lock().unwrap().remove(&key);
                             break 'outer;
                         }
                     }
                 }
             }
         });
-    }
-
-    fn capacity_hint(cache: &PrefetchCache) -> usize {
-        cache.entries.lock().unwrap().cap().get()
     }
 
     /// Read the voxel sub-region for this tile and convert to R16Float bytes.

@@ -17,6 +17,9 @@ pub struct TileRequest {
     /// LOD level (0 = highest resolution, None = no LOD hierarchy)
     pub lod_level: Option<usize>,
 
+    /// Timepoint index for temporal datasets. 0 for non-temporal.
+    pub t: u32,
+
     /// X coordinate in chunk grid (for tiled) or voxel space (for simple chunks)
     pub x: u32,
 
@@ -37,10 +40,16 @@ pub struct TileRequest {
 }
 
 impl TileRequest {
-    /// Create a tile request for multiscale tiled loading
+    /// Create a tile request for multiscale tiled loading (non-temporal).
     pub fn from_grid(lod_level: usize, chunk_x: u32, chunk_y: u32, chunk_z: u32) -> Self {
+        Self::from_grid_t(lod_level, 0, chunk_x, chunk_y, chunk_z)
+    }
+
+    /// Create a tile request for multiscale tiled loading at a specific timepoint.
+    pub fn from_grid_t(lod_level: usize, t: u32, chunk_x: u32, chunk_y: u32, chunk_z: u32) -> Self {
         Self {
             lod_level: Some(lod_level),
+            t,
             x: chunk_x,
             y: chunk_y,
             z: chunk_z,
@@ -54,6 +63,7 @@ impl TileRequest {
     pub fn from_voxels(x: u32, y: u32, z: u32, width: u32, height: u32, depth: u32) -> Self {
         Self {
             lod_level: None,
+            t: 0,
             x,
             y,
             z,
@@ -202,11 +212,15 @@ impl Tile {
     }
 }
 
-/// Unique identifier for a tile
+/// Unique identifier for a tile. `t` discriminates timepoints for temporal
+/// datasets (OME-Zarr's time axis); non-temporal callers always pass 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TileKey {
     /// LOD level (0 = highest resolution)
     pub lod_level: usize,
+
+    /// Timepoint index. 0 for non-temporal data.
+    pub t: u32,
 
     /// Z coordinate in chunk grid
     pub z: u32,
@@ -219,8 +233,20 @@ pub struct TileKey {
 }
 
 impl TileKey {
+    /// Construct a non-temporal tile key (t=0). Preserved as the default
+    /// constructor so existing non-temporal call sites compile unchanged.
     pub fn new(lod_level: usize, z: u32, y: u32, x: u32) -> Self {
-        Self { lod_level, z, y, x }
+        Self { lod_level, t: 0, z, y, x }
+    }
+
+    /// Construct a temporal tile key.
+    pub fn new_t(lod_level: usize, t: u32, z: u32, y: u32, x: u32) -> Self {
+        Self { lod_level, t, z, y, x }
+    }
+
+    /// The spatial-only key for visibility comparisons (t forced to 0).
+    pub fn spatial(self) -> TileKey {
+        TileKey { lod_level: self.lod_level, t: 0, z: self.z, y: self.y, x: self.x }
     }
 }
 

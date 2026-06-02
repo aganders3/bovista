@@ -420,11 +420,24 @@ impl VolumeVisual {
     }
 
     /// Drop every loaded tile so the next frame re-requests visible tiles.
-    /// Intended for cases where the source data has changed without changing
-    /// the volume geometry — switching OME-Zarr timepoints, for instance.
+    /// Rarely needed now that TileKey includes `t` — prefer
+    /// `set_desired_timepoint(t)` which keeps adjacent timepoints resident
+    /// in the atlas and swaps presentation atomically once t is ready.
     pub fn clear_atlas(&mut self, queue: &wgpu::Queue) {
         self.strategy.clear_atlas(queue);
     }
+
+    /// Request that the volume display timepoint `t`. The visible tiles
+    /// for `t` will be loaded (via the tile loader) in the background; the
+    /// page table flips to `t` only once every visible spatial tile has
+    /// arrived. Until then, the previously-displayed timepoint stays on
+    /// screen — no flicker. Non-temporal datasets can ignore this.
+    pub fn set_desired_timepoint(&mut self, t: u32) {
+        self.strategy.set_desired_timepoint(t);
+    }
+
+    pub fn presentation_t(&self) -> u32 { self.strategy.presentation_t() }
+    pub fn desired_t(&self)      -> u32 { self.strategy.desired_t() }
 }
 
 impl Visual for VolumeVisual {

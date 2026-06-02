@@ -83,10 +83,21 @@ pub struct VirtualTextureData {
     pub max_tiles: usize,
     frame_counter: u64,
 
+    /// Visible tile spatial keys. All entries have `t = 0` — this set is
+    /// "which (lod, z, y, x) tiles are visible," independent of timepoint.
+    /// Pending-drain and LRU touching compare against the SPATIAL part of
+    /// stored slot_map keys.
     pub visible_tile_keys: HashSet<TileKey>,
     pub lod_bias: f32,
     target_pixels_per_voxel: f32,
     pub cached_ideal_lod: usize,
+    /// Timepoint currently reflected in the page table (what the shader is
+    /// actually displaying).
+    presentation_t: u32,
+    /// Timepoint the caller wants to display. The page table is rewritten
+    /// to `desired_t` once all visible spatial keys have a slot at that t.
+    /// Same as `presentation_t` for non-temporal datasets.
+    desired_t: u32,
 }
 
 impl VirtualTextureData {
@@ -165,20 +176,36 @@ impl VirtualTextureData {
             target_pixels_per_voxel: 1.0,
             cached_ideal_lod: 0,
             levels: lod_levels,
+            presentation_t: 0,
+            desired_t: 0,
         }
     }
 
+    /// Caller-facing knob: request that the displayed timepoint be `t`. The
+    /// switch happens *only* when every visible spatial tile has a slot at
+    /// the new t — this is the wait-to-swap policy that avoids the empty-
+    /// atlas flicker during a flush. Non-temporal callers can ignore this.
+    pub fn set_desired_timepoint(&mut self, t: u32) {
+        self.desired_t = t;
+    }
+
+    pub fn presentation_t(&self) -> u32 { self.presentation_t }
+    pub fn desired_t(&self) -> u32 { self.desired_t }
+
     // ── Tile management ──────────────────────────────────────────────────────
 
-    /// Drop all resident tiles. The atlas texture data isn't zeroed (it'll be
-    /// overwritten as tiles re-load), but every page-table entry is cleared so
-    /// the shader stops sampling stale slots in the meantime.
-    ///
-    /// Use this when the underlying data has changed in a way the loader can't
-    /// express through TileKey alone (e.g. switching OME-Zarr timepoints).
+    /// Drop all resident tiles. Now that `TileKey` includes `t`, the
+    /// preferred way to switch timepoints is `set_desired_timepoint(t)` —
+    /// adjacent t's stay resident in the atlas as cache and the page table
+    /// flips atomically once the new t is fully loaded (no flicker).
+    /// `clear_atlas` is retained for unusual cases where the underlying
+    /// data shape itself has changed.
     pub fn clear_atlas(&mut self, queue: &Queue) {
         for (key, _slot) in self.slot_map.drain() {
-            self.page_table.clear(queue, key.lod_level, key.z, key.y, key.x);
+            // Only the currently-displayed timepoint has page-table entries.
+            if key.t == self.presentation_t {
+                self.page_table.clear(queue, key.lod_level, key.z, key.y, key.x);
+            }
         }
         self.lru_map.clear();
         self.requested_keys.clear();
@@ -228,24 +255,23 @@ impl VirtualTextureData {
                 continue;
             }
 
-            // Discard tiles that are no longer needed (camera moved past that LOD).
-            // Remove from requested_keys so the tile can be re-requested if it becomes
-            // visible again.
-            if !self.visible_tile_keys.contains(&key) {
+            // Visibility is spatial — compare the (lod, z, y, x) part only.
+            // Tiles for adjacent timepoints (prefetched ahead) hit this
+            // path because the camera hasn't moved, so the spatial key IS
+            // visible even though the tile's `t` isn't current.
+            if !self.visible_tile_keys.contains(&key.spatial()) {
                 self.requested_keys.remove(&key);
                 continue;
             }
 
             let Some(slot) = self.atlas_allocator.alloc() else {
-                // Eviction ran before this, but visible tiles may have consumed all slots.
-                // Release the key so it can be re-requested once space frees up.
                 self.requested_keys.remove(&key);
                 continue;
             };
 
             self.write_tile_to_atlas(queue, slot, &data);
 
-            let TileKey { lod_level, z, y, x } = key;
+            let TileKey { lod_level, t, z, y, x } = key;
             if log::log_enabled!(log::Level::Trace) {
                 let (gx, gy, _gz) = {
                     let (gz2, gy2, gx2) = self.levels[lod_level].grid_size();
@@ -253,18 +279,53 @@ impl VirtualTextureData {
                 };
                 let linear = z * gy * gx + y * gx + x;
                 log::trace!(
-                    "VT load: lod={lod_level} ({x},{y},{z}) linear={linear} slot={slot} \
+                    "VT load: lod={lod_level} t={t} ({x},{y},{z}) linear={linear} slot={slot} \
                      col={} row={} layer={}",
                     slot % self.atlas_cols,
                     (slot / self.atlas_cols) % self.atlas_rows,
                     slot / (self.atlas_cols * self.atlas_rows),
                 );
             }
-            self.page_table.update(queue, lod_level, z, y, x, slot);
+            // Page table only points at the currently-displayed timepoint.
+            // Prefetched tiles for other t values sit in the atlas
+            // unreferenced until set_desired_timepoint() flips presentation
+            // to their t (via maybe_advance_presentation below).
+            if t == self.presentation_t {
+                self.page_table.update(queue, lod_level, z, y, x, slot);
+            }
 
             self.slot_map.insert(key, slot);
             self.lru_map.insert(key, self.frame_counter);
         }
+    }
+
+    /// If every visible spatial tile has a slot at `desired_t`, flip the
+    /// page table over to that t and update `presentation_t`. Called at the
+    /// end of `prepare()` so the swap happens within the same frame that
+    /// the last needed tile arrived.
+    fn maybe_advance_presentation(&mut self, queue: &Queue) {
+        if self.desired_t == self.presentation_t { return; }
+        let target = self.desired_t;
+        // All visible tiles must have a slot at target_t.
+        for spatial in &self.visible_tile_keys {
+            let key = TileKey { lod_level: spatial.lod_level, t: target,
+                                z: spatial.z, y: spatial.y, x: spatial.x };
+            if !self.slot_map.contains_key(&key) { return; }
+        }
+        // Flip: rewrite every page-table entry from `presentation_t` to
+        // `target`. Old entries that have no slot at `target` are cleared.
+        let visible: Vec<TileKey> = self.visible_tile_keys.iter().copied().collect();
+        for spatial in &visible {
+            let key = TileKey { lod_level: spatial.lod_level, t: target,
+                                z: spatial.z, y: spatial.y, x: spatial.x };
+            if let Some(&slot) = self.slot_map.get(&key) {
+                self.page_table.update(queue, spatial.lod_level, spatial.z, spatial.y, spatial.x, slot);
+            } else {
+                self.page_table.clear(queue, spatial.lod_level, spatial.z, spatial.y, spatial.x);
+            }
+        }
+        log::debug!("VT presentation_t: {} → {}", self.presentation_t, target);
+        self.presentation_t = target;
     }
 
     fn evict_tiles(&mut self, queue: &Queue) {
@@ -277,9 +338,12 @@ impl VirtualTextureData {
         let num_to_remove = (self.slot_map.len() + 1).saturating_sub(self.max_tiles);
         let ideal_lod = self.cached_ideal_lod;
 
-        // Phase 1: tiles not currently visible — pure LRU.
+        // Phase 1: tiles whose SPATIAL key isn't visible — pure LRU. (Tiles
+        // for adjacent timepoints at a still-visible (lod, z, y, x) count
+        // as "visible" and are preserved here; they live as prefetch
+        // material until presentation_t flips to their t.)
         let mut candidates: Vec<TileKey> = self.slot_map.keys()
-            .filter(|k| !self.visible_tile_keys.contains(k))
+            .filter(|k| !self.visible_tile_keys.contains(&k.spatial()))
             .copied()
             .collect();
         candidates.sort_by_key(|k| *self.lru_map.get(k).unwrap_or(&0));
@@ -288,7 +352,7 @@ impl VirtualTextureData {
         // Sort by distance from ideal_lod descending so the most off-target tiles go first.
         if candidates.len() < num_to_remove {
             let mut wrong_lod: Vec<TileKey> = self.slot_map.keys()
-                .filter(|k| self.visible_tile_keys.contains(k) && k.lod_level != ideal_lod)
+                .filter(|k| self.visible_tile_keys.contains(&k.spatial()) && k.lod_level != ideal_lod)
                 .copied()
                 .collect();
             wrong_lod.sort_by(|a, b| {
@@ -308,8 +372,13 @@ impl VirtualTextureData {
                 self.atlas_allocator.free(slot);
                 self.lru_map.remove(&key);
                 self.requested_keys.remove(&key);
-                let TileKey { lod_level, z, y, x } = key;
-                self.page_table.clear(queue, lod_level, z, y, x);
+                // Only clear the page table if the evicted tile was the one
+                // currently being displayed. Tiles at other t's don't have a
+                // page-table entry (they live in slot_map as prefetch).
+                if key.t == self.presentation_t {
+                    let TileKey { lod_level, z, y, x, .. } = key;
+                    self.page_table.clear(queue, lod_level, z, y, x);
+                }
             }
         }
     }
@@ -321,8 +390,8 @@ impl VirtualTextureData {
             return ChunkStatus::AlreadyPending;
         }
 
-        let TileKey { lod_level, z, y, x } = key;
-        let request = TileRequest::from_grid(lod_level, x, y, z);
+        let TileKey { lod_level, t, z, y, x } = key;
+        let request = TileRequest::from_grid_t(lod_level, t, x, y, z);
         let status = (self.loader)(request);
 
         if status == ChunkStatus::Accepted {
@@ -614,13 +683,29 @@ impl VirtualTextureData {
     ) {
         self.frame_counter = frame_number;
         self.update_visible_tiles_volume(camera_info);
-        self.requested_keys.retain(|k| self.visible_tile_keys.contains(k) || self.slot_map.contains_key(k));
-        for key in &self.visible_tile_keys {
-            self.lru_map.insert(*key, frame_number);
+        // Keep requests whose SPATIAL key is still visible (covers prefetched
+        // future-timepoint requests where camera hasn't moved) or whose tile
+        // already arrived in slot_map.
+        self.requested_keys.retain(|k|
+            self.visible_tile_keys.contains(&k.spatial()) || self.slot_map.contains_key(k)
+        );
+        // Touch LRU for the slots that are currently being displayed.
+        let presentation_t = self.presentation_t;
+        for spatial in &self.visible_tile_keys {
+            let key = TileKey { lod_level: spatial.lod_level, t: presentation_t,
+                                z: spatial.z, y: spatial.y, x: spatial.x };
+            if self.slot_map.contains_key(&key) {
+                self.lru_map.insert(key, frame_number);
+            }
         }
         self.evict_tiles(queue);
         self.process_pending_chunks(queue);
-        let mut visible: Vec<TileKey> = self.visible_tile_keys.iter().copied().collect();
+        // Request visible tiles at desired_t (where the user is heading).
+        let target_t = self.desired_t;
+        let mut visible: Vec<TileKey> = self.visible_tile_keys.iter()
+            .map(|s| TileKey { lod_level: s.lod_level, t: target_t,
+                               z: s.z, y: s.y, x: s.x })
+            .collect();
         visible.sort_by_key(|k| Reverse(k.lod_level));
         for key in visible {
             if self.slot_map.contains_key(&key) { continue; }
@@ -629,6 +714,9 @@ impl VirtualTextureData {
                 ChunkStatus::Rejected => break,
             }
         }
+        // Once all visible-at-desired-t tiles have arrived, flip the page
+        // table. Single in-frame swap, no flicker.
+        self.maybe_advance_presentation(queue);
     }
 
     // ── Main prepare ─────────────────────────────────────────────────────────
@@ -644,32 +732,38 @@ impl VirtualTextureData {
 
         self.update_visible_tiles(slice_plane, camera_info);
 
-        // Cancel in-flight requests for tiles that are no longer visible.
-        self.requested_keys.retain(|k| self.visible_tile_keys.contains(k) || self.slot_map.contains_key(k));
+        // Visibility is spatial — keep requests + slots whose (lod, z, y, x)
+        // is still visible regardless of their timepoint.
+        self.requested_keys.retain(|k|
+            self.visible_tile_keys.contains(&k.spatial()) || self.slot_map.contains_key(k)
+        );
 
-        // Touch LRU timestamps for visible loaded tiles.
-        for key in &self.visible_tile_keys {
-            self.lru_map.insert(*key, frame_number);
+        let presentation_t = self.presentation_t;
+        for spatial in &self.visible_tile_keys {
+            let key = TileKey { lod_level: spatial.lod_level, t: presentation_t,
+                                z: spatial.z, y: spatial.y, x: spatial.x };
+            if self.slot_map.contains_key(&key) {
+                self.lru_map.insert(key, frame_number);
+            }
         }
 
-        // Evict before placing arriving chunks so there's always a free slot available.
         self.evict_tiles(queue);
-
-        // Place any chunks that finished loading.
         self.process_pending_chunks(queue);
 
-        // Request any visible tiles that aren't loaded.
-        // Sort coarsest-first so fallback LODs are resident while fine tiles stream in.
-        let mut visible: Vec<TileKey> = self.visible_tile_keys.iter().copied().collect();
+        // Request tiles at the timepoint the caller wants to display next.
+        let target_t = self.desired_t;
+        let mut visible: Vec<TileKey> = self.visible_tile_keys.iter()
+            .map(|s| TileKey { lod_level: s.lod_level, t: target_t,
+                               z: s.z, y: s.y, x: s.x })
+            .collect();
         visible.sort_by_key(|k| Reverse(k.lod_level));
         for key in visible {
-            if self.slot_map.contains_key(&key) {
-                continue;
-            }
+            if self.slot_map.contains_key(&key) { continue; }
             match self.request_tile(key) {
                 ChunkStatus::Accepted | ChunkStatus::AlreadyPending => {}
                 ChunkStatus::Rejected => break,
             }
         }
+        self.maybe_advance_presentation(queue);
     }
 }
