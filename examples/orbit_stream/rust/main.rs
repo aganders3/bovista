@@ -272,6 +272,10 @@ fn main() {
     let mut last_t_gen: u32 = view_state.t_generation();
     // True while we're in the post-flush diagnostic window.
     let mut flush_active = false;
+    // ns since program start when the current flush began (0 = none).
+    let mut flush_started_ns: u64 = 0;
+    // Whether we've printed the one-shot [loaded] snapshot for this flush.
+    let mut printed_loaded_snapshot = false;
     let mut dropped_total: u64 = 0;
 
     loop {
@@ -327,6 +331,8 @@ fn main() {
                 let t_ns = view_state.ns_since_start();
                 flush_diag.start(t_ns);
                 flush_active = true;
+                flush_started_ns = t_ns;
+                printed_loaded_snapshot = false;
                 println!("[orbit] timepoint → {} (atlas flushed at t={:.3}s)",
                          view_state.timepoint(),
                          t_ns as f64 / 1e9);
@@ -353,17 +359,36 @@ fn main() {
         if flush_active {
             flush_diag.upload_ns_total
                 .fetch_add(prepare_dt.as_nanos() as u64, Ordering::Relaxed);
-            // Settle detection: bovista progressively loads coarse LODs first
-            // then fine ones, with a short gap between phases. Widen the
-            // window to 1 s so a single [flush] line captures both LOD-2 and
-            // LOD-1 batches rather than splitting them into two summaries.
-            let t0 = flush_diag.flush_t0_ns.load(Ordering::Relaxed);
             let now_ns = view_state.ns_since_start();
-            let first = flush_diag.first_arrival_ns.load(Ordering::Relaxed);
-            let last = flush_diag.last_arrival_ns.load(Ordering::Relaxed);
+            let elapsed_ms = (now_ns.saturating_sub(flush_started_ns)) / 1_000_000;
+
+            // One-shot [loaded] snapshot 150 ms after flush start: this is
+            // long enough for the initial visible-set load to complete (cache
+            // hits + GPU upload) but short enough that camera-orbit-driven
+            // discoveries haven't polluted the count yet. Captures the
+            // "how snappy did t-change feel?" answer.
             let tiles = flush_diag.tiles_loaded.load(Ordering::Relaxed);
+            if !printed_loaded_snapshot && elapsed_ms >= 150 {
+                let hits   = flush_diag.cache_hits.load(Ordering::Relaxed);
+                let misses = flush_diag.cache_misses.load(Ordering::Relaxed);
+                let dec_ns = flush_diag.decode_ns_total.load(Ordering::Relaxed);
+                let up_ns  = flush_diag.upload_ns_total.load(Ordering::Relaxed);
+                println!(
+                    "[loaded] @{} ms: {} tiles ({} hit / {} miss) | decode {:.0} ms | upload {:.0} ms",
+                    elapsed_ms, tiles, hits, misses,
+                    dec_ns as f64 / 1e6,
+                    up_ns as f64 / 1e6,
+                );
+                printed_loaded_snapshot = true;
+            }
+
+            // Settle detection: still prints a [flush:settled] when arrivals
+            // stop for 1 s. Note that an active camera orbit keeps producing
+            // arrivals so this can take a while to fire — that's the orbit
+            // bringing new tiles into view, not flush latency.
+            let last = flush_diag.last_arrival_ns.load(Ordering::Relaxed);
+            let t0 = flush_diag.flush_t0_ns.load(Ordering::Relaxed);
             let since_last_ms = ((now_ns.saturating_sub(t0)).saturating_sub(last)) / 1_000_000;
-            let _ = (first, last);
             if tiles > 0 && since_last_ms > 1000 {
                 print_flush_summary(&flush_diag, "settled");
                 flush_active = false;
@@ -1935,6 +1960,9 @@ mod ome_zarr {
         // doing between [flush] events.
         thread::spawn(move || {
             let mut tick: u32 = 0;
+            // Only re-emit [stats] when the state actually changes — avoids
+            // spamming the log every few seconds when the cache is stable.
+            let mut last_signature: Option<(i32, usize, usize, usize)> = None;
             loop {
                 thread::sleep(Duration::from_millis(200));
                 tick = tick.wrapping_add(1);
@@ -1942,6 +1970,7 @@ mod ome_zarr {
                 let keys = visible.snapshot();
 
                 // ── Stats heartbeat ─────────────────────────────────────────
+                // Only consider a stats print every ~1 s (5 × 200ms ticks).
                 if tick % 5 == 0 {
                     let (total, by_offset) = {
                         let entries = cache.entries.lock().unwrap();
@@ -1955,20 +1984,25 @@ mod ome_zarr {
                     };
                     let inflight = cache.inflight.lock().unwrap().len();
                     let visible_n = keys.len();
-                    // Render the offsets we care about for the heartbeat:
-                    // -lookahead..=+lookahead, skipping 0 (that's the
-                    // currently-displayed timepoint).
-                    let mut buf = String::new();
-                    for off in -lookahead..=lookahead {
-                        if off == 0 { continue; }
-                        let n = by_offset.get(&off).copied().unwrap_or(0);
-                        let sign = if off > 0 { "+" } else { "" };
-                        buf.push_str(&format!(" {}{}:{}", sign, off, n));
+
+                    // Signature for change detection: timepoint, visible
+                    // count, cache size, inflight count. If nothing has
+                    // moved, skip the print.
+                    let sig = (current, visible_n, total, inflight);
+                    if last_signature.as_ref() != Some(&sig) {
+                        let mut buf = String::new();
+                        for off in -lookahead..=lookahead {
+                            if off == 0 { continue; }
+                            let n = by_offset.get(&off).copied().unwrap_or(0);
+                            let sign = if off > 0 { "+" } else { "" };
+                            buf.push_str(&format!(" {}{}:{}", sign, off, n));
+                        }
+                        println!(
+                            "[stats] t={} visible={} cache={}/{} inflight={} prefetch:{}",
+                            current, visible_n, total, capacity_hint(&cache), inflight, buf,
+                        );
+                        last_signature = Some(sig);
                     }
-                    println!(
-                        "[stats] t={} visible={} cache={}/{} inflight={} prefetch:{}",
-                        current, visible_n, total, capacity_hint(&cache), inflight, buf,
-                    );
                 }
 
                 if keys.is_empty() { continue; }
