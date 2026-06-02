@@ -1484,7 +1484,6 @@ mod ome_zarr {
     use std::collections::HashSet;
     use std::error::Error;
     use std::sync::{Arc, Mutex};
-    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
@@ -1719,112 +1718,123 @@ mod ome_zarr {
             )
         };
 
-        // Tile loader: spawns a worker per request, bounded by max_inflight.
-        println!("[orbit] max in-flight tile reads: {}", max_inflight);
+        // Single priority queue → single worker pool. Priority = distance
+        // from the current displayed timepoint, computed at dequeue time so
+        // a t-change instantly reorders the queue. The bovista loader and
+        // the prefetcher both push into this same queue; whichever entry
+        // is currently closest to view_state.timepoint() pops first.
+        //
+        // Workers process FIFO from the priority queue, decoding into
+        // bovista's pending_chunks. No max_inflight cap — the queue's
+        // built-in size limit is the backpressure.
         let levels = Arc::new(levels);
-        let inflight: Arc<Mutex<HashSet<TileKey>>> = Arc::new(Mutex::new(HashSet::new()));
         let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
-        let lods_for_loader = lods.clone();
-
-        // Prefetcher: pushes future-timepoint tiles directly into bovista's
-        // `pending_chunks` so they're already in slot_map by the time the
-        // user advances to them. Reads from a shared visible-keys snapshot
-        // refreshed by the render thread each frame — that's bovista's
-        // *actual* current visible set, not an accumulating shadow, so the
-        // prefetcher always works on fresh geometry. Prefetch inflight is
-        // tracked separately so it can't starve the regular loader's
-        // max_inflight budget.
-        let prefetch_inflight: Arc<Mutex<HashSet<TileKey>>> =
-            Arc::new(Mutex::new(HashSet::new()));
         let visible_snapshot: Arc<Mutex<Vec<TileKey>>> = Arc::new(Mutex::new(Vec::new()));
+        let scheduler = LoaderScheduler::new(max_inflight.saturating_mul(16).max(512));
+        println!("[orbit] scheduler: {} worker(s), queue cap {} entries",
+                 max_inflight, scheduler.cap());
+
+        // Worker pool: each thread loops pop_best → decode → push to pending.
+        for _ in 0..max_inflight {
+            let scheduler = scheduler.clone();
+            let levels = levels.clone();
+            let lods = lods.clone();
+            let pending_slot = pending_slot.clone();
+            let view_state = view_state.clone();
+            let flush_diag = flush_diag.clone();
+            thread::spawn(move || loop {
+                let key = match scheduler.pop_best(view_state.timepoint()) {
+                    Some(k) => k,
+                    None => break,
+                };
+                if key.lod_level >= levels.len() { continue; }
+                let lod_cfg = &lods[key.lod_level];
+                let decode_start = std::time::Instant::now();
+                let result = read_tile(&levels[key.lod_level], lod_cfg, key, key.t);
+                let decode_ns = decode_start.elapsed().as_nanos() as u64;
+                match result {
+                    Ok(data) => {
+                        if let Some(p) = pending_slot.lock().unwrap().clone() {
+                            p.lock().unwrap().insert(key, data);
+                            flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[orbit] tile load failed (lod={} t={} z={} y={} x={}): {}",
+                                  key.lod_level, key.t, key.z, key.y, key.x, e);
+                    }
+                }
+            });
+        }
+
+        // Prefetcher dispatcher: every 200 ms, push (visible × ±lookahead)
+        // keys into the scheduler at LOWER priority than the current frame.
+        // The scheduler's distance-based ordering automatically deprioritizes
+        // them whenever the user moves.
         if n_timepoints > 1 {
-            spawn_prefetcher(
-                levels.clone(),
-                lods.clone(),
-                visible_snapshot.clone(),
-                prefetch_inflight.clone(),
-                inflight.clone(),               // regular-loader inflight; pause when non-empty
-                pending_slot.clone(),
-                view_state.clone(),
-                n_timepoints,
-                /* workers */ 4,
-                /* lookahead */ 2,
-            );
-            println!("[orbit] prefetcher: 4 workers, ±2 timepoints (push to atlas via pending)");
+            let scheduler = scheduler.clone();
+            let view_state = view_state.clone();
+            let visible_snapshot = visible_snapshot.clone();
+            thread::spawn(move || {
+                let lookahead: i32 = 2;
+                let mut tick = 0u32;
+                let mut last_sig: Option<(u32, usize, usize)> = None;
+                loop {
+                    thread::sleep(Duration::from_millis(200));
+                    tick = tick.wrapping_add(1);
+                    let current = view_state.timepoint();
+                    let keys = visible_snapshot.lock().unwrap().clone();
+
+                    if tick % 5 == 0 {
+                        let q = scheduler.len();
+                        let sig = (current, keys.len(), q);
+                        if last_sig.as_ref() != Some(&sig) {
+                            println!("[stats] t={} visible_spatial={} queue={}",
+                                     current, keys.len(), q);
+                            last_sig = Some(sig);
+                        }
+                    }
+
+                    if keys.is_empty() { continue; }
+
+                    let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
+                    offsets.sort_by_key(|o| o.abs());
+                    for offset in offsets {
+                        let target = current as i32 + offset;
+                        if target < 0 || target >= n_timepoints as i32 { continue; }
+                        let t = target as u32;
+                        for spatial in &keys {
+                            let key = TileKey {
+                                lod_level: spatial.lod_level, t,
+                                z: spatial.z, y: spatial.y, x: spatial.x,
+                            };
+                            scheduler.push(key, current);
+                        }
+                    }
+                }
+            });
         }
         let _ = prefetch_cap;
 
-        let pending_for_loader = pending_slot.clone();
+        // Bovista's loader callback: just push to the scheduler. If the
+        // queue is full and our key is lower-priority than what's already
+        // queued, return Rejected so bovista doesn't mark it as requested
+        // (we'll try again next frame when the queue has drained).
+        let scheduler_for_loader = scheduler.clone();
+        let view_state_for_loader = view_state.clone();
         let levels_for_loader = levels.clone();
-        let inflight_for_loader = inflight.clone();
-        let flush_diag_for_loader = flush_diag.clone();
         let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
             let lod = req.lod_level.unwrap_or(0);
             if lod >= levels_for_loader.len() {
                 return ChunkStatus::Rejected;
             }
             let key = TileKey { lod_level: lod, t: req.t, z: req.z, y: req.y, x: req.x };
-
-            // Need the pending queue (set after volume creation).
-            let pending = match pending_for_loader.lock().unwrap().clone() {
-                Some(p) => p,
-                None => return ChunkStatus::Rejected,
-            };
-
-            // (Prefetched tiles for adjacent timepoints land directly in
-            // bovista's `pending_chunks` and slot_map — bovista itself
-            // short-circuits this loader callback via `requested_keys` /
-            // `pending_chunks` lookups, so we don't need a sidecar cache
-            // path here. If we're called, the tile genuinely needs I/O.)
-
-            // Dedupe + bound concurrency. The cap is PER-T: each timepoint
-            // gets its own max_inflight budget, so when the user changes t
-            // the new requests aren't blocked by stale t-N workers still
-            // mid-decode. Old workers finish quickly and release naturally;
-            // the brief over-subscription is far better than the user
-            // staring at a frozen frame.
-            {
-                let mut inflight = inflight_for_loader.lock().unwrap();
-                if inflight.contains(&key) {
-                    return ChunkStatus::AlreadyPending;
-                }
-                let same_t = inflight.iter().filter(|k| k.t == key.t).count();
-                if same_t >= max_inflight {
-                    return ChunkStatus::Rejected;
-                }
-                inflight.insert(key);
+            let current_t = view_state_for_loader.timepoint();
+            if scheduler_for_loader.push(key, current_t) {
+                ChunkStatus::Accepted
+            } else {
+                ChunkStatus::Rejected
             }
-
-            let levels = levels_for_loader.clone();
-            let lod_cfg = lods_for_loader[lod].clone();
-            let inflight = inflight_for_loader.clone();
-            let view_state = view_state.clone();
-            let flush_diag = flush_diag_for_loader.clone();
-            thread::spawn(move || {
-                let decode_start = std::time::Instant::now();
-                let result = read_tile(&levels[lod], &lod_cfg, key, key.t);
-                let decode_ns = decode_start.elapsed().as_nanos() as u64;
-                // Release the inflight slot the moment decode finishes —
-                // BEFORE pushing to pending — so the next current-t
-                // request can enter immediately without waiting for the
-                // (tiny) lock-and-insert step. Keeps max_inflight a real
-                // bandwidth gate, not a stale-work-occupies-slot gate.
-                inflight.lock().unwrap().remove(&key);
-                match result {
-                    Ok(tile_data) => {
-                        pending.lock().unwrap().insert(key, tile_data);
-                        flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[orbit] tile load failed (lod={} z={} y={} x={}): {}",
-                            key.lod_level, key.z, key.y, key.x, e
-                        );
-                    }
-                }
-            });
-
-            ChunkStatus::Accepted
         });
 
         println!("[orbit] OME-Zarr: t axis has {} timepoint(s)", n_timepoints);
@@ -1861,105 +1871,71 @@ mod ome_zarr {
     /// When the user advances to t+1, the regular loader hits the cache
     /// instead of doing fresh I/O — sequential scrubbing / playback is
     /// reduced to GPU upload time only.
-    fn spawn_prefetcher(
-        levels: Arc<Vec<Level>>,
-        lods: Vec<LodLevelConfig>,
-        visible_snapshot: Arc<Mutex<Vec<TileKey>>>,
-        inflight: Arc<Mutex<HashSet<TileKey>>>,
-        regular_inflight: Arc<Mutex<HashSet<TileKey>>>,
-        pending_slot: Arc<Mutex<Option<PendingChunks>>>,
-        view_state: Arc<ViewState>,
-        n_timepoints: u32,
-        workers: usize,
-        lookahead: i32,
-    ) {
-        // Bounded queue keeps the dispatcher from running away.
-        let (tx, rx) = mpsc::sync_channel::<TileKey>(256);
-        let rx = Arc::new(Mutex::new(rx));
-
-        // Worker pool. Workers read tile data and push directly into
-        // bovista's `pending_chunks`. From bovista's perspective there's
-        // no difference between a "prefetched" tile and one requested via
-        // the regular loader callback — both flow through process_pending
-        // and land in slot_map.
-        for _ in 0..workers {
-            let rx = rx.clone();
-            let levels = levels.clone();
-            let lods = lods.clone();
-            let pending_slot = pending_slot.clone();
-            let inflight = inflight.clone();
-            thread::spawn(move || loop {
-                let key: TileKey = match rx.lock().unwrap().recv() {
-                    Ok(k) => k,
-                    Err(_) => break,
-                };
-                let lod_cfg = &lods[key.lod_level];
-                if let Ok(tile_data) = read_tile(&levels[key.lod_level], lod_cfg, key, key.t) {
-                    // Push regardless — if the user has moved far away,
-                    // atlas eviction (with t-distance priority) will
-                    // displace it again. We don't try to guess.
-                    if let Some(p) = pending_slot.lock().unwrap().clone() {
-                        p.lock().unwrap().insert(key, tile_data);
-                    }
-                }
-                inflight.lock().unwrap().remove(&key);
-            });
+    /// Single priority queue + condvar. Items are tile keys; priority is
+    /// `|key.t - current_t|` computed at *pop* time, so changes to the
+    /// current timepoint instantly re-prioritize everything in the queue.
+    ///
+    /// `push` returns false (rejected) only if the queue is full AND the
+    /// caller's priority isn't better than the worst item in it; bovista
+    /// gets `Rejected` for that case and won't mark it as requested, so
+    /// it'll retry next frame.
+    #[derive(Clone)]
+    pub struct LoaderScheduler {
+        inner: Arc<LoaderSchedulerInner>,
+    }
+    struct LoaderSchedulerInner {
+        queue: Mutex<HashSet<TileKey>>,
+        cvar:  std::sync::Condvar,
+        cap:   usize,
+    }
+    impl LoaderScheduler {
+        fn new(cap: usize) -> Self {
+            Self { inner: Arc::new(LoaderSchedulerInner {
+                queue: Mutex::new(HashSet::new()),
+                cvar:  std::sync::Condvar::new(),
+                cap,
+            })}
         }
-
-        // Dispatcher: every 200 ms, walk the visible spatial set and queue
-        // each (lod, t±offset, z, y, x) that's not already in flight.
-        // PRIORITY: while the regular loader has *anything* in flight, the
-        // prefetcher steps aside. Current-t I/O always gets exclusive
-        // access to NFS / the rayon pool / etc. until it's caught up;
-        // only then does the prefetcher fill in neighbors.
-        thread::spawn(move || {
-            let mut tick: u32 = 0;
-            let mut last_signature: Option<(i32, usize, usize, bool)> = None;
-            loop {
-                thread::sleep(Duration::from_millis(200));
-                tick = tick.wrapping_add(1);
-                let current = view_state.timepoint() as i32;
-                let keys = visible_snapshot.lock().unwrap().clone();
-                let regular_busy = !regular_inflight.lock().unwrap().is_empty();
-
-                if tick % 5 == 0 {
-                    let inflight_n = inflight.lock().unwrap().len();
-                    let visible_n = keys.len();
-                    let sig = (current, visible_n, inflight_n, regular_busy);
-                    if last_signature.as_ref() != Some(&sig) {
-                        println!(
-                            "[stats] t={} visible_spatial={} prefetch_inflight={} regular_busy={}",
-                            current, visible_n, inflight_n, regular_busy,
-                        );
-                        last_signature = Some(sig);
-                    }
-                }
-
-                if keys.is_empty() || regular_busy { continue; }
-
-                // Closer offsets first.
-                let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
-                offsets.sort_by_key(|o| o.abs());
-
-                'outer: for offset in offsets {
-                    let target = current + offset;
-                    if target < 0 || target >= n_timepoints as i32 { continue; }
-                    let t = target as u32;
-                    for spatial in &keys {
-                        let key = TileKey {
-                            lod_level: spatial.lod_level, t,
-                            z: spatial.z, y: spatial.y, x: spatial.x,
-                        };
-                        // Claim inflight slot atomically; skip if already loading.
-                        if !inflight.lock().unwrap().insert(key) { continue; }
-                        if tx.try_send(key).is_err() {
-                            inflight.lock().unwrap().remove(&key);
-                            break 'outer;
-                        }
+        pub fn cap(&self) -> usize { self.inner.cap }
+        /// Enqueue a tile request. If the queue is at capacity, drop the
+        /// worst-priority existing entry IF this one is better, or reject.
+        pub fn push(&self, key: TileKey, current_t: u32) -> bool {
+            let mut q = self.inner.queue.lock().unwrap();
+            if q.contains(&key) { return true; }
+            if q.len() >= self.inner.cap {
+                let our_pri  = (key.t as i32 - current_t as i32).abs();
+                if let Some(worst) = q.iter()
+                    .max_by_key(|k| (k.t as i32 - current_t as i32).abs())
+                    .copied()
+                {
+                    let worst_pri = (worst.t as i32 - current_t as i32).abs();
+                    if our_pri < worst_pri {
+                        q.remove(&worst);
+                    } else {
+                        return false;
                     }
                 }
             }
-        });
+            q.insert(key);
+            self.inner.cvar.notify_one();
+            true
+        }
+        /// Block until a tile is available, then pop the one closest to
+        /// the current timepoint.
+        pub fn pop_best(&self, current_t: u32) -> Option<TileKey> {
+            let mut q = self.inner.queue.lock().unwrap();
+            loop {
+                if let Some(best) = q.iter()
+                    .min_by_key(|k| (k.t as i32 - current_t as i32).abs())
+                    .copied()
+                {
+                    q.remove(&best);
+                    return Some(best);
+                }
+                q = self.inner.cvar.wait(q).unwrap();
+            }
+        }
+        pub fn len(&self) -> usize { self.inner.queue.lock().unwrap().len() }
     }
 
     /// Read the voxel sub-region for this tile and convert to R16Float bytes.
