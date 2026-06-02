@@ -31,9 +31,9 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use bovista::visual::CameraInfo;
@@ -50,7 +50,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     const KNOWN_FLAGS: &[&str] = &[
         "--width", "--height", "--fps", "--port", "--backend",
-        "--zarr", "--cache-tiles",
+        "--zarr", "--cache-tiles", "--max-inflight",
         "--contrast-min", "--contrast-max", "--density-mult",
         "--timepoint", "--bench",
     ];
@@ -62,6 +62,9 @@ fn main() {
     let backend = flag_str(&args, "--backend", "auto");
     let zarr_arg: Option<String> = flag_str_opt(&args, "--zarr");
     let cache_override: Option<u32> = flag_str_opt(&args, "--cache-tiles").and_then(|v| v.parse().ok());
+    let max_inflight: usize = flag_str_opt(&args, "--max-inflight")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ome_zarr::DEFAULT_MAX_INFLIGHT);
 
     // Standalone benchmark mode: no rendering, no streaming. Just open the
     // zarr and time per-tile reads at each LOD across a few timepoints.
@@ -148,7 +151,7 @@ fn main() {
 
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
-        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone()) {
+        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(), max_inflight) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -206,8 +209,16 @@ fn main() {
     //
     // The render thread (this thread) holds a single ChildStdin in `active`
     // for the current /stream client; idles when no client is connected.
-    let active: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
-    spawn_http_server(port, width, height, fps, active.clone(), view_state.clone(), n_timepoints);
+    // Latest-frame-only handoff (no backlog). `client_connected` is the
+    // render thread's "should I bother rendering" gate, set/cleared by the
+    // HTTP connection handler.
+    let frame_slot = Arc::new(LatestFrame::new());
+    let client_connected = Arc::new(AtomicBool::new(false));
+    spawn_http_server(
+        port, width, height, fps,
+        frame_slot.clone(), client_connected.clone(),
+        view_state.clone(), n_timepoints,
+    );
 
     println!("[orbit] ready; open http://localhost:{}/ (Ctrl-C to stop)", port);
 
@@ -234,7 +245,7 @@ fn main() {
 
     loop {
         // Skip the render entirely when nobody's watching.
-        if active.lock().unwrap().is_none() {
+        if !client_connected.load(Ordering::Relaxed) {
             std::thread::sleep(idle_sleep);
             last_tick = Instant::now();
             loop_start = Instant::now();
@@ -332,20 +343,12 @@ fn main() {
             }
         }
 
-        // Push the frame to the current client (if still attached). On any
-        // write error, drop our handle to the stdin so the accept thread can
-        // claim the slot for the next client.
-        let write_err = {
-            let mut slot = active.lock().unwrap();
-            match slot.as_mut() {
-                Some(stdin) => stdin.write_all(&bgra).err(),
-                None => None,
-            }
-        };
-        if let Some(e) = write_err {
-            eprintln!("[orbit] dropping client: ffmpeg stdin write failed ({})", e);
-            *active.lock().unwrap() = None;
-        }
+        // Hand the frame off to the writer thread via the latest-only slot.
+        // This NEVER blocks on network/encoder backpressure — older frames
+        // are silently overwritten if the writer hasn't drained them yet.
+        // That decouples render thread responsiveness from downstream
+        // congestion (background tabs, slow network, ffmpeg buffering).
+        frame_slot.push(bgra);
 
         // Pace against absolute wall-clock target, not relative to start of
         // this frame — so a fast frame doesn't gain budget for the next one
@@ -816,6 +819,56 @@ struct ViewState {
     program_start: Instant,
 }
 
+/// Single-slot frame handoff between render thread and the ffmpeg writer
+/// thread. Render `push`-es overwrites whatever's currently there (latest
+/// frame wins); writer `pop`s and blocks if empty. This decouples render
+/// from network/encoder backpressure entirely — when downstream stalls
+/// (e.g. browser tab in background), the writer blocks on stdin and the
+/// render thread keeps producing frames into the slot, with old frames
+/// silently overwritten. No backlog accumulates anywhere.
+struct LatestFrame {
+    inner: Mutex<Option<Vec<u8>>>,
+    cvar: Condvar,
+    closed: AtomicBool,
+}
+
+impl LatestFrame {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
+            cvar: Condvar::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+    /// Replace whatever's in the slot with this frame. Always succeeds while
+    /// open; returns false if the slot has been closed (writer is gone).
+    fn push(&self, frame: Vec<u8>) -> bool {
+        if self.closed.load(Ordering::Relaxed) { return false; }
+        *self.inner.lock().unwrap() = Some(frame);
+        self.cvar.notify_one();
+        true
+    }
+    /// Block until a frame is available or the slot is closed.
+    fn pop(&self) -> Option<Vec<u8>> {
+        let mut guard = self.inner.lock().unwrap();
+        loop {
+            if let Some(f) = guard.take() { return Some(f); }
+            if self.closed.load(Ordering::Relaxed) { return None; }
+            guard = self.cvar.wait(guard).unwrap();
+        }
+    }
+    /// Wake any pop()-er with None and refuse future push()es.
+    fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.cvar.notify_all();
+    }
+    /// Reset (called when a new client connects after a previous disconnect).
+    fn reopen(&self) {
+        self.closed.store(false, Ordering::Relaxed);
+        *self.inner.lock().unwrap() = None;
+    }
+}
+
 /// End-to-end timing for one timepoint flush. Tile workers fill in
 /// per-tile counters; the render loop reads them and prints a summary
 /// once arrivals settle.
@@ -931,7 +984,8 @@ fn spawn_http_server(
     width: u32,
     height: u32,
     fps: u32,
-    active: Arc<Mutex<Option<ChildStdin>>>,
+    frame_slot: Arc<LatestFrame>,
+    client_connected: Arc<AtomicBool>,
     view_state: Arc<ViewState>,
     n_timepoints: u32,
 ) {
@@ -941,10 +995,14 @@ fn spawn_http_server(
     std::thread::spawn(move || {
         for incoming in listener.incoming() {
             let Ok(socket) = incoming else { continue };
-            let active = active.clone();
+            let frame_slot = frame_slot.clone();
+            let client_connected = client_connected.clone();
             let view_state = view_state.clone();
             std::thread::spawn(move || {
-                handle_request(socket, width, height, fps, active, view_state, n_timepoints);
+                handle_request(
+                    socket, width, height, fps,
+                    frame_slot, client_connected, view_state, n_timepoints,
+                );
             });
         }
     });
@@ -953,7 +1011,8 @@ fn spawn_http_server(
 fn handle_request(
     mut socket: TcpStream,
     width: u32, height: u32, fps: u32,
-    active: Arc<Mutex<Option<ChildStdin>>>,
+    frame_slot: Arc<LatestFrame>,
+    client_connected: Arc<AtomicBool>,
     view_state: Arc<ViewState>,
     n_timepoints: u32,
 ) {
@@ -973,7 +1032,7 @@ fn handle_request(
     if path == "/" || path.starts_with("/?") {
         serve_html(&mut socket, &view_state, n_timepoints);
     } else if path == "/stream" {
-        serve_stream(&mut socket, width, height, fps, active);
+        serve_stream(&mut socket, width, height, fps, frame_slot, client_connected);
     } else if let Some(query) = path.strip_prefix("/set?") {
         serve_set(&mut socket, query, &view_state);
     } else {
@@ -1013,9 +1072,14 @@ fn serve_html(socket: &mut TcpStream, view: &ViewState, n_timepoints: u32) {
 fn serve_stream(
     socket: &mut TcpStream,
     width: u32, height: u32, fps: u32,
-    active: Arc<Mutex<Option<ChildStdin>>>,
+    frame_slot: Arc<LatestFrame>,
+    client_connected: Arc<AtomicBool>,
 ) {
-    if active.lock().unwrap().is_some() {
+    // Single-client policy: refuse if someone else is already streaming.
+    if client_connected
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
         let _ = socket.write_all(
             b"HTTP/1.0 503 Service Unavailable\r\n\
               Content-Type: text/plain\r\n\
@@ -1026,10 +1090,8 @@ fn serve_stream(
     }
 
     let mut ffmpeg = spawn_ffmpeg(width, height, fps);
-    let stdin = ffmpeg.stdin.take().expect("ffmpeg stdin");
+    let mut ffmpeg_stdin = ffmpeg.stdin.take().expect("ffmpeg stdin");
     let mut stdout = ffmpeg.stdout.take().expect("ffmpeg stdout");
-
-    *active.lock().unwrap() = Some(stdin);
 
     println!("[orbit] HTTP /stream client connected; streaming fMP4");
     let header_ok = socket.write_all(
@@ -1040,13 +1102,38 @@ fn serve_stream(
           Connection: close\r\n\r\n",
     ).is_ok();
 
-    if header_ok {
-        let _ = std::io::copy(&mut stdout, socket);
+    if !header_ok {
+        client_connected.store(false, Ordering::Relaxed);
+        let _ = ffmpeg.kill();
+        let _ = ffmpeg.wait();
+        return;
     }
 
-    *active.lock().unwrap() = None;
+    // Writer thread: drains the latest-frame slot into ffmpeg.stdin. If
+    // ffmpeg's stdin pipe is full (downstream stalled), this thread blocks
+    // here — but the render thread keeps overwriting the slot, so no
+    // backlog accumulates and slider events still apply promptly.
+    frame_slot.reopen();
+    let slot_for_writer = frame_slot.clone();
+    let writer = std::thread::spawn(move || {
+        while let Some(frame) = slot_for_writer.pop() {
+            if ffmpeg_stdin.write_all(&frame).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Block here until the client TCP socket closes (i.e. browser
+    // disconnects) or ffmpeg's stdout closes.
+    let _ = std::io::copy(&mut stdout, socket);
+
+    // Tear down: stop accepting new frames, wake the writer if it's blocked
+    // in pop(), kill ffmpeg so any in-flight write_all returns an error.
+    frame_slot.close();
+    client_connected.store(false, Ordering::Relaxed);
     let _ = ffmpeg.kill();
     let _ = ffmpeg.wait();
+    let _ = writer.join();
     println!("[orbit] /stream client disconnected; idle");
 }
 
@@ -1219,17 +1306,12 @@ mod ome_zarr {
     /// intersecting the tile region rather than the whole outer shard, so
     /// per-tile cost stays tens of ms even on multi-GB outer chunks.
     ///
-    /// Cap derived from `available_parallelism()` minus a couple cores for
-    /// the render thread + ffmpeg. 128 over-subscribed rayon's pool badly on
-    /// multi-LOD flushes (3-4× parallelism instead of 70×+). Capped at 64
-    /// because zarrs's internal rayon parallelism already amplifies each
-    /// in-flight call.
-    fn max_inflight() -> usize {
-        let cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(8);
-        cpus.saturating_sub(2).clamp(8, 64)
-    }
+    /// Sweet spot empirically. zarrs's `retrieve_array_subset` already uses
+    /// rayon internally so each in-flight call expands to several physical
+    /// threads. With CPUs=64 and max_inflight=64 we observed effective
+    /// parallelism of 3× (pool thrashing); single-LOD bench gave ~2× on 8
+    /// workers. 16 is a defensible default; --max-inflight overrides.
+    pub const DEFAULT_MAX_INFLIGHT: usize = 16;
 
     /// Each LOD level we'll serve. We type-erase the storage so the same struct
     /// can hold either a filesystem or http store.
@@ -1249,6 +1331,7 @@ mod ome_zarr {
         path_or_url: &str,
         view_state: Arc<ViewState>,
         flush_diag: Arc<FlushDiag>,
+        max_inflight: usize,
     ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
@@ -1442,7 +1525,6 @@ mod ome_zarr {
         };
 
         // Tile loader: spawns a worker per request, bounded by max_inflight.
-        let max_inflight = max_inflight();
         println!("[orbit] max in-flight tile reads: {}", max_inflight);
         let levels = Arc::new(levels);
         let inflight: Arc<Mutex<HashSet<TileKey>>> = Arc::new(Mutex::new(HashSet::new()));
