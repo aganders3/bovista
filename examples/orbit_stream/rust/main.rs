@@ -1785,6 +1785,15 @@ mod ome_zarr {
                 let lookahead: i32 = 2;
                 let mut tick = 0u32;
                 let mut last_sig: Option<(u32, usize, usize)> = None;
+                // Per-current_t dedupe: every prefetch key we've already
+                // pushed for the current `t` lives here, so subsequent
+                // ticks at the same `t` don't re-push it. Without this
+                // the prefetcher re-decodes the same ±lookahead keys on
+                // every tick once the queue drains, runaway-style — the
+                // dispatcher has no visibility into bovista's slot_map,
+                // so each repush goes all the way through decode again.
+                let mut prefetched: HashSet<TileKey> = HashSet::new();
+                let mut prefetched_for_t: Option<u32> = None;
                 loop {
                     thread::sleep(Duration::from_millis(200));
                     tick = tick.wrapping_add(1);
@@ -1802,11 +1811,13 @@ mod ome_zarr {
                         }
                     }
 
-                    // Only dispatch prefetch when there's no USEFUL work
-                    // already queued (i.e., no current-t or near-t entries
-                    // bovista still wants). Stale entries left over from a
-                    // previous current_t don't count — workers drain those
-                    // for free during their pop scan.
+                    // current_t changed → invalidate the dedupe set so
+                    // the new t can fire its first wave.
+                    if prefetched_for_t != Some(current) {
+                        prefetched.clear();
+                        prefetched_for_t = Some(current);
+                    }
+
                     if keys.is_empty() || scheduler.len_useful(current, 3) > 0 { continue; }
 
                     let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
@@ -1816,13 +1827,17 @@ mod ome_zarr {
                         if target < 0 || target >= n_timepoints as i32 { continue; }
                         let t = target as u32;
                         for spatial in &keys {
-                            // If the user has scrubbed away mid-dispatch,
-                            // abort and let the next tick re-prioritize.
                             if view_state.timepoint() != current { break 'outer; }
                             let key = TileKey {
                                 lod_level: spatial.lod_level, t,
                                 z: spatial.z, y: spatial.y, x: spatial.x,
                             };
+                            // Already pushed for this current_t — skip.
+                            // Bovista will retain it in atlas; if it
+                            // gets evicted later we lose the prefetch,
+                            // but losing a few prefetches is far better
+                            // than re-decoding every tile every 200 ms.
+                            if !prefetched.insert(key) { continue; }
                             scheduler.push(key, current);
                         }
                     }
