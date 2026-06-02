@@ -72,6 +72,13 @@ pub struct VirtualTextureData {
 
     // TileKey → atlas slot index
     pub slot_map: HashMap<TileKey, u32>,
+    // Reverse index: SPATIAL key (t forced to 0) → atlas slot currently
+    // pointed at by the page table. Lets us detect when the slot a
+    // page-table entry references is about to be evicted, so we can clear
+    // the page-table entry instead of letting the shader read garbage
+    // from a now-recycled slot. Decoupled from `slot_map` because the
+    // page table only ever points at one t-version per spatial.
+    page_table_slot: HashMap<TileKey, u32>,
     // TileKey → last frame the tile was accessed
     lru_map: HashMap<TileKey, u64>,
 
@@ -167,6 +174,7 @@ impl VirtualTextureData {
             atlas_layers: layers,
             page_table,
             slot_map: HashMap::new(),
+            page_table_slot: HashMap::new(),
             lru_map: HashMap::new(),
             pending_chunks: Arc::new(Mutex::new(HashMap::new())),
             requested_keys: HashSet::new(),
@@ -204,12 +212,12 @@ impl VirtualTextureData {
     /// `clear_atlas` is retained for unusual cases where the underlying
     /// data shape itself has changed.
     pub fn clear_atlas(&mut self, queue: &Queue) {
-        for (key, _slot) in self.slot_map.drain() {
-            // Only the currently-displayed timepoint has page-table entries.
-            if key.t == self.presentation_t {
-                self.page_table.clear(queue, key.lod_level, key.z, key.y, key.x);
-            }
+        // Clear every page-table entry that's been written.
+        for spatial in self.page_table_slot.keys() {
+            self.page_table.clear(queue, spatial.lod_level, spatial.z, spatial.y, spatial.x);
         }
+        self.page_table_slot.clear();
+        self.slot_map.clear();
         self.lru_map.clear();
         self.requested_keys.clear();
         self.pending_chunks.lock().unwrap().clear();
@@ -302,6 +310,7 @@ impl VirtualTextureData {
             // to their t (via maybe_advance_presentation below).
             if t == self.presentation_t {
                 self.page_table.update(queue, lod_level, z, y, x, slot);
+                self.page_table_slot.insert(key.spatial(), slot);
             }
 
             self.slot_map.insert(key, slot);
@@ -324,14 +333,20 @@ impl VirtualTextureData {
             let key = TileKey { lod_level: spatial.lod_level, t: target,
                                 z: spatial.z, y: spatial.y, x: spatial.x };
             if let Some(&slot) = self.slot_map.get(&key) {
+                // Point at the new-t tile.
                 self.page_table.update(queue, spatial.lod_level, spatial.z, spatial.y, spatial.x, slot);
+                self.page_table_slot.insert(*spatial, slot);
                 loaded += 1;
-            } else {
-                self.page_table.clear(queue, spatial.lod_level, spatial.z, spatial.y, spatial.x);
             }
+            // Else: leave page table alone. If it was previously pointing
+            // at an old-t slot, keep showing the old t's data there until
+            // either (a) the new-t tile arrives via process_pending, or
+            // (b) the old slot gets evicted (which clears the page-table
+            // entry — at that point the shader falls back to a coarser
+            // LOD, also typically still resident). No empty-atlas flicker.
         }
         log::debug!(
-            "VT presentation_t: {} → {} ({}/{} tiles loaded)",
+            "VT presentation_t: {} → {} ({}/{} new-t tiles in page table)",
             self.presentation_t, target, loaded, visible.len(),
         );
         self.presentation_t = target;
@@ -409,12 +424,20 @@ impl VirtualTextureData {
                 self.atlas_allocator.free(slot);
                 self.lru_map.remove(&key);
                 self.requested_keys.remove(&key);
-                // Only clear the page table if the evicted tile was the one
-                // currently being displayed. Tiles at other t's don't have a
-                // page-table entry (they live in slot_map as prefetch).
-                if key.t == self.presentation_t {
+                // If the page table is currently pointing at THIS slot,
+                // clear it — otherwise the shader would read whatever new
+                // tile data the atlas allocator hands this slot to next.
+                // (Tiles at non-presentation_t can still have a page-table
+                // entry if we flipped presentation_t while their slot was
+                // resident — we leave the page table pointing at the old
+                // slot for graceful old-data fallback. That's safe only
+                // as long as the slot still holds the right tile, which
+                // is what we're checking here.)
+                let spatial = key.spatial();
+                if self.page_table_slot.get(&spatial) == Some(&slot) {
                     let TileKey { lod_level, z, y, x, .. } = key;
                     self.page_table.clear(queue, lod_level, z, y, x);
+                    self.page_table_slot.remove(&spatial);
                 }
             }
         }
