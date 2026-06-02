@@ -107,6 +107,15 @@ pub struct VirtualTextureData {
     /// shader's existing fallback path. As fine tiles arrive (via
     /// `process_pending_chunks`) the page table refines.
     desired_t: u32,
+    /// Prefetch ±N timepoints around `desired_t` every prepare. Runs
+    /// through the SAME request path as current-t (slot_map check +
+    /// request_tile dedupe), so the atlas is the single source of
+    /// truth — already-resident tiles cost a HashMap lookup, never a
+    /// re-decode. 0 disables.
+    prefetch_lookahead: u32,
+    /// Total number of timepoints in the dataset. Used to clamp the
+    /// prefetch range; otherwise the strategy has no way to know it.
+    t_count: u32,
 }
 
 impl VirtualTextureData {
@@ -188,7 +197,17 @@ impl VirtualTextureData {
             levels: lod_levels,
             presentation_t: 0,
             desired_t: 0,
+            prefetch_lookahead: 0,
+            t_count: 1,
         }
+    }
+
+    /// Configure background prefetching of neighboring timepoints.
+    /// `t_count` is the total number of timepoints in the dataset
+    /// (used to clamp range). Pass `lookahead = 0` to disable.
+    pub fn set_prefetch(&mut self, lookahead: u32, t_count: u32) {
+        self.prefetch_lookahead = lookahead;
+        self.t_count = t_count.max(1);
     }
 
     /// Caller-facing knob: request that the displayed timepoint be `t`.
@@ -781,9 +800,42 @@ impl VirtualTextureData {
                 ChunkStatus::Rejected => break,
             }
         }
+        self.prefetch_forward(target_t);
         // Once all visible-at-desired-t tiles have arrived, flip the page
         // table. Single in-frame swap, no flicker.
         self.maybe_advance_presentation(queue);
+    }
+
+    /// Prefetch the next N timepoints after `target_t`. Look-ahead only
+    /// is sufficient because the recently-displayed past stays resident
+    /// via the LRU pool — eviction starts from the LEAST-recently-used,
+    /// so t-1, t-2 from the user's scrubbing trail are still in the
+    /// atlas and don't need explicit prefetching. Asymmetric look-ahead
+    /// uses budget on what we DON'T already have.
+    ///
+    /// Uses the same request path as current-t (slot_map check +
+    /// request_tile dedupe) so the atlas is the single source of truth:
+    /// already-resident tiles cost a HashMap lookup, not a re-decode.
+    fn prefetch_forward(&mut self, target_t: u32) {
+        let lookahead = self.prefetch_lookahead as i32;
+        if lookahead == 0 || self.t_count <= 1 { return; }
+        'pref: for offset in 1..=lookahead {
+            let pt = target_t as i32 + offset;
+            if pt >= self.t_count as i32 { break; }
+            let pt = pt as u32;
+            let mut pre: Vec<TileKey> = self.visible_tile_keys.iter()
+                .map(|s| TileKey { lod_level: s.lod_level, t: pt,
+                                   z: s.z, y: s.y, x: s.x })
+                .collect();
+            pre.sort_by_key(|k| Reverse(k.lod_level));
+            for key in pre {
+                if self.slot_map.contains_key(&key) { continue; }
+                match self.request_tile(key) {
+                    ChunkStatus::Accepted | ChunkStatus::AlreadyPending => {}
+                    ChunkStatus::Rejected => break 'pref,
+                }
+            }
+        }
     }
 
     // ── Main prepare ─────────────────────────────────────────────────────────
@@ -832,6 +884,7 @@ impl VirtualTextureData {
                 ChunkStatus::Rejected => break,
             }
         }
+        self.prefetch_forward(target_t);
         self.maybe_advance_presentation(queue);
     }
 }

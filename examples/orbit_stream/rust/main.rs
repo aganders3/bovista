@@ -197,12 +197,18 @@ fn main() {
     // loop can refresh it without re-locking setup.
     let setup_visible_snapshot = setup.visible_snapshot.clone();
 
-    let volume = VolumeVisual::new(
+    let mut volume = VolumeVisual::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
         renderer.camera_bind_group_layout(),
         setup.lods.clone(), cache_capacity as usize, setup.loader,
     );
     *setup.pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
+    // Background-prefetch ±2 neighbors of the current timepoint via
+    // bovista's own request path. Single dedupe (slot_map + request_tile)
+    // means already-resident tiles cost a HashMap lookup, not a re-decode.
+    if n_timepoints > 1 {
+        volume.set_prefetch(2, n_timepoints);
+    }
 
     // Density scales with voxel-to-world ratio so the same visible opacity
     // works whether voxels are 1 mm or 20 nm. Matches the Python OME-Zarr
@@ -1485,7 +1491,6 @@ mod ome_zarr {
     use std::error::Error;
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
 
     use bovista::visuals::gpu_structs::{
         ChunkStatus, TileData, TileKey, TileLoaderFn, TileRequest,
@@ -1773,77 +1778,11 @@ mod ome_zarr {
             });
         }
 
-        // Prefetcher dispatcher: every 200 ms, push (visible × ±lookahead)
-        // keys into the scheduler at LOWER priority than the current frame.
-        // The scheduler's distance-based ordering automatically deprioritizes
-        // them whenever the user moves.
-        if n_timepoints > 1 {
-            let scheduler = scheduler.clone();
-            let view_state = view_state.clone();
-            let visible_snapshot = visible_snapshot.clone();
-            thread::spawn(move || {
-                let lookahead: i32 = 2;
-                let mut tick = 0u32;
-                let mut last_sig: Option<(u32, usize, usize)> = None;
-                // Per-current_t dedupe: every prefetch key we've already
-                // pushed for the current `t` lives here, so subsequent
-                // ticks at the same `t` don't re-push it. Without this
-                // the prefetcher re-decodes the same ±lookahead keys on
-                // every tick once the queue drains, runaway-style — the
-                // dispatcher has no visibility into bovista's slot_map,
-                // so each repush goes all the way through decode again.
-                let mut prefetched: HashSet<TileKey> = HashSet::new();
-                let mut prefetched_for_t: Option<u32> = None;
-                loop {
-                    thread::sleep(Duration::from_millis(200));
-                    tick = tick.wrapping_add(1);
-                    let current = view_state.timepoint();
-                    let keys = visible_snapshot.lock().unwrap().clone();
-
-                    if tick % 5 == 0 {
-                        let q = scheduler.len();
-                        let useful = scheduler.len_useful(current, 3);
-                        let sig = (current, keys.len(), q);
-                        if last_sig.as_ref() != Some(&sig) {
-                            println!("[stats] t={} visible_spatial={} queue={} useful={}",
-                                     current, keys.len(), q, useful);
-                            last_sig = Some(sig);
-                        }
-                    }
-
-                    // current_t changed → invalidate the dedupe set so
-                    // the new t can fire its first wave.
-                    if prefetched_for_t != Some(current) {
-                        prefetched.clear();
-                        prefetched_for_t = Some(current);
-                    }
-
-                    if keys.is_empty() || scheduler.len_useful(current, 3) > 0 { continue; }
-
-                    let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
-                    offsets.sort_by_key(|o| o.abs());
-                    'outer: for offset in offsets {
-                        let target = current as i32 + offset;
-                        if target < 0 || target >= n_timepoints as i32 { continue; }
-                        let t = target as u32;
-                        for spatial in &keys {
-                            if view_state.timepoint() != current { break 'outer; }
-                            let key = TileKey {
-                                lod_level: spatial.lod_level, t,
-                                z: spatial.z, y: spatial.y, x: spatial.x,
-                            };
-                            // Already pushed for this current_t — skip.
-                            // Bovista will retain it in atlas; if it
-                            // gets evicted later we lose the prefetch,
-                            // but losing a few prefetches is far better
-                            // than re-decoding every tile every 200 ms.
-                            if !prefetched.insert(key) { continue; }
-                            scheduler.push(key, current);
-                        }
-                    }
-                }
-            });
-        }
+        // Prefetching now lives inside bovista's `prepare_volume` (via
+        // `volume.set_prefetch(...)`), so it shares the SAME request
+        // path as current-t — slot_map check + request_tile dedupe.
+        // The atlas is the single source of truth for "do we need to
+        // fetch this?"; no external dispatcher, no separate dedupe.
         let _ = prefetch_cap;
 
         // Bovista's loader callback: just push to the scheduler. If the
@@ -1984,15 +1923,6 @@ mod ome_zarr {
                 }
                 q = self.inner.cvar.wait(q).unwrap();
             }
-        }
-        /// Total queue size including stale entries. The "useful" (non-
-        /// stale) subset is what the prefetcher should reason about; use
-        /// `len_useful` for that.
-        pub fn len(&self) -> usize { self.inner.queue.lock().unwrap().len() }
-        pub fn len_useful(&self, current_t: u32, max_useful_dist: i32) -> usize {
-            self.inner.queue.lock().unwrap().iter()
-                .filter(|k| (k.t as i32 - current_t as i32).abs() <= max_useful_dist)
-                .count()
         }
     }
 

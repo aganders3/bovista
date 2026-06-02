@@ -440,6 +440,23 @@ impl ImageVisual {
     pub fn pending_chunks(&self) -> Option<PendingChunks> {
         Some(self.strategy.pending_chunks.clone())
     }
+
+    /// Request that the image display timepoint `t`. Identical semantics
+    /// to `VolumeVisual::set_desired_timepoint` — page table flips once
+    /// the visible tiles for `t` have arrived.
+    pub fn set_desired_timepoint(&mut self, t: u32) {
+        self.strategy.set_desired_timepoint(t);
+    }
+
+    pub fn presentation_t(&self) -> u32 { self.strategy.presentation_t() }
+    pub fn desired_t(&self)      -> u32 { self.strategy.desired_t() }
+
+    /// Enable look-ahead prefetching of the next `lookahead` timepoints.
+    /// Look-ahead only by design — the LRU pool keeps recently-displayed
+    /// past frames resident, so explicit look-behind is redundant.
+    pub fn set_prefetch(&mut self, lookahead: u32, t_count: u32) {
+        self.strategy.set_prefetch(lookahead, t_count);
+    }
 }
 
 impl Visual for ImageVisual {

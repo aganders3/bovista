@@ -436,6 +436,16 @@ impl VolumeVisual {
         self.strategy.set_desired_timepoint(t);
     }
 
+    /// Enable look-ahead prefetching of the next `lookahead` timepoints
+    /// after `desired_t`. Look-ahead only by design — the LRU pool
+    /// keeps recently-displayed past frames resident, so explicit
+    /// look-behind is redundant. Prefetch happens inside the normal
+    /// request path, so already-resident tiles skip via slot_map and
+    /// never re-decode.
+    pub fn set_prefetch(&mut self, lookahead: u32, t_count: u32) {
+        self.strategy.set_prefetch(lookahead, t_count);
+    }
+
     pub fn presentation_t(&self) -> u32 { self.strategy.presentation_t() }
     pub fn desired_t(&self)      -> u32 { self.strategy.desired_t() }
 
