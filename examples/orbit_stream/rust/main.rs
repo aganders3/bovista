@@ -359,10 +359,14 @@ fn main() {
             if tiles > 0 && since_last_ms > 1000 {
                 let decode_ns = flush_diag.decode_ns_total.load(Ordering::Relaxed);
                 let upload_ns = flush_diag.upload_ns_total.load(Ordering::Relaxed);
+                let hits   = flush_diag.cache_hits.load(Ordering::Relaxed);
+                let misses = flush_diag.cache_misses.load(Ordering::Relaxed);
                 println!(
-                    "[flush] {} tiles | first arrival {:.0} ms, last {:.0} ms | \
+                    "[flush] {} tiles ({} cache hits / {} miss = {:.0}%) | \
+                     first arrival {:.0} ms, last {:.0} ms | \
                      decode total {:.0} ms ({:.1} ms/tile) | upload (scene.prepare) {:.0} ms",
-                    tiles,
+                    tiles, hits, misses,
+                    if tiles > 0 { 100.0 * hits as f64 / tiles as f64 } else { 0.0 },
                     first as f64 / 1e6,
                     last as f64 / 1e6,
                     decode_ns as f64 / 1e6,
@@ -918,6 +922,10 @@ struct FlushDiag {
     first_arrival_ns: AtomicU64,
     /// ns of GPU upload time accrued in scene.prepare() since flush.
     upload_ns_total: AtomicU64,
+    /// Tile arrivals that came from the prefetch cache (decode_ns = 0).
+    cache_hits:   AtomicU32,
+    /// Tile arrivals from a real worker decode.
+    cache_misses: AtomicU32,
 }
 
 impl FlushDiag {
@@ -929,6 +937,8 @@ impl FlushDiag {
             last_arrival_ns:  AtomicU64::new(0),
             first_arrival_ns: AtomicU64::new(0),
             upload_ns_total:  AtomicU64::new(0),
+            cache_hits:       AtomicU32::new(0),
+            cache_misses:     AtomicU32::new(0),
         }
     }
 
@@ -938,6 +948,8 @@ impl FlushDiag {
         self.last_arrival_ns.store(0, Ordering::Relaxed);
         self.first_arrival_ns.store(0, Ordering::Relaxed);
         self.upload_ns_total.store(0, Ordering::Relaxed);
+        self.cache_hits.store(0, Ordering::Relaxed);
+        self.cache_misses.store(0, Ordering::Relaxed);
         self.flush_t0_ns.store(t_ns, Ordering::Relaxed);
     }
 
@@ -946,6 +958,11 @@ impl FlushDiag {
         if t0 == 0 { return; }
         self.tiles_loaded.fetch_add(1, Ordering::Relaxed);
         self.decode_ns_total.fetch_add(decode_ns, Ordering::Relaxed);
+        if decode_ns == 0 {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        }
         let since = now_ns.saturating_sub(t0);
         self.last_arrival_ns.store(since, Ordering::Relaxed);
         let _ = self.first_arrival_ns.compare_exchange(
