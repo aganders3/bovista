@@ -1174,7 +1174,12 @@ mod ome_zarr {
     /// (e.g. zebrahub), `retrieve_array_subset` decodes only the inner chunks
     /// intersecting the tile region rather than the whole outer shard, so
     /// per-tile cost stays tens of ms even on multi-GB outer chunks.
-    const MAX_INFLIGHT: usize = 32;
+    ///
+    /// Raised to 128 (from 32) so a t-flush can fire every visible tile in
+    /// one frame instead of dribbling them out over four frames. zarrs's
+    /// internal rayon parallelism already shares the system thread pool, so
+    /// this caps spawn count, not actual concurrent CPU usage.
+    const MAX_INFLIGHT: usize = 128;
 
     /// Each LOD level we'll serve. We type-erase the storage so the same struct
     /// can hold either a filesystem or http store.
