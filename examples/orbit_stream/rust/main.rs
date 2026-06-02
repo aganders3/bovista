@@ -1249,12 +1249,15 @@ mp4.onReady = (info) => {
   const track = info.videoTracks[0];
   if (!track) { statusEl.textContent = 'no video track'; return; }
   // Extract AVCDecoderConfigurationRecord (avcC) for VideoDecoder.configure.
+  // mp4box.js exposes DataStream as a top-level global (not on MP4Box),
+  // but some bundles also re-export it via MP4Box.DataStream — accept either.
+  const DS = (typeof DataStream !== 'undefined') ? DataStream : MP4Box.DataStream;
   const trak = mp4.getTrackById(track.id);
   let description = null;
   for (const entry of trak.mdia.minf.stbl.stsd.entries) {
     const box = entry.avcC || entry.hvcC || entry.vpcC;
     if (box) {
-      const s = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
+      const s = new DS(undefined, 0, DS.BIG_ENDIAN);
       box.write(s);
       description = new Uint8Array(s.buffer, 8); // skip 8-byte BoxHeader
       break;
