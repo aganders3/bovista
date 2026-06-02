@@ -1402,8 +1402,11 @@ fn flag_str_opt(args: &[String], name: &str) -> Option<String> {
 mod ome_zarr {
     use std::collections::HashSet;
     use std::error::Error;
+    use std::num::NonZeroUsize;
     use std::sync::{Arc, Mutex};
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
     use bovista::visuals::gpu_structs::{
         ChunkStatus, TileData, TileKey, TileLoaderFn, TileRequest,
@@ -1411,6 +1414,7 @@ mod ome_zarr {
     use bovista::visuals::virtual_texture::PendingChunks;
     use bovista::visuals::LodLevelConfig;
 
+    use lru::LruCache;
     use zarrs::array::{Array, ArraySubset};
     use zarrs::group::Group;
     use zarrs::storage::ReadableStorageTraits;
@@ -1436,6 +1440,59 @@ mod ome_zarr {
         t_idx: Option<usize>,
         /// Volume dims in (z, y, x) voxel order at this LOD.
         volume_zyx: (u64, u64, u64),
+    }
+
+    /// Cache of pre-decoded tiles, keyed on (timepoint, TileKey). Populated
+    /// by the prefetcher; consumed by the regular loader on cache-hit.
+    type CacheKey = (u32, TileKey);
+    pub struct PrefetchCache {
+        entries:  Mutex<LruCache<CacheKey, TileData>>,
+        inflight: Mutex<HashSet<CacheKey>>,
+    }
+    impl PrefetchCache {
+        fn new(capacity: usize) -> Arc<Self> {
+            Arc::new(Self {
+                entries:  Mutex::new(LruCache::new(NonZeroUsize::new(capacity.max(1)).unwrap())),
+                inflight: Mutex::new(HashSet::new()),
+            })
+        }
+        fn take(&self, key: &CacheKey) -> Option<TileData> {
+            self.entries.lock().unwrap().pop(key)
+        }
+        fn put(&self, key: CacheKey, data: TileData) {
+            self.entries.lock().unwrap().put(key, data);
+        }
+        /// Returns true if we successfully claimed this key for fetching;
+        /// false if it's already cached or already being fetched.
+        fn try_claim(&self, key: CacheKey) -> bool {
+            if self.entries.lock().unwrap().contains(&key) { return false; }
+            self.inflight.lock().unwrap().insert(key)
+        }
+        fn release(&self, key: &CacheKey) {
+            self.inflight.lock().unwrap().remove(key);
+        }
+    }
+
+    /// Set of TileKeys the regular loader has been asked to load recently.
+    /// The prefetcher uses this as its "what's visible right now" hint to
+    /// decide which tiles to preload for adjacent timepoints. Bounded so
+    /// stale camera positions don't accumulate forever.
+    pub struct VisibleSet {
+        keys:   Mutex<HashSet<TileKey>>,
+        cap:    usize,
+    }
+    impl VisibleSet {
+        fn new(cap: usize) -> Arc<Self> {
+            Arc::new(Self { keys: Mutex::new(HashSet::new()), cap })
+        }
+        fn note(&self, key: TileKey) {
+            let mut k = self.keys.lock().unwrap();
+            if k.len() >= self.cap { k.clear(); }
+            k.insert(key);
+        }
+        fn snapshot(&self) -> Vec<TileKey> {
+            self.keys.lock().unwrap().iter().copied().collect()
+        }
     }
 
     pub fn open(
@@ -1642,10 +1699,32 @@ mod ome_zarr {
         let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
         let lods_for_loader = lods.clone();
 
+        // Prefetcher infrastructure: caches decoded tiles for adjacent
+        // timepoints so sequential scrubbing / playback turns into cache
+        // hits in the regular loader (no zarrs I/O, just GPU upload).
+        let prefetch_cache = PrefetchCache::new(1024);
+        let visible_set = VisibleSet::new(2048);
+        if n_timepoints > 1 {
+            spawn_prefetcher(
+                levels.clone(),
+                lods.clone(),
+                visible_set.clone(),
+                prefetch_cache.clone(),
+                view_state.clone(),
+                n_timepoints,
+                /* workers */ 4,
+                /* lookahead */ 2,
+                pending_slot.clone(),
+            );
+            println!("[orbit] prefetcher: 4 workers, ±2 timepoints, cache 1024 tiles");
+        }
+
         let pending_for_loader = pending_slot.clone();
         let levels_for_loader = levels.clone();
         let inflight_for_loader = inflight.clone();
         let flush_diag_for_loader = flush_diag.clone();
+        let prefetch_cache_for_loader = prefetch_cache.clone();
+        let visible_for_loader = visible_set.clone();
         let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
             let lod = req.lod_level.unwrap_or(0);
             if lod >= levels_for_loader.len() {
@@ -1653,11 +1732,25 @@ mod ome_zarr {
             }
             let key = TileKey { lod_level: lod, z: req.z, y: req.y, x: req.x };
 
+            // Tell the prefetcher this key is currently relevant so it
+            // covers it for adjacent timepoints next sweep.
+            visible_for_loader.note(key);
+
             // Need the pending queue (set after volume creation).
             let pending = match pending_for_loader.lock().unwrap().clone() {
                 Some(p) => p,
                 None => return ChunkStatus::Rejected,
             };
+
+            // Cache-hit path: data already decoded by the prefetcher.
+            // Skip the worker spawn entirely; just hand it straight to
+            // bovista's pending queue and Accept.
+            let t = view_state.timepoint();
+            if let Some(tile_data) = prefetch_cache_for_loader.take(&(t, key)) {
+                pending.lock().unwrap().insert(key, tile_data);
+                flush_diag_for_loader.note_tile(view_state.ns_since_start(), 0);
+                return ChunkStatus::Accepted;
+            }
 
             // Dedupe + bound concurrency.
             {
@@ -1722,6 +1815,105 @@ mod ome_zarr {
 
     fn absolute_path(rel: &str) -> String {
         if rel.starts_with('/') { rel.to_string() } else { format!("/{}", rel) }
+    }
+
+    /// Spawn the prefetcher: one dispatcher thread that periodically scans
+    /// the visible set and enqueues (t+offset, TileKey) reads for the next
+    /// few timepoints, plus N worker threads that consume the queue and
+    /// fill the cache.
+    ///
+    /// When the user advances to t+1, the regular loader hits the cache
+    /// instead of doing fresh I/O — sequential scrubbing / playback is
+    /// reduced to GPU upload time only.
+    fn spawn_prefetcher(
+        levels: Arc<Vec<Level>>,
+        lods: Vec<LodLevelConfig>,
+        visible: Arc<VisibleSet>,
+        cache: Arc<PrefetchCache>,
+        view_state: Arc<ViewState>,
+        n_timepoints: u32,
+        workers: usize,
+        lookahead: i32,
+        pending_slot: Arc<Mutex<Option<PendingChunks>>>,
+    ) {
+        // Bounded queue keeps the dispatcher from running away.
+        let (tx, rx) = mpsc::sync_channel::<CacheKey>(256);
+        let rx = Arc::new(Mutex::new(rx));
+
+        // Worker pool.
+        for _ in 0..workers {
+            let rx = rx.clone();
+            let levels = levels.clone();
+            let lods = lods.clone();
+            let cache = cache.clone();
+            let view_state = view_state.clone();
+            let pending_slot = pending_slot.clone();
+            thread::spawn(move || loop {
+                let cache_key = match rx.lock().unwrap().recv() {
+                    Ok(k) => k,
+                    Err(_) => break,
+                };
+                let (t, tile_key) = cache_key;
+                // If the user has already advanced past this timepoint and
+                // out of our window, skip — the cache slot would be evicted
+                // before being useful.
+                let current = view_state.timepoint();
+                let dist = (t as i32 - current as i32).abs();
+                if dist > lookahead + 1 {
+                    cache.release(&cache_key);
+                    continue;
+                }
+                let lod_cfg = &lods[tile_key.lod_level];
+                match read_tile(&levels[tile_key.lod_level], lod_cfg, tile_key, t) {
+                    Ok(tile_data) => {
+                        // If this is for the CURRENT timepoint, the user
+                        // already moved here while we were decoding. Push
+                        // straight into pending so it lands on screen
+                        // immediately, instead of sitting in the cache for
+                        // a request that may never come.
+                        if t == view_state.timepoint() {
+                            if let Some(p) = pending_slot.lock().unwrap().clone() {
+                                p.lock().unwrap().insert(tile_key, tile_data);
+                                cache.release(&cache_key);
+                                continue;
+                            }
+                        }
+                        cache.put(cache_key, tile_data);
+                    }
+                    Err(_) => { /* swallow prefetch errors; non-fatal */ }
+                }
+                cache.release(&cache_key);
+            });
+        }
+
+        // Dispatcher: every 200 ms, walk the visible set and try to enqueue
+        // (t±offset, key) for each unfilled, unclaimed cache slot.
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(200));
+            let current = view_state.timepoint() as i32;
+            let keys = visible.snapshot();
+            if keys.is_empty() { continue; }
+
+            // Closer offsets first so the very next likely timepoint is
+            // primed before far-out ones.
+            let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
+            offsets.sort_by_key(|o| o.abs());
+
+            'outer: for offset in offsets {
+                let target = current + offset;
+                if target < 0 || target >= n_timepoints as i32 { continue; }
+                let t = target as u32;
+                for &key in &keys {
+                    let cache_key = (t, key);
+                    if !cache.try_claim(cache_key) { continue; }
+                    if tx.try_send(cache_key).is_err() {
+                        // Queue full — release and wait for next tick.
+                        cache.release(&cache_key);
+                        break 'outer;
+                    }
+                }
+            }
+        });
     }
 
     /// Read the voxel sub-region for this tile and convert to R16Float bytes.
