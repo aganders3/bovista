@@ -1743,6 +1743,7 @@ mod ome_zarr {
                 lods.clone(),
                 visible_snapshot.clone(),
                 prefetch_inflight.clone(),
+                inflight.clone(),               // regular-loader inflight; pause when non-empty
                 pending_slot.clone(),
                 view_state.clone(),
                 n_timepoints,
@@ -1794,18 +1795,15 @@ mod ome_zarr {
             let view_state = view_state.clone();
             let flush_diag = flush_diag_for_loader.clone();
             thread::spawn(move || {
-                // Abort early if the user has scrubbed away from this
-                // timepoint in the meantime — by the time we'd decode and
-                // upload, it'd be irrelevant and just LRU-evicted. Lets the
-                // pipeline drain quickly during rapid scrubbing.
-                let current = view_state.timepoint();
-                if (key.t as i32 - current as i32).unsigned_abs() > 4 {
-                    inflight.lock().unwrap().remove(&key);
-                    return;
-                }
                 let decode_start = std::time::Instant::now();
                 let result = read_tile(&levels[lod], &lod_cfg, key, key.t);
                 let decode_ns = decode_start.elapsed().as_nanos() as u64;
+                // Release the inflight slot the moment decode finishes —
+                // BEFORE pushing to pending — so the next current-t
+                // request can enter immediately without waiting for the
+                // (tiny) lock-and-insert step. Keeps max_inflight a real
+                // bandwidth gate, not a stale-work-occupies-slot gate.
+                inflight.lock().unwrap().remove(&key);
                 match result {
                     Ok(tile_data) => {
                         pending.lock().unwrap().insert(key, tile_data);
@@ -1818,7 +1816,6 @@ mod ome_zarr {
                         );
                     }
                 }
-                inflight.lock().unwrap().remove(&key);
             });
 
             ChunkStatus::Accepted
@@ -1863,6 +1860,7 @@ mod ome_zarr {
         lods: Vec<LodLevelConfig>,
         visible_snapshot: Arc<Mutex<Vec<TileKey>>>,
         inflight: Arc<Mutex<HashSet<TileKey>>>,
+        regular_inflight: Arc<Mutex<HashSet<TileKey>>>,
         pending_slot: Arc<Mutex<Option<PendingChunks>>>,
         view_state: Arc<ViewState>,
         n_timepoints: u32,
@@ -1882,7 +1880,6 @@ mod ome_zarr {
             let rx = rx.clone();
             let levels = levels.clone();
             let lods = lods.clone();
-            let view_state = view_state.clone();
             let pending_slot = pending_slot.clone();
             let inflight = inflight.clone();
             thread::spawn(move || loop {
@@ -1890,16 +1887,11 @@ mod ome_zarr {
                     Ok(k) => k,
                     Err(_) => break,
                 };
-                // If the user has moved far away from this timepoint, skip —
-                // the tile would just get LRU-evicted before being seen.
-                let current = view_state.timepoint();
-                let dist = (key.t as i32 - current as i32).abs();
-                if dist > lookahead + 1 {
-                    inflight.lock().unwrap().remove(&key);
-                    continue;
-                }
                 let lod_cfg = &lods[key.lod_level];
                 if let Ok(tile_data) = read_tile(&levels[key.lod_level], lod_cfg, key, key.t) {
+                    // Push regardless — if the user has moved far away,
+                    // atlas eviction (with t-distance priority) will
+                    // displace it again. We don't try to guess.
                     if let Some(p) = pending_slot.lock().unwrap().clone() {
                         p.lock().unwrap().insert(key, tile_data);
                     }
@@ -1910,29 +1902,34 @@ mod ome_zarr {
 
         // Dispatcher: every 200 ms, walk the visible spatial set and queue
         // each (lod, t±offset, z, y, x) that's not already in flight.
+        // PRIORITY: while the regular loader has *anything* in flight, the
+        // prefetcher steps aside. Current-t I/O always gets exclusive
+        // access to NFS / the rayon pool / etc. until it's caught up;
+        // only then does the prefetcher fill in neighbors.
         thread::spawn(move || {
             let mut tick: u32 = 0;
-            let mut last_signature: Option<(i32, usize, usize)> = None;
+            let mut last_signature: Option<(i32, usize, usize, bool)> = None;
             loop {
                 thread::sleep(Duration::from_millis(200));
                 tick = tick.wrapping_add(1);
                 let current = view_state.timepoint() as i32;
                 let keys = visible_snapshot.lock().unwrap().clone();
+                let regular_busy = !regular_inflight.lock().unwrap().is_empty();
 
                 if tick % 5 == 0 {
                     let inflight_n = inflight.lock().unwrap().len();
                     let visible_n = keys.len();
-                    let sig = (current, visible_n, inflight_n);
+                    let sig = (current, visible_n, inflight_n, regular_busy);
                     if last_signature.as_ref() != Some(&sig) {
                         println!(
-                            "[stats] t={} visible_spatial={} prefetch_inflight={}",
-                            current, visible_n, inflight_n,
+                            "[stats] t={} visible_spatial={} prefetch_inflight={} regular_busy={}",
+                            current, visible_n, inflight_n, regular_busy,
                         );
                         last_signature = Some(sig);
                     }
                 }
 
-                if keys.is_empty() { continue; }
+                if keys.is_empty() || regular_busy { continue; }
 
                 // Closer offsets first.
                 let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();

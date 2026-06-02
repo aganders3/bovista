@@ -95,22 +95,12 @@ pub struct VirtualTextureData {
     /// actually displaying).
     presentation_t: u32,
     /// Timepoint the caller wants to display. The page table flips to
-    /// `desired_t` when (a) all visible spatial tiles have a slot at that t
-    /// (the "clean swap" case), OR (b) `MAX_SWAP_WAIT_FRAMES` have elapsed
-    /// since the swap was *first* scheduled (the "partial swap" timeout).
-    /// Subsequent `desired_t` changes during the wait do NOT push the
-    /// deadline further out — that's what causes the "stuck on an old
-    /// frame" symptom under rapid scrubbing. They just retarget where the
-    /// swap will land when the deadline fires.
+    /// `desired_t` immediately on each call to `set_desired_timepoint` —
+    /// missing tiles at the new t just fall back to coarser LODs via the
+    /// shader's existing fallback path. As fine tiles arrive (via
+    /// `process_pending_chunks`) the page table refines.
     desired_t: u32,
-    /// Frame counter when the current swap-pending was first scheduled.
-    /// u64::MAX when no swap is pending (desired_t == presentation_t).
-    swap_due_frame: u64,
 }
-
-/// Maximum frames to wait for a clean swap before forcing a partial swap.
-/// At 30 fps, 6 frames = ~200 ms.
-const MAX_SWAP_WAIT_FRAMES: u64 = 6;
 
 impl VirtualTextureData {
     pub fn new(
@@ -190,29 +180,16 @@ impl VirtualTextureData {
             levels: lod_levels,
             presentation_t: 0,
             desired_t: 0,
-            swap_due_frame: u64::MAX,
         }
     }
 
-    /// Caller-facing knob: request that the displayed timepoint be `t`. The
-    /// switch happens when every visible spatial tile has a slot at the new
-    /// t (clean swap, no flicker) OR after a short timeout (partial swap;
-    /// shader falls back to coarser LODs for missing tiles). Non-temporal
-    /// callers can ignore this.
+    /// Caller-facing knob: request that the displayed timepoint be `t`.
+    /// The switch is committed on the next `prepare()` call —
+    /// `maybe_advance_presentation` rewrites the page table from current
+    /// slot_map state at `t`. Tiles not yet loaded fall back through the
+    /// shader's LOD chain; they snap in as fine tiles arrive.
     pub fn set_desired_timepoint(&mut self, t: u32) {
-        if t == self.desired_t { return; }
         self.desired_t = t;
-        if t == self.presentation_t {
-            // The caller asked for what's already showing — cancel any
-            // pending swap.
-            self.swap_due_frame = u64::MAX;
-        } else if self.swap_due_frame == u64::MAX {
-            // First divergence from presentation_t in this swap cycle —
-            // schedule the partial-swap deadline. Subsequent retargets
-            // before the deadline do NOT push it back; the user will see
-            // SOMETHING within MAX_SWAP_WAIT_FRAMES of their first change.
-            self.swap_due_frame = self.frame_counter + MAX_SWAP_WAIT_FRAMES;
-        }
     }
 
     pub fn presentation_t(&self) -> u32 { self.presentation_t }
@@ -332,33 +309,15 @@ impl VirtualTextureData {
         }
     }
 
-    /// Flip the page table to `desired_t` if either (a) every visible
-    /// spatial tile has a slot at `desired_t` (clean) or (b) we've waited
-    /// past the timeout (partial; shader falls back to coarser LODs for
-    /// missing tiles). Called at the end of `prepare()` so the swap
-    /// happens within the same frame that the last needed tile arrived,
-    /// or within ~200 ms of `set_desired_timepoint` if the load is slow.
+    /// Flip the page table to `desired_t` immediately. Tiles already
+    /// present at desired_t map straight to their slot; missing tiles are
+    /// cleared so the shader walks up to coarser LODs (typically still
+    /// resident at the same camera position). As fine tiles arrive, they
+    /// individually write their page-table entry from process_pending,
+    /// so the volume refines from coarse to fine.
     fn maybe_advance_presentation(&mut self, queue: &Queue) {
-        if self.desired_t == self.presentation_t {
-            self.swap_due_frame = u64::MAX;
-            return;
-        }
+        if self.desired_t == self.presentation_t { return; }
         let target = self.desired_t;
-        let timed_out = self.frame_counter >= self.swap_due_frame;
-        // Try for a clean swap first.
-        let all_present = self.visible_tile_keys.iter().all(|spatial| {
-            let key = TileKey { lod_level: spatial.lod_level, t: target,
-                                z: spatial.z, y: spatial.y, x: spatial.x };
-            self.slot_map.contains_key(&key)
-        });
-        if !all_present && !timed_out { return; }
-
-        // Flip: rewrite every page-table entry. Slots that don't exist at
-        // `target` get cleared; the shader's LOD fallback will sample
-        // coarser-LOD tiles instead, which usually ARE resident at the
-        // same camera position. The page table will be refined as the
-        // remaining fine tiles arrive (process_pending_chunks writes the
-        // page table for tiles whose t == presentation_t).
         let visible: Vec<TileKey> = self.visible_tile_keys.iter().copied().collect();
         let mut loaded = 0usize;
         for spatial in &visible {
@@ -372,12 +331,10 @@ impl VirtualTextureData {
             }
         }
         log::debug!(
-            "VT presentation_t: {} → {} ({}/{} tiles loaded{})",
+            "VT presentation_t: {} → {} ({}/{} tiles loaded)",
             self.presentation_t, target, loaded, visible.len(),
-            if all_present { ", clean swap" } else { ", partial swap (timeout)" },
         );
         self.presentation_t = target;
-        self.swap_due_frame = u64::MAX;
     }
 
     /// Evict enough slots to make room for `needed_free` new tiles.
