@@ -1030,7 +1030,7 @@ fn handle_request(
         .unwrap_or("/");
 
     if path == "/" || path.starts_with("/?") {
-        serve_html(&mut socket, &view_state, n_timepoints);
+        serve_html(&mut socket, &view_state, n_timepoints, width, height);
     } else if path == "/stream" {
         serve_stream(&mut socket, width, height, fps, frame_slot, client_connected);
     } else if let Some(query) = path.strip_prefix("/set?") {
@@ -1044,11 +1044,19 @@ fn handle_request(
     }
 }
 
-fn serve_html(socket: &mut TcpStream, view: &ViewState, n_timepoints: u32) {
+fn serve_html(
+    socket: &mut TcpStream,
+    view: &ViewState,
+    n_timepoints: u32,
+    width: u32,
+    height: u32,
+) {
     // Hide the t-slider entirely on non-temporal datasets.
     let t_row_style = if n_timepoints > 1 { "" } else { "display:none;" };
     let t_max = n_timepoints.saturating_sub(1).max(0);
     let body = INDEX_HTML
+        .replace("{{WIDTH}}",        &format!("{}", width))
+        .replace("{{HEIGHT}}",       &format!("{}", height))
         .replace("{{ZOOM}}",         &format!("{}", view.zoom()))
         .replace("{{CONTRAST_MIN}}", &format!("{}", view.contrast_min()))
         .replace("{{CONTRAST_MAX}}", &format!("{}", view.contrast_max()))
@@ -1160,15 +1168,19 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <style>
   body { background:#111; color:#ccc; font:13px/1.4 ui-monospace,monospace; margin:20px; }
   h1 { margin:0 0 12px 0; font-size:14px; color:#888; font-weight:normal; }
-  video { display:block; max-width:100%; background:#000; border:1px solid #333; }
+  canvas { display:block; width:100%; max-width:{{WIDTH}}px; height:auto;
+           background:#000; border:1px solid #333; image-rendering:auto; }
   .row { display:flex; align-items:center; gap:10px; margin:6px 0; }
   .row label  { width:120px; color:#aaa; }
   .row input  { flex:1; }
   .row .val   { width:80px; text-align:right; color:#fff; }
+  #status { color:#666; }
 </style>
 </head><body>
-<h1>bovista orbit_stream</h1>
-<video id="live" src="/stream" autoplay muted playsinline></video>
+<h1>bovista orbit_stream
+  <span style="float:right"><span id="status">connecting…</span>
+  &nbsp;<span id="fps_val" style="color:#fff;font-variant-numeric:tabular-nums">—</span></span></h1>
+<canvas id="live" width="{{WIDTH}}" height="{{HEIGHT}}"></canvas>
 <div id="controls">
   <div class="row"><label>zoom</label>
     <input type="range" id="zoom" min="0.25" max="4" step="0.05" value="{{ZOOM}}">
@@ -1189,31 +1201,111 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <input type="range" id="timepoint" min="0" max="{{T_MAX}}" step="1" value="{{TIMEPOINT}}">
     <span class="val" id="timepoint_val"></span></div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
 <script>
-// Pin the <video> to the live edge without seeking on every tick — seeking
-// to tip-ε re-buffers and produces a stutter loop. Instead drift toward
-// live via playbackRate, and only hard-seek when we're absurdly far behind.
-const live = document.getElementById('live');
-let chasing = false;
-setInterval(()=>{
-  const b = live.buffered;
-  if (b.length === 0) return;
-  const tip = b.end(b.length - 1);
-  const lag = tip - live.currentTime;
-  if (lag > 4.0) {
-    // Way behind (probably a stall): jump close to live but leave headroom.
-    live.currentTime = Math.max(0, tip - 0.5);
-    live.playbackRate = 1.0;
-    chasing = false;
-  } else if (lag > 1.0 && !chasing) {
-    live.playbackRate = 1.1;
-    chasing = true;
-  } else if (lag < 0.4 && chasing) {
-    live.playbackRate = 1.0;
-    chasing = false;
-  }
-}, 1000);
+// WebCodecs-based player. We pull the fMP4 stream over HTTP, hand bytes to
+// mp4box.js for demuxing, feed each H.264 frame to a VideoDecoder, then
+// draw the resulting VideoFrame to the canvas. No <video> element and no
+// MediaSource buffer — frames go on screen as fast as they decode, so
+// latency is bounded by decoder + network jitter, not by browser policy.
+const canvas = document.getElementById('live');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const fpsEl = document.getElementById('fps_val');
 
+let frameCount = 0, lastFpsAt = performance.now();
+function tickFps() {
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsAt >= 1000) {
+    fpsEl.textContent = (frameCount * 1000 / (now - lastFpsAt)).toFixed(1) + ' fps';
+    frameCount = 0;
+    lastFpsAt = now;
+  }
+}
+
+const decoder = new VideoDecoder({
+  output: (frame) => {
+    // Match the canvas internal resolution to the first frame we see, so
+    // the volume isn't stretched if --width/--height differ from the
+    // backing encoder's output.
+    if (canvas.width !== frame.codedWidth || canvas.height !== frame.codedHeight) {
+      canvas.width = frame.codedWidth;
+      canvas.height = frame.codedHeight;
+    }
+    ctx.drawImage(frame, 0, 0);
+    frame.close();
+    tickFps();
+  },
+  error: (e) => {
+    statusEl.textContent = 'decoder error: ' + e.message;
+    console.error('VideoDecoder error:', e);
+  },
+});
+
+const mp4 = MP4Box.createFile();
+mp4.onError = (e) => { statusEl.textContent = 'demux error: ' + e; console.error('MP4Box:', e); };
+mp4.onReady = (info) => {
+  const track = info.videoTracks[0];
+  if (!track) { statusEl.textContent = 'no video track'; return; }
+  // Extract AVCDecoderConfigurationRecord (avcC) for VideoDecoder.configure.
+  const trak = mp4.getTrackById(track.id);
+  let description = null;
+  for (const entry of trak.mdia.minf.stbl.stsd.entries) {
+    const box = entry.avcC || entry.hvcC || entry.vpcC;
+    if (box) {
+      const s = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
+      box.write(s);
+      description = new Uint8Array(s.buffer, 8); // skip 8-byte BoxHeader
+      break;
+    }
+  }
+  if (!description) { statusEl.textContent = 'no codec description'; return; }
+  decoder.configure({
+    codec: track.codec,
+    description,
+    optimizeForLatency: true,
+    hardwareAcceleration: 'prefer-hardware',
+  });
+  mp4.setExtractionOptions(track.id, null, { nbSamples: 1 });
+  mp4.start();
+  statusEl.textContent = 'streaming ' + track.codec;
+};
+mp4.onSamples = (id, _user, samples) => {
+  for (const s of samples) {
+    decoder.decode(new EncodedVideoChunk({
+      type: s.is_sync ? 'key' : 'delta',
+      timestamp: s.cts * (1_000_000 / s.timescale),
+      duration: (s.duration || 0) * (1_000_000 / s.timescale),
+      data: s.data,
+    }));
+  }
+};
+
+(async () => {
+  try {
+    const resp = await fetch('/stream');
+    if (!resp.ok) { statusEl.textContent = 'stream error ' + resp.status; return; }
+    const reader = resp.body.getReader();
+    let offset = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // mp4box wants an ArrayBuffer with `fileStart` saying where in the
+      // stream these bytes start.
+      const buf = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+      buf.fileStart = offset;
+      offset += buf.byteLength;
+      mp4.appendBuffer(buf);
+    }
+    statusEl.textContent = 'stream ended';
+  } catch (e) {
+    statusEl.textContent = 'fetch error: ' + e.message;
+    console.error(e);
+  }
+})();
+
+// ── Sliders ────────────────────────────────────────────────────────────────
 const fmt = { zoom: v=>(+v).toFixed(2)+'×',
               contrast_min: v=>(+v).toFixed(4),
               contrast_max: v=>(+v).toFixed(4),
