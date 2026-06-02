@@ -50,7 +50,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     const KNOWN_FLAGS: &[&str] = &[
         "--width", "--height", "--fps", "--port", "--backend",
-        "--zarr", "--cache-tiles", "--max-inflight",
+        "--zarr", "--cache-tiles", "--max-inflight", "--prefetch-cap",
         "--contrast-min", "--contrast-max", "--density-mult",
         "--timepoint", "--bench",
     ];
@@ -86,8 +86,16 @@ fn main() {
     let max_inflight: usize = flag_str_opt(&args, "--max-inflight")
         .and_then(|v| v.parse().ok())
         .unwrap_or(auto_inflight);
-    println!("[orbit] thread budget: rayon={} max_inflight={} (cpus={})",
-             rayon_threads, max_inflight, cpus);
+    // Prefetch cap defaults to 4096 (~16 GB at LOD 1 / 128³ R16F = 4 MB/tile);
+    // override with --prefetch-cap N. Visible tile counts up to ~1500 at LOD 0
+    // benefit from a high cap × (2*lookahead + 1).
+    let prefetch_cap: usize = flag_str_opt(&args, "--prefetch-cap")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4096);
+    println!(
+        "[orbit] thread budget: rayon={} max_inflight={} prefetch_cap={} (cpus={})",
+        rayon_threads, max_inflight, prefetch_cap, cpus,
+    );
 
     // Standalone benchmark mode: no rendering, no streaming. Just open the
     // zarr and time per-tile reads at each LOD across a few timepoints.
@@ -174,7 +182,7 @@ fn main() {
 
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
-        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(), max_inflight) {
+        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(), max_inflight, prefetch_cap) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -1500,6 +1508,7 @@ mod ome_zarr {
         view_state: Arc<ViewState>,
         flush_diag: Arc<FlushDiag>,
         max_inflight: usize,
+        prefetch_cap: usize,
     ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
@@ -1702,8 +1711,8 @@ mod ome_zarr {
         // Prefetcher infrastructure: caches decoded tiles for adjacent
         // timepoints so sequential scrubbing / playback turns into cache
         // hits in the regular loader (no zarrs I/O, just GPU upload).
-        let prefetch_cache = PrefetchCache::new(1024);
-        let visible_set = VisibleSet::new(2048);
+        let prefetch_cache = PrefetchCache::new(prefetch_cap);
+        let visible_set = VisibleSet::new(prefetch_cap.max(2048));
         if n_timepoints > 1 {
             spawn_prefetcher(
                 levels.clone(),
@@ -1716,7 +1725,7 @@ mod ome_zarr {
                 /* lookahead */ 2,
                 pending_slot.clone(),
             );
-            println!("[orbit] prefetcher: 4 workers, ±2 timepoints, cache 1024 tiles");
+            println!("[orbit] prefetcher: 4 workers, ±2 timepoints, cache {} tiles", prefetch_cap);
         }
 
         let pending_for_loader = pending_slot.clone();
