@@ -277,15 +277,17 @@ fn main() {
         if flush_active {
             flush_diag.upload_ns_total
                 .fetch_add(prepare_dt.as_nanos() as u64, Ordering::Relaxed);
-            // Settle detection: if no tile has arrived for ~250 ms after the
-            // first arrival, declare the flush done and print the summary.
+            // Settle detection: bovista progressively loads coarse LODs first
+            // then fine ones, with a short gap between phases. Widen the
+            // window to 1 s so a single [flush] line captures both LOD-2 and
+            // LOD-1 batches rather than splitting them into two summaries.
             let t0 = flush_diag.flush_t0_ns.load(Ordering::Relaxed);
             let now_ns = view_state.ns_since_start();
             let first = flush_diag.first_arrival_ns.load(Ordering::Relaxed);
             let last = flush_diag.last_arrival_ns.load(Ordering::Relaxed);
             let tiles = flush_diag.tiles_loaded.load(Ordering::Relaxed);
             let since_last_ms = ((now_ns.saturating_sub(t0)).saturating_sub(last)) / 1_000_000;
-            if tiles > 0 && since_last_ms > 250 {
+            if tiles > 0 && since_last_ms > 1000 {
                 let decode_ns = flush_diag.decode_ns_total.load(Ordering::Relaxed);
                 let upload_ns = flush_diag.upload_ns_total.load(Ordering::Relaxed);
                 println!(
@@ -716,9 +718,19 @@ fn spawn_ffmpeg(width: u32, height: u32, fps: u32) -> Child {
     cmd.args([
         "-y", "-loglevel", "warning", "-hide_banner",
         "-fflags", "+nobuffer",
+        // Stamp each input frame with the system wall-clock at arrival time
+        // instead of N×(1/fps). With a constant -framerate, a slow render
+        // would still claim its 33 ms slot and accumulate behind real time;
+        // with wallclock timestamps, the browser sees the actual arrival
+        // gaps so the stream stays "live" — slow frames become visible
+        // hitches, never buildup lag.
+        "-use_wallclock_as_timestamps", "1",
         "-f", "rawvideo", "-pix_fmt", "bgra",
         "-s", &size, "-r", &rate, "-i", "-",
         "-an",
+        // Variable-fps mode pairs with wallclock input: don't synthesize
+        // duplicates / drop frames to hit a target fps, just pass through.
+        "-fps_mode", "passthrough",
         "-c:v", vcodec,
     ])
     .args(&codec_args)
