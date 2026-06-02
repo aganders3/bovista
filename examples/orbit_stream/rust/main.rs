@@ -218,23 +218,50 @@ fn main() {
     // teleport the camera — only changes its rate going forward).
     let mut theta: f32 = 0.0;
     let mut last_tick = Instant::now();
+    // Anchor for "wall-clock frame schedule". Each frame's target wall time
+    // is `loop_start + frame_dt * frame_n`. If we fall further behind than
+    // MAX_FRAME_LAG, we skip frames so the stream stays live instead of
+    // building backlog inside ffmpeg / kernel pipe / TCP buffer / browser.
+    let mut loop_start = Instant::now();
+    let mut frame_n: u64 = 0;
+    let max_frame_lag = frame_dt * 3; // tolerate up to 3 frames of slip
     // Last seen t_generation so we can detect timepoint changes and flush
     // the atlas exactly once per change (rather than every frame).
     let mut last_t_gen: u32 = view_state.t_generation();
     // True while we're in the post-flush diagnostic window.
     let mut flush_active = false;
+    let mut dropped_total: u64 = 0;
 
     loop {
         // Skip the render entirely when nobody's watching.
         if active.lock().unwrap().is_none() {
             std::thread::sleep(idle_sleep);
             last_tick = Instant::now();
+            loop_start = Instant::now();
+            frame_n = 0;
             continue;
         }
 
         let tick = Instant::now();
         let dt = tick.duration_since(last_tick).as_secs_f32();
         last_tick = tick;
+
+        // If we've drifted more than max_frame_lag behind the wall-clock
+        // schedule, advance frame_n past the gap so we don't try to "catch
+        // up" by feeding ffmpeg a burst of frames (which would queue inside
+        // the kernel pipe / TCP send buffer / browser and produce the
+        // accumulated-delay effect).
+        let target = loop_start + frame_dt * frame_n as u32;
+        if tick > target + max_frame_lag {
+            let behind = tick - target;
+            let skip = (behind.as_nanos() / frame_dt.as_nanos()) as u64;
+            frame_n = frame_n.saturating_add(skip);
+            dropped_total += skip;
+            if dropped_total.is_power_of_two() || skip > 10 {
+                eprintln!("[orbit] frame pacer: skipping {} frames (total dropped: {})",
+                          skip, dropped_total);
+            }
+        }
 
         // Apply current view state to the volume (cheap; writes only on next
         // prepare() submission). If the timepoint changed, flush the atlas
@@ -320,9 +347,14 @@ fn main() {
             *active.lock().unwrap() = None;
         }
 
-        let elapsed = tick.elapsed();
-        if elapsed < frame_dt {
-            std::thread::sleep(frame_dt - elapsed);
+        // Pace against absolute wall-clock target, not relative to start of
+        // this frame — so a fast frame doesn't gain budget for the next one
+        // and we converge back to 30 fps exactly even after a slow flush.
+        frame_n += 1;
+        let next_target = loop_start + frame_dt * frame_n as u32;
+        let now = Instant::now();
+        if now < next_target {
+            std::thread::sleep(next_target - now);
         }
     }
 }
@@ -1187,11 +1219,17 @@ mod ome_zarr {
     /// intersecting the tile region rather than the whole outer shard, so
     /// per-tile cost stays tens of ms even on multi-GB outer chunks.
     ///
-    /// Raised to 128 (from 32) so a t-flush can fire every visible tile in
-    /// one frame instead of dribbling them out over four frames. zarrs's
-    /// internal rayon parallelism already shares the system thread pool, so
-    /// this caps spawn count, not actual concurrent CPU usage.
-    const MAX_INFLIGHT: usize = 128;
+    /// Cap derived from `available_parallelism()` minus a couple cores for
+    /// the render thread + ffmpeg. 128 over-subscribed rayon's pool badly on
+    /// multi-LOD flushes (3-4× parallelism instead of 70×+). Capped at 64
+    /// because zarrs's internal rayon parallelism already amplifies each
+    /// in-flight call.
+    fn max_inflight() -> usize {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8);
+        cpus.saturating_sub(2).clamp(8, 64)
+    }
 
     /// Each LOD level we'll serve. We type-erase the storage so the same struct
     /// can hold either a filesystem or http store.
@@ -1403,7 +1441,9 @@ mod ome_zarr {
             )
         };
 
-        // Tile loader: spawns a worker per request, bounded by MAX_INFLIGHT.
+        // Tile loader: spawns a worker per request, bounded by max_inflight.
+        let max_inflight = max_inflight();
+        println!("[orbit] max in-flight tile reads: {}", max_inflight);
         let levels = Arc::new(levels);
         let inflight: Arc<Mutex<HashSet<TileKey>>> = Arc::new(Mutex::new(HashSet::new()));
         let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
@@ -1432,7 +1472,7 @@ mod ome_zarr {
                 if inflight.contains(&key) {
                     return ChunkStatus::AlreadyPending;
                 }
-                if inflight.len() >= MAX_INFLIGHT {
+                if inflight.len() >= max_inflight {
                     return ChunkStatus::Rejected;
                 }
                 inflight.insert(key);
