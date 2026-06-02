@@ -265,6 +265,13 @@ impl VirtualTextureData {
             let mut guard = self.pending_chunks.lock().unwrap();
             guard.drain().collect()
         };
+        // Make room for the whole batch up front. Phase 2 of eviction will
+        // surrender prefetched-other-t slots specifically — so the current
+        // frame's tiles can always land regardless of how full the atlas
+        // got with neighbor-timepoint prefetch material.
+        if !pending.is_empty() {
+            self.evict_tiles(queue, pending.len());
+        }
 
         for (key, data) in pending {
             if self.slot_map.contains_key(&key) {
@@ -359,31 +366,59 @@ impl VirtualTextureData {
         self.presentation_t = target;
     }
 
-    fn evict_tiles(&mut self, queue: &Queue) {
-        if self.slot_map.len() < self.max_tiles {
-            return;
-        }
-
-        // Evict enough to bring us back below max_tiles and open one free slot
-        // for the next arriving chunk.
-        let num_to_remove = (self.slot_map.len() + 1).saturating_sub(self.max_tiles);
+    /// Evict enough slots to make room for `needed_free` new tiles.
+    /// Prioritizes (most-evictable first):
+    ///   1. Spatial key not in current visible set  — camera moved past it
+    ///   2. Spatial visible but t is neither `presentation_t` nor `desired_t`
+    ///      — prefetch material for a timepoint the user isn't on. These are
+    ///      the right slots to surrender so the current frame can load.
+    ///   3. Spatial visible, t ∈ {presentation, desired}, but wrong LOD.
+    /// Within each phase, oldest LRU first.
+    fn evict_tiles(&mut self, queue: &Queue, needed_free: usize) {
+        let free_now = self.max_tiles.saturating_sub(self.slot_map.len());
+        if free_now >= needed_free { return; }
+        let num_to_remove = needed_free - free_now;
         let ideal_lod = self.cached_ideal_lod;
+        let cur_ts = (self.presentation_t, self.desired_t);
 
-        // Phase 1: tiles whose SPATIAL key isn't visible — pure LRU. (Tiles
-        // for adjacent timepoints at a still-visible (lod, z, y, x) count
-        // as "visible" and are preserved here; they live as prefetch
-        // material until presentation_t flips to their t.)
+        // Phase 1: spatial not visible.
         let mut candidates: Vec<TileKey> = self.slot_map.keys()
             .filter(|k| !self.visible_tile_keys.contains(&k.spatial()))
             .copied()
             .collect();
         candidates.sort_by_key(|k| *self.lru_map.get(k).unwrap_or(&0));
 
-        // Phase 2: if still short, add visible tiles at the wrong LOD.
-        // Sort by distance from ideal_lod descending so the most off-target tiles go first.
+        // Phase 2: spatial visible, but t ∉ {presentation, desired}.
+        // Critical for keeping the current frame snappy when the atlas
+        // is full of prefetched neighbors.
+        if candidates.len() < num_to_remove {
+            let mut other_t: Vec<TileKey> = self.slot_map.keys()
+                .filter(|k| {
+                    self.visible_tile_keys.contains(&k.spatial())
+                        && k.t != cur_ts.0 && k.t != cur_ts.1
+                })
+                .copied()
+                .collect();
+            other_t.sort_by(|a, b| {
+                // Prefer evicting tiles farther from the current/desired t.
+                let da = (a.t as i64 - cur_ts.0 as i64).abs()
+                    .min((a.t as i64 - cur_ts.1 as i64).abs());
+                let db = (b.t as i64 - cur_ts.0 as i64).abs()
+                    .min((b.t as i64 - cur_ts.1 as i64).abs());
+                db.cmp(&da).then_with(|| {
+                    self.lru_map.get(a).unwrap_or(&0)
+                        .cmp(self.lru_map.get(b).unwrap_or(&0))
+                })
+            });
+            candidates.extend(other_t);
+        }
+
+        // Phase 3: visible at current/desired t but wrong LOD.
         if candidates.len() < num_to_remove {
             let mut wrong_lod: Vec<TileKey> = self.slot_map.keys()
-                .filter(|k| self.visible_tile_keys.contains(&k.spatial()) && k.lod_level != ideal_lod)
+                .filter(|k| self.visible_tile_keys.contains(&k.spatial())
+                            && (k.t == cur_ts.0 || k.t == cur_ts.1)
+                            && k.lod_level != ideal_lod)
                 .copied()
                 .collect();
             wrong_lod.sort_by(|a, b| {
@@ -729,7 +764,8 @@ impl VirtualTextureData {
                 self.lru_map.insert(key, frame_number);
             }
         }
-        self.evict_tiles(queue);
+        // Eviction is now batched inside process_pending_chunks so it sizes
+        // to the actual incoming work.
         self.process_pending_chunks(queue);
         // Request visible tiles at desired_t (where the user is heading).
         let target_t = self.desired_t;
@@ -778,7 +814,8 @@ impl VirtualTextureData {
             }
         }
 
-        self.evict_tiles(queue);
+        // Eviction is now batched inside process_pending_chunks so it sizes
+        // to the actual incoming work.
         self.process_pending_chunks(queue);
 
         // Request tiles at the timepoint the caller wants to display next.
