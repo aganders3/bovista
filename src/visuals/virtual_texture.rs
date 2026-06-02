@@ -97,14 +97,15 @@ pub struct VirtualTextureData {
     /// Timepoint the caller wants to display. The page table flips to
     /// `desired_t` when (a) all visible spatial tiles have a slot at that t
     /// (the "clean swap" case), OR (b) `MAX_SWAP_WAIT_FRAMES` have elapsed
-    /// since the change request (the "partial swap" timeout). The latter
-    /// prevents the display from getting stuck if a single tile is slow
-    /// to load or gets LRU-evicted; the shader's LOD fallback fills the
-    /// gaps with coarser tiles that are usually still resident.
+    /// since the swap was *first* scheduled (the "partial swap" timeout).
+    /// Subsequent `desired_t` changes during the wait do NOT push the
+    /// deadline further out — that's what causes the "stuck on an old
+    /// frame" symptom under rapid scrubbing. They just retarget where the
+    /// swap will land when the deadline fires.
     desired_t: u32,
-    /// Frame counter when `desired_t` was last changed. Used for the
-    /// partial-swap timeout.
-    desired_t_set_frame: u64,
+    /// Frame counter when the current swap-pending was first scheduled.
+    /// u64::MAX when no swap is pending (desired_t == presentation_t).
+    swap_due_frame: u64,
 }
 
 /// Maximum frames to wait for a clean swap before forcing a partial swap.
@@ -189,7 +190,7 @@ impl VirtualTextureData {
             levels: lod_levels,
             presentation_t: 0,
             desired_t: 0,
-            desired_t_set_frame: 0,
+            swap_due_frame: u64::MAX,
         }
     }
 
@@ -199,9 +200,18 @@ impl VirtualTextureData {
     /// shader falls back to coarser LODs for missing tiles). Non-temporal
     /// callers can ignore this.
     pub fn set_desired_timepoint(&mut self, t: u32) {
-        if t != self.desired_t {
-            self.desired_t = t;
-            self.desired_t_set_frame = self.frame_counter;
+        if t == self.desired_t { return; }
+        self.desired_t = t;
+        if t == self.presentation_t {
+            // The caller asked for what's already showing — cancel any
+            // pending swap.
+            self.swap_due_frame = u64::MAX;
+        } else if self.swap_due_frame == u64::MAX {
+            // First divergence from presentation_t in this swap cycle —
+            // schedule the partial-swap deadline. Subsequent retargets
+            // before the deadline do NOT push it back; the user will see
+            // SOMETHING within MAX_SWAP_WAIT_FRAMES of their first change.
+            self.swap_due_frame = self.frame_counter + MAX_SWAP_WAIT_FRAMES;
         }
     }
 
@@ -329,16 +339,19 @@ impl VirtualTextureData {
     /// happens within the same frame that the last needed tile arrived,
     /// or within ~200 ms of `set_desired_timepoint` if the load is slow.
     fn maybe_advance_presentation(&mut self, queue: &Queue) {
-        if self.desired_t == self.presentation_t { return; }
+        if self.desired_t == self.presentation_t {
+            self.swap_due_frame = u64::MAX;
+            return;
+        }
         let target = self.desired_t;
-        let waited = self.frame_counter.saturating_sub(self.desired_t_set_frame);
+        let timed_out = self.frame_counter >= self.swap_due_frame;
         // Try for a clean swap first.
         let all_present = self.visible_tile_keys.iter().all(|spatial| {
             let key = TileKey { lod_level: spatial.lod_level, t: target,
                                 z: spatial.z, y: spatial.y, x: spatial.x };
             self.slot_map.contains_key(&key)
         });
-        if !all_present && waited < MAX_SWAP_WAIT_FRAMES { return; }
+        if !all_present && !timed_out { return; }
 
         // Flip: rewrite every page-table entry. Slots that don't exist at
         // `target` get cleared; the shader's LOD fallback will sample
@@ -359,11 +372,12 @@ impl VirtualTextureData {
             }
         }
         log::debug!(
-            "VT presentation_t: {} → {} ({}/{} tiles loaded, waited {} frames{})",
-            self.presentation_t, target, loaded, visible.len(), waited,
+            "VT presentation_t: {} → {} ({}/{} tiles loaded{})",
+            self.presentation_t, target, loaded, visible.len(),
             if all_present { ", clean swap" } else { ", partial swap (timeout)" },
         );
         self.presentation_t = target;
+        self.swap_due_frame = u64::MAX;
     }
 
     /// Evict enough slots to make room for `needed_free` new tiles.
