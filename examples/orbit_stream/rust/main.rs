@@ -32,7 +32,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -144,10 +144,11 @@ fn main() {
         density_mult,
         1.0,           // orbit_speed (× 1 revolution per 12s)
     ));
+    let flush_diag = Arc::new(FlushDiag::new());
 
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
-        Some(path) => match ome_zarr::open(path, view_state.clone()) {
+        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone()) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -220,6 +221,8 @@ fn main() {
     // Last seen t_generation so we can detect timepoint changes and flush
     // the atlas exactly once per change (rather than every frame).
     let mut last_t_gen: u32 = view_state.t_generation();
+    // True while we're in the post-flush diagnostic window.
+    let mut flush_active = false;
 
     loop {
         // Skip the render entirely when nobody's watching.
@@ -235,7 +238,8 @@ fn main() {
 
         // Apply current view state to the volume (cheap; writes only on next
         // prepare() submission). If the timepoint changed, flush the atlas
-        // so visible tiles re-request with the new t.
+        // so visible tiles re-request with the new t, and arm the flush
+        // diagnostics.
         {
             let mut v = volume_arc.lock().unwrap();
             v.set_contrast_limits(view_state.contrast_min(), view_state.contrast_max());
@@ -244,7 +248,12 @@ fn main() {
             if gen != last_t_gen {
                 v.clear_atlas(renderer.queue());
                 last_t_gen = gen;
-                println!("[orbit] timepoint → {} (atlas flushed)", view_state.timepoint());
+                let t_ns = view_state.ns_since_start();
+                flush_diag.start(t_ns);
+                flush_active = true;
+                println!("[orbit] timepoint → {} (atlas flushed at t={:.3}s)",
+                         view_state.timepoint(),
+                         t_ns as f64 / 1e9);
             }
         }
 
@@ -257,11 +266,42 @@ fn main() {
             radius * theta.sin(),
         );
 
-        let bgra = render_one_frame(
+        let (bgra, prepare_dt) = render_one_frame(
             &renderer, &mut scene, &camera,
             &color_tex, &color_view, &depth_view,
             width, height,
         );
+        // Attribute scene.prepare() time (which includes process_pending_chunks
+        // → queue.write_texture for every newly-arrived tile) to the current
+        // flush, if any.
+        if flush_active {
+            flush_diag.upload_ns_total
+                .fetch_add(prepare_dt.as_nanos() as u64, Ordering::Relaxed);
+            // Settle detection: if no tile has arrived for ~250 ms after the
+            // first arrival, declare the flush done and print the summary.
+            let t0 = flush_diag.flush_t0_ns.load(Ordering::Relaxed);
+            let now_ns = view_state.ns_since_start();
+            let first = flush_diag.first_arrival_ns.load(Ordering::Relaxed);
+            let last = flush_diag.last_arrival_ns.load(Ordering::Relaxed);
+            let tiles = flush_diag.tiles_loaded.load(Ordering::Relaxed);
+            let since_last_ms = ((now_ns.saturating_sub(t0)).saturating_sub(last)) / 1_000_000;
+            if tiles > 0 && since_last_ms > 250 {
+                let decode_ns = flush_diag.decode_ns_total.load(Ordering::Relaxed);
+                let upload_ns = flush_diag.upload_ns_total.load(Ordering::Relaxed);
+                println!(
+                    "[flush] {} tiles | first arrival {:.0} ms, last {:.0} ms | \
+                     decode total {:.0} ms ({:.1} ms/tile) | upload (scene.prepare) {:.0} ms",
+                    tiles,
+                    first as f64 / 1e6,
+                    last as f64 / 1e6,
+                    decode_ns as f64 / 1e6,
+                    decode_ns as f64 / 1e6 / tiles as f64,
+                    upload_ns as f64 / 1e6,
+                );
+                flush_active = false;
+                flush_diag.flush_t0_ns.store(0, Ordering::Relaxed);
+            }
+        }
 
         // Push the frame to the current client (if still attached). On any
         // write error, drop our handle to the stdin so the accept thread can
@@ -296,7 +336,7 @@ fn render_one_frame(
     color_view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
     width: u32, height: u32,
-) -> Vec<u8> {
+) -> (Vec<u8>, Duration) {
     let device = renderer.device();
     let queue = renderer.queue();
 
@@ -313,7 +353,9 @@ fn render_one_frame(
         ortho_height: camera.ortho_height,
         view_proj: camera.view_projection_matrix(),
     };
+    let prepare_start = Instant::now();
     scene.prepare(device, queue, &camera_info);
+    let prepare_dt = prepare_start.elapsed();
 
     renderer.render(scene, color_view, depth_view, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
 
@@ -366,7 +408,7 @@ fn render_one_frame(
     }
     drop(mapped);
     staging.unmap();
-    out
+    (out, prepare_dt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -726,6 +768,62 @@ struct ViewState {
     /// Increments whenever `timepoint` changes so the render loop can call
     /// VolumeVisual::clear_atlas() once per change (rather than every frame).
     t_generation: AtomicU32,
+    /// Wall-clock origin for relative timestamps used by FlushDiag.
+    program_start: Instant,
+}
+
+/// End-to-end timing for one timepoint flush. Tile workers fill in
+/// per-tile counters; the render loop reads them and prints a summary
+/// once arrivals settle.
+struct FlushDiag {
+    /// ns-since-program-start when the most recent flush began. 0 = no
+    /// flush in progress.
+    flush_t0_ns:     AtomicU64,
+    /// Number of tiles successfully loaded since `flush_t0_ns`.
+    tiles_loaded:    AtomicU32,
+    /// Sum of per-tile decode durations since flush, in ns.
+    decode_ns_total: AtomicU64,
+    /// Time of the most recent successful tile arrival, ns since flush_t0.
+    last_arrival_ns: AtomicU64,
+    /// ns-since-program-start when the FIRST tile of the current flush
+    /// arrived. 0 = no tile has arrived yet.
+    first_arrival_ns: AtomicU64,
+    /// ns of GPU upload time accrued in scene.prepare() since flush.
+    upload_ns_total: AtomicU64,
+}
+
+impl FlushDiag {
+    fn new() -> Self {
+        Self {
+            flush_t0_ns:      AtomicU64::new(0),
+            tiles_loaded:     AtomicU32::new(0),
+            decode_ns_total:  AtomicU64::new(0),
+            last_arrival_ns:  AtomicU64::new(0),
+            first_arrival_ns: AtomicU64::new(0),
+            upload_ns_total:  AtomicU64::new(0),
+        }
+    }
+
+    fn start(&self, t_ns: u64) {
+        self.tiles_loaded.store(0, Ordering::Relaxed);
+        self.decode_ns_total.store(0, Ordering::Relaxed);
+        self.last_arrival_ns.store(0, Ordering::Relaxed);
+        self.first_arrival_ns.store(0, Ordering::Relaxed);
+        self.upload_ns_total.store(0, Ordering::Relaxed);
+        self.flush_t0_ns.store(t_ns, Ordering::Relaxed);
+    }
+
+    fn note_tile(&self, now_ns: u64, decode_ns: u64) {
+        let t0 = self.flush_t0_ns.load(Ordering::Relaxed);
+        if t0 == 0 { return; }
+        self.tiles_loaded.fetch_add(1, Ordering::Relaxed);
+        self.decode_ns_total.fetch_add(decode_ns, Ordering::Relaxed);
+        let since = now_ns.saturating_sub(t0);
+        self.last_arrival_ns.store(since, Ordering::Relaxed);
+        let _ = self.first_arrival_ns.compare_exchange(
+            0, since, Ordering::Relaxed, Ordering::Relaxed,
+        );
+    }
 }
 
 impl ViewState {
@@ -738,7 +836,11 @@ impl ViewState {
             orbit_speed:  AtomicU32::new(speed.to_bits()),
             timepoint:    AtomicU32::new(0),
             t_generation: AtomicU32::new(0),
+            program_start: Instant::now(),
         }
+    }
+    fn ns_since_start(&self) -> u64 {
+        self.program_start.elapsed().as_nanos() as u64
     }
     fn zoom(&self)         -> f32 { f32::from_bits(self.zoom.load(Ordering::Relaxed)) }
     fn contrast_min(&self) -> f32 { f32::from_bits(self.contrast_min.load(Ordering::Relaxed)) }
@@ -1064,7 +1166,7 @@ mod ome_zarr {
     use zarrs::group::Group;
     use zarrs::storage::ReadableStorageTraits;
 
-    use super::{SceneSetup, ViewState};
+    use super::{FlushDiag, SceneSetup, ViewState};
 
     /// Max number of zarr-chunk reads we'll have in flight at once. NFS/VAST
     /// happily serve many parallel readers; the cap is mostly to keep the
@@ -1091,6 +1193,7 @@ mod ome_zarr {
     pub fn open(
         path_or_url: &str,
         view_state: Arc<ViewState>,
+        flush_diag: Arc<FlushDiag>,
     ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
@@ -1292,6 +1395,7 @@ mod ome_zarr {
         let pending_for_loader = pending_slot.clone();
         let levels_for_loader = levels.clone();
         let inflight_for_loader = inflight.clone();
+        let flush_diag_for_loader = flush_diag.clone();
         let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
             let lod = req.lod_level.unwrap_or(0);
             if lod >= levels_for_loader.len() {
@@ -1321,12 +1425,16 @@ mod ome_zarr {
             let lod_cfg = lods_for_loader[lod].clone();
             let inflight = inflight_for_loader.clone();
             let view_state = view_state.clone();
+            let flush_diag = flush_diag_for_loader.clone();
             thread::spawn(move || {
                 let t = view_state.timepoint();
+                let decode_start = std::time::Instant::now();
                 let result = read_tile(&levels[lod], &lod_cfg, key, t);
+                let decode_ns = decode_start.elapsed().as_nanos() as u64;
                 match result {
                     Ok(tile_data) => {
                         pending.lock().unwrap().insert(key, tile_data);
+                        flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
                     }
                     Err(e) => {
                         eprintln!(
