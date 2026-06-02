@@ -312,6 +312,7 @@ dependencies = [
  "pollster",
  "pyo3",
  "raw-window-handle",
+ "rayon",
  "serde_json",
  "tokio",
  "wasm-bindgen",

@@ -55,6 +55,27 @@ fn main() {
         "--timepoint", "--bench",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
+
+    // ── Thread-budgeting ───────────────────────────────────────────────────
+    // zarrs's chunk reads dispatch through the global rayon pool. By default
+    // rayon takes available_parallelism() threads, which on a 64-core HPC
+    // node is huge and means our spawned in-flight workers all expand into
+    // a shared pool of 64+ threads and start thrashing.
+    //
+    // Cap the rayon pool to a fixed number (default 8, override via env)
+    // and budget MAX_INFLIGHT against what's left: leave 2 cores for the
+    // render thread + writer thread + ffmpeg, give rayon its share, use
+    // the remainder for concurrent NFS reads.
+    let rayon_threads: usize = std::env::var("RAYON_NUM_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(rayon_threads)
+        .build_global();
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let auto_inflight = cpus.saturating_sub(2).saturating_sub(rayon_threads).max(8);
+
     let width: u32 = flag_u32(&args, "--width", 1024);
     let height: u32 = flag_u32(&args, "--height", 768);
     let fps: u32 = flag_u32(&args, "--fps", 30);
@@ -64,7 +85,9 @@ fn main() {
     let cache_override: Option<u32> = flag_str_opt(&args, "--cache-tiles").and_then(|v| v.parse().ok());
     let max_inflight: usize = flag_str_opt(&args, "--max-inflight")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(ome_zarr::DEFAULT_MAX_INFLIGHT);
+        .unwrap_or(auto_inflight);
+    println!("[orbit] thread budget: rayon={} max_inflight={} (cpus={})",
+             rayon_threads, max_inflight, cpus);
 
     // Standalone benchmark mode: no rendering, no streaming. Just open the
     // zarr and time per-tile reads at each LOD across a few timepoints.
@@ -1401,13 +1424,6 @@ mod ome_zarr {
     /// intersecting the tile region rather than the whole outer shard, so
     /// per-tile cost stays tens of ms even on multi-GB outer chunks.
     ///
-    /// Sweet spot empirically. zarrs's `retrieve_array_subset` already uses
-    /// rayon internally so each in-flight call expands to several physical
-    /// threads. With CPUs=64 and max_inflight=64 we observed effective
-    /// parallelism of 3× (pool thrashing); single-LOD bench gave ~2× on 8
-    /// workers. 16 is a defensible default; --max-inflight overrides.
-    pub const DEFAULT_MAX_INFLIGHT: usize = 16;
-
     /// Each LOD level we'll serve. We type-erase the storage so the same struct
     /// can hold either a filesystem or http store.
     struct Level {

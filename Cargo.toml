@@ -46,6 +46,10 @@ png = "0.17"
 zarrs = "0.23"
 zarrs_http = "0.3"
 serde_json = "1"
+# zarrs uses the global rayon pool internally for chunked reads. We init
+# it explicitly at startup so we can cap the pool size (default 8) and
+# compute MAX_INFLIGHT against a known budget.
+rayon = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
