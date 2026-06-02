@@ -716,12 +716,9 @@ fn spawn_ffmpeg(width: u32, height: u32, fps: u32) -> Child {
     let force_libx264 = std::env::var("BOVISTA_FORCE_LIBX264").is_ok();
     let nvenc_available = !force_libx264 && probe_encoder("h264_nvenc");
 
-    // Short GOP (~0.3 s) — every 10th frame is an IDR. Smaller is more
-    // bandwidth but lets the browser start playing within ~300 ms of any
-    // join point and keeps the live edge always within ~1 GOP of decodable
-    // frames, which is what lets us drive the buffer headroom below 1 s
-    // without stalling.
-    let gop = (fps.max(10) / 3).max(5).to_string();
+    // Keyframe every second so each fMP4 fragment lands within ~1s and the
+    // browser can start decoding without waiting on a long GOP.
+    let gop = fps.to_string();
     let (vcodec, codec_args): (&str, Vec<String>) = if nvenc_available {
         ("h264_nvenc", vec![
             "-preset".into(),       "p1".into(),
@@ -1204,13 +1201,10 @@ const live = document.getElementById('live');
 const lagLabel = document.getElementById('lag_val');
 let chasing = false;
 
-// Adaptive headroom: we *want* to play as close to the live edge as
-// possible, but going inside the encode/network jitter window causes
-// repeated stalls. Start optimistic (0.3s headroom) and grow on any
-// observed stall event; shrink back gradually when smooth.
-let dyn_headroom = 0.3;
-
-function snapToLive(headroom = dyn_headroom) {
+// Leave ~1s of headroom from the live tip so the decoder/network jitter
+// can absorb without underflow. Going closer than that causes the
+// player to repeatedly stall.
+function snapToLive(headroom = 1.0) {
   const b = live.buffered;
   if (b.length === 0) return false;
   const tip = b.end(b.length - 1);
@@ -1226,36 +1220,26 @@ function tick() {
   const tip = b.end(b.length - 1);
   const lag = tip - live.currentTime;
   if (lagLabel) lagLabel.textContent = lag.toFixed(2) + 's';
-  // Hard seek on big gaps (background-tab return, long stall).
-  if (lag > Math.max(2.0, dyn_headroom * 4)) {
-    snapToLive();
-  } else if (lag > dyn_headroom + 0.3 && !chasing) {
-    // Drift back toward target. 1.1× = 10% faster than realtime.
+  // Hard seek if the gap is huge (a background tab returning, a long
+  // stall). Otherwise drift gently via playbackRate.
+  if (lag > 3.0) {
+    snapToLive(1.0);
+  } else if (lag > 1.5 && !chasing) {
     live.playbackRate = 1.1;
     chasing = true;
-  } else if (lag < dyn_headroom + 0.05 && chasing) {
+  } else if (lag < 1.0 && chasing) {
     live.playbackRate = 1.0;
     chasing = false;
   }
 }
 setInterval(tick, 500);
 
-// Underflow → buffer was too thin, grow headroom; ease it back down
-// over time when we stop stalling.
-live.addEventListener('waiting', () => {
-  dyn_headroom = Math.min(2.0, dyn_headroom * 1.4 + 0.1);
-});
-setInterval(() => {
-  if (dyn_headroom > 0.3) dyn_headroom = Math.max(0.3, dyn_headroom - 0.05);
-}, 5000);
-
+// On returning from a hidden tab, jump straight to live. Browsers keep
+// buffering bytes while paused so we typically come back many seconds
+// behind real time.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) snapToLive();
+  if (!document.hidden) snapToLive(1.0);
 });
-
-// One-time: once the buffer has any data, snap to the target headroom
-// so we don't accumulate the browser's default initial buffer (~1-2s).
-live.addEventListener('loadeddata', () => snapToLive(), { once: true });
 
 const fmt = { zoom: v=>(+v).toFixed(2)+'×',
               contrast_min: v=>(+v).toFixed(4),
