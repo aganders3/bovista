@@ -1795,15 +1795,22 @@ mod ome_zarr {
                         }
                     }
 
-                    if keys.is_empty() { continue; }
+                    // Only dispatch prefetch when the queue is empty —
+                    // i.e., when every current-t request bovista wanted is
+                    // already done. Prefetch should only fire during idle
+                    // time, never compete with the user's actual scrubbing.
+                    if keys.is_empty() || scheduler.len() > 0 { continue; }
 
                     let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
                     offsets.sort_by_key(|o| o.abs());
-                    for offset in offsets {
+                    'outer: for offset in offsets {
                         let target = current as i32 + offset;
                         if target < 0 || target >= n_timepoints as i32 { continue; }
                         let t = target as u32;
                         for spatial in &keys {
+                            // If the user has scrubbed away mid-dispatch,
+                            // abort and let the next tick re-prioritize.
+                            if view_state.timepoint() != current { break 'outer; }
                             let key = TileKey {
                                 lod_level: spatial.lod_level, t,
                                 z: spatial.z, y: spatial.y, x: spatial.x,
