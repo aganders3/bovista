@@ -315,6 +315,13 @@ fn main() {
             v.set_density_scale(base_density * view_state.density_mult());
             let gen = view_state.t_generation();
             if gen != last_t_gen {
+                // If a previous flush hasn't settled yet, print whatever
+                // numbers we have so the user gets *some* signal per flush
+                // — back-to-back slider changes were previously suppressing
+                // the [flush] line for all but the last one.
+                if flush_active {
+                    print_flush_summary(&flush_diag, "interrupted");
+                }
                 v.clear_atlas(renderer.queue());
                 last_t_gen = gen;
                 let t_ns = view_state.ns_since_start();
@@ -356,23 +363,9 @@ fn main() {
             let last = flush_diag.last_arrival_ns.load(Ordering::Relaxed);
             let tiles = flush_diag.tiles_loaded.load(Ordering::Relaxed);
             let since_last_ms = ((now_ns.saturating_sub(t0)).saturating_sub(last)) / 1_000_000;
+            let _ = (first, last);
             if tiles > 0 && since_last_ms > 1000 {
-                let decode_ns = flush_diag.decode_ns_total.load(Ordering::Relaxed);
-                let upload_ns = flush_diag.upload_ns_total.load(Ordering::Relaxed);
-                let hits   = flush_diag.cache_hits.load(Ordering::Relaxed);
-                let misses = flush_diag.cache_misses.load(Ordering::Relaxed);
-                println!(
-                    "[flush] {} tiles ({} cache hits / {} miss = {:.0}%) | \
-                     first arrival {:.0} ms, last {:.0} ms | \
-                     decode total {:.0} ms ({:.1} ms/tile) | upload (scene.prepare) {:.0} ms",
-                    tiles, hits, misses,
-                    if tiles > 0 { 100.0 * hits as f64 / tiles as f64 } else { 0.0 },
-                    first as f64 / 1e6,
-                    last as f64 / 1e6,
-                    decode_ns as f64 / 1e6,
-                    decode_ns as f64 / 1e6 / tiles as f64,
-                    upload_ns as f64 / 1e6,
-                );
+                print_flush_summary(&flush_diag, "settled");
                 flush_active = false;
                 flush_diag.flush_t0_ns.store(0, Ordering::Relaxed);
             }
@@ -395,6 +388,29 @@ fn main() {
             std::thread::sleep(next_target - now);
         }
     }
+}
+
+fn print_flush_summary(diag: &FlushDiag, reason: &str) {
+    let tiles  = diag.tiles_loaded.load(Ordering::Relaxed);
+    if tiles == 0 { return; }
+    let first  = diag.first_arrival_ns.load(Ordering::Relaxed);
+    let last   = diag.last_arrival_ns.load(Ordering::Relaxed);
+    let dec_ns = diag.decode_ns_total.load(Ordering::Relaxed);
+    let up_ns  = diag.upload_ns_total.load(Ordering::Relaxed);
+    let hits   = diag.cache_hits.load(Ordering::Relaxed);
+    let misses = diag.cache_misses.load(Ordering::Relaxed);
+    println!(
+        "[flush:{}] {} tiles ({} hit / {} miss = {:.0}%) | first {:.0} ms last {:.0} ms | \
+         decode {:.0} ms ({:.1} ms/tile) | upload {:.0} ms",
+        reason,
+        tiles, hits, misses,
+        100.0 * hits as f64 / tiles as f64,
+        first as f64 / 1e6,
+        last as f64 / 1e6,
+        dec_ns as f64 / 1e6,
+        dec_ns as f64 / 1e6 / tiles as f64,
+        up_ns as f64 / 1e6,
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1913,33 +1929,75 @@ mod ome_zarr {
         }
 
         // Dispatcher: every 200 ms, walk the visible set and try to enqueue
-        // (t±offset, key) for each unfilled, unclaimed cache slot.
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_millis(200));
-            let current = view_state.timepoint() as i32;
-            let keys = visible.snapshot();
-            if keys.is_empty() { continue; }
+        // (t±offset, key) for each unfilled, unclaimed cache slot. Every 5
+        // dispatcher ticks (~1 s) emit a one-line [stats] heartbeat so the
+        // user has a continuous signal of what the cache and prefetcher are
+        // doing between [flush] events.
+        thread::spawn(move || {
+            let mut tick: u32 = 0;
+            loop {
+                thread::sleep(Duration::from_millis(200));
+                tick = tick.wrapping_add(1);
+                let current = view_state.timepoint() as i32;
+                let keys = visible.snapshot();
 
-            // Closer offsets first so the very next likely timepoint is
-            // primed before far-out ones.
-            let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
-            offsets.sort_by_key(|o| o.abs());
+                // ── Stats heartbeat ─────────────────────────────────────────
+                if tick % 5 == 0 {
+                    let (total, by_offset) = {
+                        let entries = cache.entries.lock().unwrap();
+                        let mut counts: std::collections::HashMap<i32, u32> =
+                            std::collections::HashMap::new();
+                        for ((t, _), _) in entries.iter() {
+                            let off = *t as i32 - current;
+                            *counts.entry(off).or_insert(0) += 1;
+                        }
+                        (entries.len(), counts)
+                    };
+                    let inflight = cache.inflight.lock().unwrap().len();
+                    let visible_n = keys.len();
+                    // Render the offsets we care about for the heartbeat:
+                    // -lookahead..=+lookahead, skipping 0 (that's the
+                    // currently-displayed timepoint).
+                    let mut buf = String::new();
+                    for off in -lookahead..=lookahead {
+                        if off == 0 { continue; }
+                        let n = by_offset.get(&off).copied().unwrap_or(0);
+                        let sign = if off > 0 { "+" } else { "" };
+                        buf.push_str(&format!(" {}{}:{}", sign, off, n));
+                    }
+                    println!(
+                        "[stats] t={} visible={} cache={}/{} inflight={} prefetch:{}",
+                        current, visible_n, total, capacity_hint(&cache), inflight, buf,
+                    );
+                }
 
-            'outer: for offset in offsets {
-                let target = current + offset;
-                if target < 0 || target >= n_timepoints as i32 { continue; }
-                let t = target as u32;
-                for &key in &keys {
-                    let cache_key = (t, key);
-                    if !cache.try_claim(cache_key) { continue; }
-                    if tx.try_send(cache_key).is_err() {
-                        // Queue full — release and wait for next tick.
-                        cache.release(&cache_key);
-                        break 'outer;
+                if keys.is_empty() { continue; }
+
+                // Closer offsets first so the very next likely timepoint is
+                // primed before far-out ones.
+                let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
+                offsets.sort_by_key(|o| o.abs());
+
+                'outer: for offset in offsets {
+                    let target = current + offset;
+                    if target < 0 || target >= n_timepoints as i32 { continue; }
+                    let t = target as u32;
+                    for &key in &keys {
+                        let cache_key = (t, key);
+                        if !cache.try_claim(cache_key) { continue; }
+                        if tx.try_send(cache_key).is_err() {
+                            // Queue full — release and wait for next tick.
+                            cache.release(&cache_key);
+                            break 'outer;
+                        }
                     }
                 }
             }
         });
+    }
+
+    fn capacity_hint(cache: &PrefetchCache) -> usize {
+        cache.entries.lock().unwrap().cap().get()
     }
 
     /// Read the voxel sub-region for this tile and convert to R16Float bytes.
