@@ -1743,7 +1743,10 @@ mod ome_zarr {
             let view_state = view_state.clone();
             let flush_diag = flush_diag.clone();
             thread::spawn(move || loop {
-                let key = match scheduler.pop_best(view_state.timepoint()) {
+                // Anything farther than 3 timepoints from current is stale —
+                // ~lookahead + 1 epsilon. Stale entries are dropped from the
+                // queue without decoding.
+                let key = match scheduler.pop_best(view_state.timepoint(), 3) {
                     Some(k) => k,
                     None => break,
                 };
@@ -1787,19 +1790,21 @@ mod ome_zarr {
 
                     if tick % 5 == 0 {
                         let q = scheduler.len();
+                        let useful = scheduler.len_useful(current, 3);
                         let sig = (current, keys.len(), q);
                         if last_sig.as_ref() != Some(&sig) {
-                            println!("[stats] t={} visible_spatial={} queue={}",
-                                     current, keys.len(), q);
+                            println!("[stats] t={} visible_spatial={} queue={} useful={}",
+                                     current, keys.len(), q, useful);
                             last_sig = Some(sig);
                         }
                     }
 
-                    // Only dispatch prefetch when the queue is empty —
-                    // i.e., when every current-t request bovista wanted is
-                    // already done. Prefetch should only fire during idle
-                    // time, never compete with the user's actual scrubbing.
-                    if keys.is_empty() || scheduler.len() > 0 { continue; }
+                    // Only dispatch prefetch when there's no USEFUL work
+                    // already queued (i.e., no current-t or near-t entries
+                    // bovista still wants). Stale entries left over from a
+                    // previous current_t don't count — workers drain those
+                    // for free during their pop scan.
+                    if keys.is_empty() || scheduler.len_useful(current, 3) > 0 { continue; }
 
                     let mut offsets: Vec<i32> = (1..=lookahead).chain((1..=lookahead).map(|o| -o)).collect();
                     offsets.sort_by_key(|o| o.abs());
@@ -1929,20 +1934,48 @@ mod ome_zarr {
         }
         /// Block until a tile is available, then pop the one closest to
         /// the current timepoint.
-        pub fn pop_best(&self, current_t: u32) -> Option<TileKey> {
+        /// Pop the entry closest to `current_t`, while opportunistically
+        /// dropping entries farther than `max_useful_dist` away (left over
+        /// from a previous current_t the user has since scrubbed past).
+        /// Both operations cost a single O(n) scan together — the "drop
+        /// stale" step is free given that pop has to compute priorities
+        /// for every entry anyway.
+        pub fn pop_best(&self, current_t: u32, max_useful_dist: i32) -> Option<TileKey> {
             let mut q = self.inner.queue.lock().unwrap();
             loop {
-                if let Some(best) = q.iter()
-                    .min_by_key(|k| (k.t as i32 - current_t as i32).abs())
-                    .copied()
-                {
-                    q.remove(&best);
-                    return Some(best);
+                let mut best: Option<TileKey> = None;
+                let mut best_pri = i32::MAX;
+                let mut stale: Vec<TileKey> = Vec::new();
+                for &k in q.iter() {
+                    let pri = (k.t as i32 - current_t as i32).abs();
+                    if pri > max_useful_dist {
+                        stale.push(k);
+                    } else if pri < best_pri {
+                        best_pri = pri;
+                        best = Some(k);
+                    }
                 }
+                // Drain everything no longer worth doing — instantly,
+                // without sending it through a worker.
+                for k in &stale { q.remove(k); }
+                if let Some(b) = best {
+                    q.remove(&b);
+                    return Some(b);
+                }
+                // Queue had only stale entries (or was empty); wait for
+                // a fresh push.
                 q = self.inner.cvar.wait(q).unwrap();
             }
         }
+        /// Total queue size including stale entries. The "useful" (non-
+        /// stale) subset is what the prefetcher should reason about; use
+        /// `len_useful` for that.
         pub fn len(&self) -> usize { self.inner.queue.lock().unwrap().len() }
+        pub fn len_useful(&self, current_t: u32, max_useful_dist: i32) -> usize {
+            self.inner.queue.lock().unwrap().iter()
+                .filter(|k| (k.t as i32 - current_t as i32).abs() <= max_useful_dist)
+                .count()
+        }
     }
 
     /// Read the voxel sub-region for this tile and convert to R16Float bytes.
