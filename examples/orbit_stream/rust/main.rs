@@ -1743,10 +1743,13 @@ mod ome_zarr {
             let view_state = view_state.clone();
             let flush_diag = flush_diag.clone();
             thread::spawn(move || loop {
-                // Anything farther than 3 timepoints from current is stale —
-                // ~lookahead + 1 epsilon. Stale entries are dropped from the
-                // queue without decoding.
-                let key = match scheduler.pop_best(view_state.timepoint(), 3) {
+                // Pass a closure (not a snapshot) so pop_best re-reads
+                // current_t each scan. Otherwise a worker that's been
+                // blocked in cvar.wait could wake up and evaluate freshly
+                // pushed entries against a long-stale current_t, drop
+                // them as "too far," and deadlock the loading pipeline —
+                // which is exactly what was happening during scrubbing.
+                let key = match scheduler.pop_best(|| view_state.timepoint(), 3) {
                     Some(k) => k,
                     None => break,
                 };
@@ -1934,20 +1937,24 @@ mod ome_zarr {
         }
         /// Block until a tile is available, then pop the one closest to
         /// the current timepoint.
-        /// Pop the entry closest to `current_t`, while opportunistically
-        /// dropping entries farther than `max_useful_dist` away (left over
-        /// from a previous current_t the user has since scrubbed past).
-        /// Both operations cost a single O(n) scan together — the "drop
-        /// stale" step is free given that pop has to compute priorities
-        /// for every entry anyway.
-        pub fn pop_best(&self, current_t: u32, max_useful_dist: i32) -> Option<TileKey> {
+        /// Pop the entry closest to the CURRENT timepoint (re-read each
+        /// scan), while opportunistically dropping entries farther than
+        /// `max_useful_dist` away. Re-reading `current_t` each iteration
+        /// matters: a worker may have been blocked in `cvar.wait` for a
+        /// long time while the user scrubbed; bovista pushes entries for
+        /// the NEW t, and if we kept using the stale `current_t` from
+        /// when this call started, those new entries would look "stale"
+        /// and get dropped — which is exactly the deadlock-via-mismatch
+        /// bug that produced "nothing ever loads" during scrubbing.
+        pub fn pop_best<F: Fn() -> u32>(&self, current_t: F, max_useful_dist: i32) -> Option<TileKey> {
             let mut q = self.inner.queue.lock().unwrap();
             loop {
+                let now_t = current_t();
                 let mut best: Option<TileKey> = None;
                 let mut best_pri = i32::MAX;
                 let mut stale: Vec<TileKey> = Vec::new();
                 for &k in q.iter() {
-                    let pri = (k.t as i32 - current_t as i32).abs();
+                    let pri = (k.t as i32 - now_t as i32).abs();
                     if pri > max_useful_dist {
                         stale.push(k);
                     } else if pri < best_pri {
@@ -1955,15 +1962,11 @@ mod ome_zarr {
                         best = Some(k);
                     }
                 }
-                // Drain everything no longer worth doing — instantly,
-                // without sending it through a worker.
                 for k in &stale { q.remove(k); }
                 if let Some(b) = best {
                     q.remove(&b);
                     return Some(b);
                 }
-                // Queue had only stale entries (or was empty); wait for
-                // a fresh push.
                 q = self.inner.cvar.wait(q).unwrap();
             }
         }
