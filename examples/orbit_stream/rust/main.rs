@@ -52,7 +52,7 @@ fn main() {
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles",
         "--contrast-min", "--contrast-max", "--density-mult",
-        "--timepoint",
+        "--timepoint", "--bench",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
     let width: u32 = flag_u32(&args, "--width", 1024);
@@ -62,6 +62,17 @@ fn main() {
     let backend = flag_str(&args, "--backend", "auto");
     let zarr_arg: Option<String> = flag_str_opt(&args, "--zarr");
     let cache_override: Option<u32> = flag_str_opt(&args, "--cache-tiles").and_then(|v| v.parse().ok());
+
+    // Standalone benchmark mode: no rendering, no streaming. Just open the
+    // zarr and time per-tile reads at each LOD across a few timepoints.
+    if args.iter().any(|a| a == "--bench") {
+        let path = zarr_arg.expect("--bench requires --zarr <path>");
+        if let Err(e) = bench_zarr(&path) {
+            eprintln!("[bench] error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
     let contrast_min: f32 = flag_str_opt(&args, "--contrast-min").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let contrast_max: f32 = flag_str_opt(&args, "--contrast-max").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let density_mult: f32 = flag_str_opt(&args, "--density-mult").and_then(|v| v.parse().ok()).unwrap_or(1.0);
@@ -432,6 +443,188 @@ fn generate_cube_volume_r16f(dim: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OME-Zarr decode benchmark. Reads 128³ sub-regions at each LOD (sequential
+// and 8-way parallel) and prints per-tile / per-frame timings so we can
+// estimate the maximum sustainable playback fps for the dataset.
+
+fn bench_zarr(path_or_url: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::sync::Arc as Arc2;
+    use std::time::Instant;
+    use zarrs::array::{Array, ArraySubset};
+    use zarrs::group::Group;
+    use zarrs::storage::ReadableStorageTraits;
+
+    const TILE: u64 = 128;
+    const N_TILES: u64 = 16;        // tiles per pass (sequential and parallel)
+    const PARALLEL: usize = 8;       // worker count for parallel pass
+
+    let store: Arc2<dyn ReadableStorageTraits> =
+        if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+            Arc2::new(zarrs_http::HTTPStore::new(path_or_url)?)
+        } else {
+            Arc2::new(zarrs::filesystem::FilesystemStore::new(path_or_url)?)
+        };
+    let group = Group::open(store.clone(), "/")?;
+    let attrs = group.attributes();
+    let multiscales = attrs
+        .get("ome").and_then(|o| o.get("multiscales"))
+        .or_else(|| attrs.get("multiscales"))
+        .and_then(|m| m.as_array())
+        .and_then(|a| a.first())
+        .ok_or("no multiscales metadata")?;
+    let axes: Vec<String> = multiscales.get("axes").and_then(|a| a.as_array())
+        .map(|a| a.iter().map(|x| x.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string()).collect())
+        .unwrap_or_default();
+    let datasets = multiscales.get("datasets").and_then(|d| d.as_array())
+        .ok_or("multiscales.datasets missing")?;
+
+    println!("[bench] axes = {:?}", axes);
+    for (lod_idx, ds) in datasets.iter().enumerate() {
+        let path = ds.get("path").and_then(|p| p.as_str()).unwrap_or("0");
+        let abs = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };
+        let array = Array::open(store.clone(), &abs)?;
+        let arr = Arc2::new(array);
+        let shape = arr.shape().to_vec();
+        let ndim = shape.len();
+        let (z_idx, y_idx, x_idx) = match (
+            axes.iter().position(|a| a == "z"),
+            axes.iter().position(|a| a == "y"),
+            axes.iter().position(|a| a == "x"),
+        ) {
+            (Some(z), Some(y), Some(x)) => (z, y, x),
+            _ => (ndim - 3, ndim - 2, ndim - 1),
+        };
+        let t_idx = axes.iter().position(|a| a == "t");
+
+        let extents = (shape[z_idx], shape[y_idx], shape[x_idx]);
+        let dtype = arr.data_type().name(zarrs::plugin::ZarrVersion::V3)
+            .map(|n| n.to_string()).unwrap_or_default();
+        let chunk_shape: Vec<u64> = arr.chunk_shape(&vec![0u64; ndim])?.iter().map(|d| d.get()).collect();
+        println!("\n[bench] LOD {}: dtype={} shape(zyx)={:?} chunk_shape={:?}",
+                 lod_idx, dtype, extents, chunk_shape);
+
+        // Pick N_TILES non-overlapping 128³ regions tiled along z at the
+        // volume's centre in (y, x). If the volume is smaller than 128 along
+        // an axis, clamp.
+        let tz = TILE.min(extents.0);
+        let ty = TILE.min(extents.1);
+        let tx = TILE.min(extents.2);
+        let cy = extents.1.saturating_sub(ty) / 2;
+        let cx = extents.2.saturating_sub(tx) / 2;
+        let n = N_TILES.min(extents.0 / tz.max(1));
+        if n == 0 {
+            println!("  (volume too small for 128³ benchmark; skipping)");
+            continue;
+        }
+
+        let make_subset = |tile_z: u64, t: u64| -> ArraySubset {
+            let mut ranges: Vec<std::ops::Range<u64>> = (0..ndim).map(|_| 0..1).collect();
+            ranges[z_idx] = (tile_z * tz)..((tile_z + 1) * tz);
+            ranges[y_idx] = cy..(cy + ty);
+            ranges[x_idx] = cx..(cx + tx);
+            if let Some(ti) = t_idx { ranges[ti] = t..(t + 1); }
+            ArraySubset::new_with_ranges(&ranges)
+        };
+
+        // Sequential pass: read N_TILES tiles back-to-back at t=0.
+        let bytes_per_tile = (tz * ty * tx) as usize * dtype_bytes(&dtype);
+        let t0 = Instant::now();
+        for i in 0..n {
+            let subset = make_subset(i, 0);
+            read_subset_any(&arr, &dtype, &subset)?;
+        }
+        let seq = t0.elapsed();
+        println!(
+            "  sequential {} × 128³: {:.0} ms total, {:.1} ms/tile, {:.1} MB/s decoded",
+            n,
+            seq.as_secs_f64() * 1e3,
+            seq.as_secs_f64() * 1e3 / n as f64,
+            (bytes_per_tile * n as usize) as f64 / seq.as_secs_f64() / 1e6,
+        );
+
+        // Parallel pass: same N_TILES across PARALLEL worker threads.
+        let t0 = Instant::now();
+        std::thread::scope(|scope| {
+            for w in 0..PARALLEL {
+                let arr = arr.clone();
+                let dtype = dtype.clone();
+                scope.spawn(move || {
+                    let mut i = w as u64;
+                    while i < n {
+                        let subset = make_subset(i, 0);
+                        let _ = read_subset_any(&arr, &dtype, &subset);
+                        i += PARALLEL as u64;
+                    }
+                });
+            }
+        });
+        let par = t0.elapsed();
+        println!(
+            "  parallel({}×) {} × 128³: {:.0} ms total, {:.1} ms/tile, {:.1} MB/s decoded → speedup {:.2}×",
+            PARALLEL, n,
+            par.as_secs_f64() * 1e3,
+            par.as_secs_f64() * 1e3 / n as f64,
+            (bytes_per_tile * n as usize) as f64 / par.as_secs_f64() / 1e6,
+            seq.as_secs_f64() / par.as_secs_f64(),
+        );
+
+        // Playback simulation: same spatial region at the first N timepoints.
+        if let Some(_) = t_idx {
+            let n_t = N_TILES.min(shape[t_idx.unwrap()]);
+            if n_t > 1 {
+                let t0 = Instant::now();
+                std::thread::scope(|scope| {
+                    for w in 0..PARALLEL {
+                        let arr = arr.clone();
+                        let dtype = dtype.clone();
+                        scope.spawn(move || {
+                            let mut t = w as u64;
+                            while t < n_t {
+                                let subset = make_subset(0, t);
+                                let _ = read_subset_any(&arr, &dtype, &subset);
+                                t += PARALLEL as u64;
+                            }
+                        });
+                    }
+                });
+                let dt = t0.elapsed();
+                println!(
+                    "  playback sim (1 tile × {} timepoints, {}× parallel): {:.0} ms, {:.2} fps",
+                    n_t, PARALLEL, dt.as_secs_f64() * 1e3, n_t as f64 / dt.as_secs_f64(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dtype_bytes(name: &str) -> usize {
+    match name {
+        "uint8" | "int8" => 1,
+        "uint16" | "int16" | "float16" => 2,
+        "float32" | "int32" | "uint32" => 4,
+        _ => 1,
+    }
+}
+
+fn read_subset_any(
+    arr: &zarrs::array::Array<dyn zarrs::storage::ReadableStorageTraits>,
+    dtype: &str,
+    subset: &zarrs::array::ArraySubset,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match dtype {
+        "uint8"   => { let _: Vec<u8>  = arr.retrieve_array_subset(subset)?; }
+        "uint16"  => { let _: Vec<u16> = arr.retrieve_array_subset(subset)?; }
+        "int8"    => { let _: Vec<i8>  = arr.retrieve_array_subset(subset)?; }
+        "int16"   => { let _: Vec<i16> = arr.retrieve_array_subset(subset)?; }
+        "float32" => { let _: Vec<f32> = arr.retrieve_array_subset(subset)?; }
+        "float16" => { let _: Vec<half::f16> = arr.retrieve_array_subset(subset)?; }
+        _ => return Err(format!("unsupported dtype {}", dtype).into()),
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -858,7 +1051,6 @@ fn flag_str_opt(args: &[String], name: &str) -> Option<String> {
 mod ome_zarr {
     use std::collections::HashSet;
     use std::error::Error;
-    use std::num::NonZeroUsize;
     use std::sync::{Arc, Mutex};
     use std::thread;
 
@@ -868,47 +1060,19 @@ mod ome_zarr {
     use bovista::visuals::virtual_texture::PendingChunks;
     use bovista::visuals::LodLevelConfig;
 
-    use lru::LruCache;
     use zarrs::array::{Array, ArraySubset};
     use zarrs::group::Group;
     use zarrs::storage::ReadableStorageTraits;
 
     use super::{SceneSetup, ViewState};
 
-    /// Decoded chunk payload (typed). Stored in the chunk cache so a swarm of
-    /// tile reads that touch the same disk chunk pays the decompression cost
-    /// only once.
-    enum CachedChunk {
-        U8 (Arc<Vec<u8>>),
-        U16(Arc<Vec<u16>>),
-        I8 (Arc<Vec<i8>>),
-        I16(Arc<Vec<i16>>),
-        F16(Arc<Vec<half::f16>>),
-        F32(Arc<Vec<f32>>),
-    }
-
-    /// LRU of decoded disk chunks, keyed by (LOD index, chunk-grid indices).
-    /// Each entry is a `OnceLock` so that the FIRST concurrent reader of an
-    /// uncached chunk does the read+decompress and ALL other readers of the
-    /// same chunk block on the OnceLock instead of duplicating the work.
-    /// Without this single-flight, bumping MAX_INFLIGHT just multiplies
-    /// CPU cost on identical chunks.
-    type ChunkCache = Arc<Mutex<LruCache<
-        (usize, Vec<u64>),
-        Arc<std::sync::OnceLock<Result<CachedChunk, String>>>,
-    >>>;
-
     /// Max number of zarr-chunk reads we'll have in flight at once. NFS/VAST
     /// happily serve many parallel readers; the cap is mostly to keep the
-    /// thread-spawn pile from getting ridiculous. The cache below means the
-    /// decompression cost of any one chunk is paid at most once per LOD.
+    /// thread-spawn pile from getting ridiculous. For sharded zarr v3 arrays
+    /// (e.g. zebrahub), `retrieve_array_subset` decodes only the inner chunks
+    /// intersecting the tile region rather than the whole outer shard, so
+    /// per-tile cost stays tens of ms even on multi-GB outer chunks.
     const MAX_INFLIGHT: usize = 32;
-
-    /// LRU capacity for the per-process chunk cache. Each entry holds one
-    /// decoded disk chunk; size in bytes varies wildly with dataset
-    /// (Beechnut ~2.4 MB/chunk vs zebrahub ~4 GB/chunk). 16 is enough to
-    /// cover the visible tile working set in either case.
-    const CHUNK_CACHE_CAP: usize = 16;
 
     /// Each LOD level we'll serve. We type-erase the storage so the same struct
     /// can hold either a filesystem or http store.
@@ -1124,14 +1288,10 @@ mod ome_zarr {
         let inflight: Arc<Mutex<HashSet<TileKey>>> = Arc::new(Mutex::new(HashSet::new()));
         let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
         let lods_for_loader = lods.clone();
-        let chunk_cache: ChunkCache = Arc::new(Mutex::new(
-            LruCache::new(NonZeroUsize::new(CHUNK_CACHE_CAP).unwrap()),
-        ));
 
         let pending_for_loader = pending_slot.clone();
         let levels_for_loader = levels.clone();
         let inflight_for_loader = inflight.clone();
-        let chunk_cache_for_loader = chunk_cache.clone();
         let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
             let lod = req.lod_level.unwrap_or(0);
             if lod >= levels_for_loader.len() {
@@ -1161,10 +1321,9 @@ mod ome_zarr {
             let lod_cfg = lods_for_loader[lod].clone();
             let inflight = inflight_for_loader.clone();
             let view_state = view_state.clone();
-            let chunk_cache = chunk_cache_for_loader.clone();
             thread::spawn(move || {
                 let t = view_state.timepoint();
-                let result = read_tile(&levels[lod], lod, &lod_cfg, key, t, &chunk_cache);
+                let result = read_tile(&levels[lod], &lod_cfg, key, t);
                 match result {
                     Ok(tile_data) => {
                         pending.lock().unwrap().insert(key, tile_data);
@@ -1209,24 +1368,18 @@ mod ome_zarr {
 
     /// Read the voxel sub-region for this tile and convert to R16Float bytes.
     ///
-    /// Fast path: when the tile lives entirely inside one disk chunk (the
-    /// common case after the MAX_TILE_AXIS clamp), look the chunk up in
-    /// `chunk_cache`. The cache uses `Arc<OnceLock<…>>` per entry so the
-    /// first concurrent reader pays the read+decompress cost and all other
-    /// readers of the same chunk block on the same OnceLock until it
-    /// completes — exactly one fetch per chunk per LOD, regardless of
-    /// MAX_INFLIGHT.
-    ///
-    /// Slow path: tile spans multiple chunks (edge tiles at chunk
-    /// boundaries; rare). Falls back to `retrieve_array_subset`, which is
-    /// uncached but correct for arbitrary sub-regions.
+    /// We always go through `retrieve_array_subset`, which respects the codec
+    /// pipeline including `sharding_indexed` — for a sharded array (e.g.
+    /// zebrahub: outer chunks 512×2048×2048 containing 1024 inner 128³
+    /// chunks), zarrs reads the shard index, seeks to just the inner chunks
+    /// that intersect this tile, and decompresses only those (~500 KB each
+    /// instead of the whole 4 GB shard). For non-sharded arrays the same
+    /// call decodes whatever outer chunks the tile intersects.
     fn read_tile(
         level: &Level,
-        lod_idx: usize,
         lod_cfg: &LodLevelConfig,
         key: TileKey,
         timepoint: u32,
-        chunk_cache: &ChunkCache,
     ) -> Result<TileData, Box<dyn Error + Send + Sync>> {
         let (tz, ty, tx) = lod_cfg.tile_size;
         let (vz, vy, vx) = level.volume_zyx;
@@ -1245,17 +1398,16 @@ mod ome_zarr {
         let extent_x = (x1 - x0) as u32;
 
         let ndim = level.array.shape().len();
-        let chunk_shape: Vec<u64> = level
-            .array
-            .chunk_shape(&vec![0u64; ndim])?
-            .iter()
-            .map(|d| d.get())
-            .collect();
-
-        let t_voxel = level.t_idx.map(|ti| {
+        let mut ranges: Vec<std::ops::Range<u64>> = (0..ndim).map(|_| 0..1).collect();
+        ranges[level.z_idx] = z0..z1;
+        ranges[level.y_idx] = y0..y1;
+        ranges[level.x_idx] = x0..x1;
+        if let Some(ti) = level.t_idx {
             let tmax = level.array.shape()[ti].saturating_sub(1) as u32;
-            timepoint.min(tmax) as u64
-        });
+            let t = timepoint.min(tmax) as u64;
+            ranges[ti] = t..(t + 1);
+        }
+        let subset = ArraySubset::new_with_ranges(&ranges);
 
         let dtype_name = level
             .array
@@ -1269,107 +1421,38 @@ mod ome_zarr {
             println!("[orbit] zarr dtype detected as: \"{}\"", dtype_name);
         });
 
-        // Single-chunk fast path: every spatial axis maps the tile range into
-        // exactly one chunk index.
-        let single_chunk = (z0 / chunk_shape[level.z_idx])
-                == ((z1 - 1) / chunk_shape[level.z_idx])
-            && (y0 / chunk_shape[level.y_idx])
-                == ((y1 - 1) / chunk_shape[level.y_idx])
-            && (x0 / chunk_shape[level.x_idx])
-                == ((x1 - 1) / chunk_shape[level.x_idx]);
-
-        let f16_bytes = if single_chunk {
-            let mut chunk_indices: Vec<u64> = vec![0; ndim];
-            chunk_indices[level.z_idx] = z0 / chunk_shape[level.z_idx];
-            chunk_indices[level.y_idx] = y0 / chunk_shape[level.y_idx];
-            chunk_indices[level.x_idx] = x0 / chunk_shape[level.x_idx];
-            if let (Some(ti), Some(tv)) = (level.t_idx, t_voxel) {
-                chunk_indices[ti] = tv / chunk_shape[ti];
+        let f16_bytes = match dtype_name.as_str() {
+            "uint8" => {
+                let v: Vec<u8> = level.array.retrieve_array_subset(&subset)?;
+                normalize_to_f16(&v, |x| x as f32 / 255.0)
             }
-
-            // OnceLock-based single-flight: insert an empty cell if missing,
-            // then race to fill it. Lock the LRU only across get/insert; the
-            // actual fetch happens outside the LRU lock so the LRU isn't
-            // serialized on slow NFS reads.
-            let cache_key = (lod_idx, chunk_indices.clone());
-            let cell: Arc<std::sync::OnceLock<Result<CachedChunk, String>>> = {
-                let mut cache = chunk_cache.lock().unwrap();
-                if let Some(existing) = cache.get(&cache_key) {
-                    existing.clone()
-                } else {
-                    let cell = Arc::new(std::sync::OnceLock::new());
-                    cache.put(cache_key.clone(), cell.clone());
-                    cell
-                }
-            };
-            let result: &Result<CachedChunk, String> = cell.get_or_init(|| {
-                fetch_chunk(&level.array, &chunk_indices, &dtype_name)
-                    .map_err(|e| e.to_string())
-            });
-            let chunk = match result {
-                Ok(c) => c,
-                Err(e) => return Err(e.clone().into()),
-            };
-
-            let z_origin = chunk_indices[level.z_idx] * chunk_shape[level.z_idx];
-            let y_origin = chunk_indices[level.y_idx] * chunk_shape[level.y_idx];
-            let x_origin = chunk_indices[level.x_idx] * chunk_shape[level.x_idx];
-            let local = SliceRanges {
-                z: (z0 - z_origin)..(z1 - z_origin),
-                y: (y0 - y_origin)..(y1 - y_origin),
-                x: (x0 - x_origin)..(x1 - x_origin),
-            };
-
-            slice_and_normalize(
-                chunk,
-                &chunk_shape,
-                level.z_idx, level.y_idx, level.x_idx,
-                &local,
-            )
-        } else {
-            // Multi-chunk: defer to zarrs's subset reader (uncached).
-            let mut ranges: Vec<std::ops::Range<u64>> = (0..ndim).map(|_| 0..1).collect();
-            ranges[level.z_idx] = z0..z1;
-            ranges[level.y_idx] = y0..y1;
-            ranges[level.x_idx] = x0..x1;
-            if let (Some(ti), Some(tv)) = (level.t_idx, t_voxel) {
-                ranges[ti] = tv..(tv + 1);
+            "uint16" => {
+                let v: Vec<u16> = level.array.retrieve_array_subset(&subset)?;
+                normalize_to_f16(&v, |x| x as f32 / 65535.0)
             }
-            let subset = ArraySubset::new_with_ranges(&ranges);
-
-            match dtype_name.as_str() {
-                "uint8" => {
-                    let v: Vec<u8> = level.array.retrieve_array_subset(&subset)?;
-                    normalize_to_f16(&v, |x| x as f32 / 255.0)
-                }
-                "uint16" => {
-                    let v: Vec<u16> = level.array.retrieve_array_subset(&subset)?;
-                    normalize_to_f16(&v, |x| x as f32 / 65535.0)
-                }
-                "int8" => {
-                    let v: Vec<i8> = level.array.retrieve_array_subset(&subset)?;
-                    normalize_to_f16(&v, |x| (x as f32 + 128.0) / 255.0)
-                }
-                "int16" => {
-                    let v: Vec<i16> = level.array.retrieve_array_subset(&subset)?;
-                    normalize_to_f16(&v, |x| (x as f32 + 32768.0) / 65535.0)
-                }
-                "float32" => {
-                    let v: Vec<f32> = level.array.retrieve_array_subset(&subset)?;
-                    normalize_to_f16(&v, |x| x.clamp(0.0, 1.0))
-                }
-                "float16" => {
-                    let v: Vec<half::f16> = level.array.retrieve_array_subset(&subset)?;
-                    let mut out = Vec::with_capacity(v.len() * 2);
-                    for x in v {
-                        let bits = x.to_bits();
-                        out.push((bits & 0xff) as u8);
-                        out.push((bits >> 8) as u8);
-                    }
-                    out
-                }
-                other => return Err(format!("unsupported zarr dtype: {}", other).into()),
+            "int8" => {
+                let v: Vec<i8> = level.array.retrieve_array_subset(&subset)?;
+                normalize_to_f16(&v, |x| (x as f32 + 128.0) / 255.0)
             }
+            "int16" => {
+                let v: Vec<i16> = level.array.retrieve_array_subset(&subset)?;
+                normalize_to_f16(&v, |x| (x as f32 + 32768.0) / 65535.0)
+            }
+            "float32" => {
+                let v: Vec<f32> = level.array.retrieve_array_subset(&subset)?;
+                normalize_to_f16(&v, |x| x.clamp(0.0, 1.0))
+            }
+            "float16" => {
+                let v: Vec<half::f16> = level.array.retrieve_array_subset(&subset)?;
+                let mut out = Vec::with_capacity(v.len() * 2);
+                for x in v {
+                    let bits = x.to_bits();
+                    out.push((bits & 0xff) as u8);
+                    out.push((bits >> 8) as u8);
+                }
+                out
+            }
+            other => return Err(format!("unsupported zarr dtype: {}", other).into()),
         };
 
         Ok(TileData {
@@ -1377,95 +1460,6 @@ mod ome_zarr {
             width: extent_x, height: extent_y, depth: extent_z,
             format: wgpu::TextureFormat::R16Float,
         })
-    }
-
-    struct SliceRanges {
-        z: std::ops::Range<u64>,
-        y: std::ops::Range<u64>,
-        x: std::ops::Range<u64>,
-    }
-
-    fn fetch_chunk(
-        array: &Array<dyn ReadableStorageTraits>,
-        chunk_indices: &[u64],
-        dtype_name: &str,
-    ) -> Result<CachedChunk, Box<dyn Error + Send + Sync>> {
-        Ok(match dtype_name {
-            "uint8"   => CachedChunk::U8 (Arc::new(array.retrieve_chunk(chunk_indices)?)),
-            "uint16"  => CachedChunk::U16(Arc::new(array.retrieve_chunk(chunk_indices)?)),
-            "int8"    => CachedChunk::I8 (Arc::new(array.retrieve_chunk(chunk_indices)?)),
-            "int16"   => CachedChunk::I16(Arc::new(array.retrieve_chunk(chunk_indices)?)),
-            "float16" => CachedChunk::F16(Arc::new(array.retrieve_chunk(chunk_indices)?)),
-            "float32" => CachedChunk::F32(Arc::new(array.retrieve_chunk(chunk_indices)?)),
-            other     => return Err(format!("unsupported zarr dtype: {}", other).into()),
-        })
-    }
-
-    /// Slice a (extent_z × extent_y × extent_x) sub-region from `chunk` and
-    /// normalize to R16Float bytes in one pass. Layout is C-order over the
-    /// full chunk shape; non-spatial axes contribute strides but their
-    /// local indices are 0 because we fetched a chunk for the relevant
-    /// (t, c) slab.
-    fn slice_and_normalize(
-        chunk: &CachedChunk,
-        chunk_shape: &[u64],
-        z_idx: usize, y_idx: usize, x_idx: usize,
-        local: &SliceRanges,
-    ) -> Vec<u8> {
-        let ndim = chunk_shape.len();
-        let mut strides = vec![1usize; ndim];
-        for i in (0..ndim.saturating_sub(1)).rev() {
-            strides[i] = strides[i + 1] * chunk_shape[i + 1] as usize;
-        }
-        let sz = strides[z_idx];
-        let sy = strides[y_idx];
-        let sx = strides[x_idx];
-
-        let nz = (local.z.end - local.z.start) as usize;
-        let ny = (local.y.end - local.y.start) as usize;
-        let nx = (local.x.end - local.x.start) as usize;
-        let z0 = local.z.start as usize;
-        let y0 = local.y.start as usize;
-        let x0 = local.x.start as usize;
-
-        let mut out = Vec::with_capacity(nz * ny * nx * 2);
-        macro_rules! walk {
-            ($buf:expr, $to_unit:expr) => {{
-                let buf: &[_] = &$buf;
-                for dz in 0..nz {
-                    for dy in 0..ny {
-                        let row_off = (z0 + dz) * sz + (y0 + dy) * sy + x0 * sx;
-                        for dx in 0..nx {
-                            let v = $to_unit(buf[row_off + dx * sx]);
-                            let bits = half::f16::from_f32(v).to_bits();
-                            out.push((bits & 0xff) as u8);
-                            out.push((bits >> 8) as u8);
-                        }
-                    }
-                }
-            }};
-        }
-
-        match chunk {
-            CachedChunk::U8 (b) => walk!(b, |x: u8|  x as f32 / 255.0),
-            CachedChunk::U16(b) => walk!(b, |x: u16| x as f32 / 65535.0),
-            CachedChunk::I8 (b) => walk!(b, |x: i8|  (x as f32 + 128.0) / 255.0),
-            CachedChunk::I16(b) => walk!(b, |x: i16| (x as f32 + 32768.0) / 65535.0),
-            CachedChunk::F32(b) => walk!(b, |x: f32| x.clamp(0.0, 1.0)),
-            CachedChunk::F16(b) => {
-                for dz in 0..nz {
-                    for dy in 0..ny {
-                        let row_off = (z0 + dz) * sz + (y0 + dy) * sy + x0 * sx;
-                        for dx in 0..nx {
-                            let bits = b[row_off + dx * sx].to_bits();
-                            out.push((bits & 0xff) as u8);
-                            out.push((bits >> 8) as u8);
-                        }
-                    }
-                }
-            }
-        }
-        out
     }
 
     fn normalize_to_f16<T: Copy>(src: &[T], to_unit: impl Fn(T) -> f32) -> Vec<u8> {
