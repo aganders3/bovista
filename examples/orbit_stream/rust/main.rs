@@ -1201,14 +1201,11 @@ const live = document.getElementById('live');
 const lagLabel = document.getElementById('lag_val');
 let chasing = false;
 
-// Leave ~1s of headroom from the live tip so the decoder/network jitter
-// can absorb without underflow. Going closer than that causes the
-// player to repeatedly stall.
-function snapToLive(headroom = 1.0) {
+function snapToLive(min_headroom = 0.1) {
   const b = live.buffered;
   if (b.length === 0) return false;
   const tip = b.end(b.length - 1);
-  live.currentTime = Math.max(0, tip - headroom);
+  live.currentTime = Math.max(0, tip - min_headroom);
   live.playbackRate = 1.0;
   chasing = false;
   return true;
@@ -1220,25 +1217,23 @@ function tick() {
   const tip = b.end(b.length - 1);
   const lag = tip - live.currentTime;
   if (lagLabel) lagLabel.textContent = lag.toFixed(2) + 's';
-  // Hard seek if the gap is huge (a background tab returning, a long
-  // stall). Otherwise drift gently via playbackRate.
-  if (lag > 3.0) {
-    snapToLive(1.0);
-  } else if (lag > 1.5 && !chasing) {
-    live.playbackRate = 1.1;
+  if (lag > 2.0) {
+    snapToLive(0.2);
+  } else if (lag > 0.6 && !chasing) {
+    live.playbackRate = 1.25;
     chasing = true;
-  } else if (lag < 1.0 && chasing) {
+  } else if (lag < 0.25 && chasing) {
     live.playbackRate = 1.0;
     chasing = false;
   }
 }
 setInterval(tick, 500);
 
-// On returning from a hidden tab, jump straight to live. Browsers keep
-// buffering bytes while paused so we typically come back many seconds
-// behind real time.
+// On returning from a hidden tab, jump straight to live. Browsers pause
+// video decode but keep buffering, so we typically come back many
+// seconds behind.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) snapToLive(1.0);
+  if (!document.hidden) snapToLive(0.2);
 });
 
 const fmt = { zoom: v=>(+v).toFixed(2)+'×',
