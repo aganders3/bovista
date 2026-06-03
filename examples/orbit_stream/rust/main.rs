@@ -1778,7 +1778,14 @@ mod ome_zarr {
                 // process_pending to drop on its visibility check.
                 let key = match scheduler.pop_best(
                     || view_state.timepoint(),
-                    |k| visible_snapshot.lock().unwrap().contains(&k.spatial()),
+                    |k| {
+                        // Empty snapshot ⇒ render thread hasn't yet run a
+                        // prepare-then-publish cycle; we have no info, so
+                        // assume visible rather than drop everything as
+                        // stale. Otherwise filter by membership.
+                        let s = visible_snapshot.lock().unwrap();
+                        s.is_empty() || s.contains(&k.spatial())
+                    },
                     3,
                 ) {
                     Some(k) => k,
