@@ -1770,8 +1770,14 @@ mod ome_zarr {
                         }
                     }
                     Err(e) => {
-                        eprintln!("[orbit] tile load failed (lod={} t={} z={} y={} x={}): {}",
+                        // Transient HTTP errors (connection resets, partial
+                        // responses) are common on public datasets. Re-push
+                        // so another worker retries; pop_best's stale-drop
+                        // handles the case where the user has scrubbed past
+                        // this tile in the meantime.
+                        eprintln!("[orbit] tile load failed (lod={} t={} z={} y={} x={}): {} (requeue)",
                                   key.lod_level, key.t, key.z, key.y, key.x, e);
+                        let _ = scheduler.push(key, view_state.timepoint());
                     }
                 }
             });
@@ -1904,14 +1910,23 @@ mod ome_zarr {
             loop {
                 let now_t = current_t();
                 let mut best: Option<TileKey> = None;
-                let mut best_pri = i32::MAX;
+                // Priority key: (t-distance, -lod_level). Lower is better.
+                // Negating lod_level makes COARSER tiles (higher lod_level)
+                // win the tiebreak at the same t-distance, so the volume
+                // "blocks in" at coarse LOD first and then refines to fine
+                // detail. Without this, the HashSet iteration order makes
+                // tile selection within a distance tier effectively random.
+                let mut best_key: (i32, i32) = (i32::MAX, i32::MAX);
                 let mut stale: Vec<TileKey> = Vec::new();
                 for &k in q.iter() {
                     let pri = (k.t as i32 - now_t as i32).abs();
                     if pri > max_useful_dist {
                         stale.push(k);
-                    } else if pri < best_pri {
-                        best_pri = pri;
+                        continue;
+                    }
+                    let cand_key = (pri, -(k.lod_level as i32));
+                    if cand_key < best_key {
+                        best_key = cand_key;
                         best = Some(k);
                     }
                 }
