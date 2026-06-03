@@ -4,7 +4,6 @@ const _SHADER_HASH: &str = env!("SHADER_HASH");
 use crate::visual::{Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
 use crate::visuals::gpu_structs::{TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
-use crate::visuals::gpu_structs::TileLoaderFn;
 use wgpu::RenderPass;
 
 /// Slice plane defined by position and normal vector
@@ -107,7 +106,6 @@ impl ImageVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
-        loader: TileLoaderFn,
     ) -> Self {
         let (depth, _height, _width) = if !lod_levels.is_empty() {
             lod_levels[0].volume_size
@@ -115,7 +113,7 @@ impl ImageVisual {
             (1, 1, 1)
         };
 
-        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles, loader);
+        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles);
 
         // Atlas sampler (linear for smooth interpolation across tile boundaries)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -357,9 +355,8 @@ impl ImageVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
-        loader: TileLoaderFn,
     ) -> Self {
-        Self::new(device, queue, surface_format, camera_bind_group_layout, lod_levels, max_tiles, loader)
+        Self::new(device, queue, surface_format, camera_bind_group_layout, lod_levels, max_tiles)
     }
 
     /// Set the slice plane to a specific Z coordinate (XY plane)

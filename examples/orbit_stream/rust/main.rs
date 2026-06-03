@@ -37,7 +37,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use bovista::visual::CameraInfo;
-use bovista::visuals::gpu_structs::{ChunkStatus, TileData, TileKey, TileLoaderFn, TileRequest};
+use bovista::visuals::gpu_structs::{TileData, TileKey};
 use bovista::visuals::virtual_texture::PendingChunks;
 use bovista::visuals::{LodLevelConfig, VolumeVisual};
 use bovista::{Camera, ProjectionMode, Renderer, Scene};
@@ -198,7 +198,7 @@ fn main() {
     let mut volume = VolumeVisual::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
         renderer.camera_bind_group_layout(),
-        setup.lods.clone(), cache_capacity as usize, setup.loader,
+        setup.lods.clone(), cache_capacity as usize,
     );
     *setup.pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
     *setup.wanted_slot.lock().unwrap() = Some(volume.wanted_handle());
@@ -552,7 +552,6 @@ fn render_one_frame(
 
 struct SceneSetup {
     lods: Vec<LodLevelConfig>,
-    loader: TileLoaderFn,
     pending_slot: Arc<Mutex<Option<PendingChunks>>>,
     /// World-space extents of LOD 0 along (z, y, x). Used to size the camera orbit.
     world_extents: (f32, f32, f32),
@@ -573,23 +572,29 @@ struct SceneSetup {
 fn synthetic_setup() -> SceneSetup {
     let tile_bytes = Arc::new(generate_cube_volume_r16f(VOLUME_DIM));
     let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
-    let pending_for_loader = pending_slot.clone();
-    let tile_bytes_for_loader = tile_bytes.clone();
-    let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
-        let Some(pc) = pending_for_loader.lock().unwrap().clone() else {
-            return ChunkStatus::Rejected;
-        };
-        let key = TileKey {
-            lod_level: req.lod_level.unwrap_or(0),
-            t: req.t, z: req.z, y: req.y, x: req.x,
-        };
-        pc.lock().unwrap().insert(key, TileData {
-            data: (*tile_bytes_for_loader).clone(),
-            width: VOLUME_DIM, height: VOLUME_DIM, depth: VOLUME_DIM,
-            format: wgpu::TextureFormat::R16Float,
+    // Background thread: poll the wanted map, push synthetic tiles
+    // into pending for any key that shows up.
+    let wanted_slot: Arc<Mutex<Option<bovista::visuals::virtual_texture::Wanted>>> =
+        Arc::new(Mutex::new(None));
+    {
+        let pending_slot = pending_slot.clone();
+        let wanted_slot = wanted_slot.clone();
+        let tile_bytes = tile_bytes.clone();
+        std::thread::spawn(move || loop {
+            let wanted = wanted_slot.lock().unwrap().clone();
+            if let (Some(w), Some(p)) = (wanted, pending_slot.lock().unwrap().clone()) {
+                let keys: Vec<TileKey> = w.lock().unwrap().keys().copied().collect();
+                for k in keys {
+                    p.lock().unwrap().insert(k, TileData {
+                        data: (*tile_bytes).clone(),
+                        width: VOLUME_DIM, height: VOLUME_DIM, depth: VOLUME_DIM,
+                        format: wgpu::TextureFormat::R16Float,
+                    });
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         });
-        ChunkStatus::Accepted
-    });
+    }
     let half = VOLUME_DIM as f32 / 2.0;
     let lod = LodLevelConfig {
         volume_size: (VOLUME_DIM, VOLUME_DIM, VOLUME_DIM),
@@ -600,13 +605,12 @@ fn synthetic_setup() -> SceneSetup {
     };
     SceneSetup {
         lods: vec![lod],
-        loader,
         pending_slot,
         world_extents: (VOLUME_DIM as f32, VOLUME_DIM as f32, VOLUME_DIM as f32),
         cache_capacity: 1,
         n_timepoints: 1,
         queue_count_at: Arc::new(|_| 0),
-        wanted_slot: Arc::new(Mutex::new(None)),
+        wanted_slot,
     }
 }
 
@@ -1506,7 +1510,7 @@ mod ome_zarr {
     use std::time::Duration;
 
     use bovista::visuals::gpu_structs::{
-        ChunkStatus, TileData, TileKey, TileLoaderFn,
+        TileData, TileKey,
     };
     use bovista::visuals::virtual_texture::PendingChunks;
     use bovista::visuals::LodLevelConfig;
@@ -1827,18 +1831,10 @@ mod ome_zarr {
             });
         }
 
-        // Bovista still requires a TileLoaderFn at construction; the
-        // pull-based design makes it a no-op. Bovista's request_tile
-        // path runs and inserts into `requested_keys` but nothing else
-        // listens — the wanted map (rebuilt at the end of every
-        // prepare) is the single source of truth the loader pool reads.
-        let loader: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
-
         println!("[orbit] OME-Zarr: t axis has {} timepoint(s)", n_timepoints);
 
         Ok(SceneSetup {
             lods,
-            loader,
             pending_slot,
             world_extents,
             cache_capacity: 4096,

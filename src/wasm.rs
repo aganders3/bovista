@@ -4,18 +4,6 @@
 
 use wasm_bindgen::prelude::*;
 
-/// Chunk loading status returned by the chunk loader callback
-#[wasm_bindgen]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JsChunkStatus {
-    /// The chunk request was accepted and will be loaded asynchronously
-    Accepted = 0,
-    /// The chunk is already being loaded (request is pending)
-    AlreadyPending = 1,
-    /// The chunk request was rejected (e.g., at capacity)
-    Rejected = 2,
-}
-
 /// Camera projection mode
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +41,7 @@ use crate::{
     bindings_common::{self, VisualRef},
     Camera, ImageVisual, LinesVisual, PointsVisual, VolumeVisual, Renderer, Scene, SlicePlane,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
-    visuals::gpu_structs::{TileLoaderFn, ChunkStatus, TileData, TileKey},
+    visuals::gpu_structs::{TileData, TileKey},
     visuals::points::PointVertex,
     visuals::lines::LineVertex,
 };
@@ -415,8 +403,6 @@ impl JsImageVisual {
         let rust_levels: Vec<LodLevelConfig> =
             levels.iter().map(|l| l.to_lod_level_config()).collect();
 
-        let loader_fn: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
-
         let renderer = viewer.renderer();
         let visual = ImageVisual::new(
             renderer.device(),
@@ -425,7 +411,6 @@ impl JsImageVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_chunks,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks();
@@ -588,8 +573,6 @@ impl JsVolumeVisual {
         let rust_levels: Vec<LodLevelConfig> =
             levels.iter().map(|l| l.to_lod_level_config()).collect();
 
-        let loader_fn: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
-
         let renderer = viewer.renderer();
         let visual = VolumeVisual::new(
             renderer.device(),
@@ -598,7 +581,6 @@ impl JsVolumeVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_chunks,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks();

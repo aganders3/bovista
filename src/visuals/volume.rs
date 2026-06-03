@@ -4,7 +4,6 @@ const _SHADER_HASH: &str = env!("SHADER_HASH");
 use crate::visual::{Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
 use crate::visuals::gpu_structs::{VolumeVertex, VolumeUniforms, VTUniforms, VTLodInfo, VT_MAX_LODS};
-use crate::visuals::gpu_structs::TileLoaderFn;
 use bytemuck::{Pod, Zeroable};
 use wgpu::RenderPass;
 
@@ -103,7 +102,6 @@ impl VolumeVisual {
     /// # Arguments
     /// * `lod_levels` - Configuration for each LOD level (finest to coarsest)
     /// * `max_tiles`  - Atlas capacity (number of simultaneously resident tiles)
-    /// * `loader`     - Callback invoked when a tile is needed
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -111,9 +109,8 @@ impl VolumeVisual {
         _camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
-        loader: TileLoaderFn,
     ) -> Self {
-        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles, loader);
+        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles);
 
         // Atlas sampler
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {

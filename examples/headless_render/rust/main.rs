@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
 
-use bovista::visuals::gpu_structs::{ChunkStatus, TileData, TileKey, TileLoaderFn};
+use bovista::visuals::gpu_structs::{TileData, TileKey};
 use bovista::visuals::{LodLevelConfig, VolumeVisual};
 use bovista::visual::CameraInfo;
 use bovista::{Camera, ProjectionMode, Renderer, Scene};
@@ -152,11 +152,6 @@ fn main() {
     println!("[headless] synthetic volume: {0}x{0}x{0} R16Float ({1} bytes)",
              VOLUME_DIM, tile_bytes.len());
 
-    // Pull-based: bovista publishes `wanted` at the end of each
-    // prepare; we synthesize whatever it asks for and push to pending.
-    // No-op loader because the constructor still requires one.
-    let loader: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
-
     // Center the volume on the origin: translation = -half_size on each axis.
     let half = VOLUME_DIM as f32 / 2.0;
     let lod = LodLevelConfig {
@@ -174,7 +169,6 @@ fn main() {
         renderer.camera_bind_group_layout(),
         vec![lod],
         1,
-        loader,
     );
     // Background fill thread: on every poll, snapshot bovista's
     // `wanted` set and push synthetic tiles for everything in it.

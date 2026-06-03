@@ -8,72 +8,6 @@ use glam::Vec3;
 use std::sync::Arc;
 use wgpu::{BindGroup, Buffer, Texture, TextureView};
 
-/// Unified request for a chunk/tile of image data
-///
-/// This structure supports both simple chunked loading (via voxel coordinates)
-/// and multi-resolution tiled loading (via LOD level and chunk grid coordinates).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TileRequest {
-    /// LOD level (0 = highest resolution, None = no LOD hierarchy)
-    pub lod_level: Option<usize>,
-
-    /// Timepoint index for temporal datasets. 0 for non-temporal.
-    pub t: u32,
-
-    /// X coordinate in chunk grid (for tiled) or voxel space (for simple chunks)
-    pub x: u32,
-
-    /// Y coordinate in chunk grid (for tiled) or voxel space (for simple chunks)
-    pub y: u32,
-
-    /// Z coordinate in chunk grid (for tiled) or voxel space (for simple chunks)
-    pub z: u32,
-
-    /// Width in voxels (optional, for simple chunks that specify size)
-    pub width: Option<u32>,
-
-    /// Height in voxels (optional, for simple chunks that specify size)
-    pub height: Option<u32>,
-
-    /// Depth in voxels (optional, for simple chunks that specify size)
-    pub depth: Option<u32>,
-}
-
-impl TileRequest {
-    /// Create a tile request for multiscale tiled loading (non-temporal).
-    pub fn from_grid(lod_level: usize, chunk_x: u32, chunk_y: u32, chunk_z: u32) -> Self {
-        Self::from_grid_t(lod_level, 0, chunk_x, chunk_y, chunk_z)
-    }
-
-    /// Create a tile request for multiscale tiled loading at a specific timepoint.
-    pub fn from_grid_t(lod_level: usize, t: u32, chunk_x: u32, chunk_y: u32, chunk_z: u32) -> Self {
-        Self {
-            lod_level: Some(lod_level),
-            t,
-            x: chunk_x,
-            y: chunk_y,
-            z: chunk_z,
-            width: None,
-            height: None,
-            depth: None,
-        }
-    }
-
-    /// Create a tile request for simple chunked loading with voxel coordinates
-    pub fn from_voxels(x: u32, y: u32, z: u32, width: u32, height: u32, depth: u32) -> Self {
-        Self {
-            lod_level: None,
-            t: 0,
-            x,
-            y,
-            z,
-            width: Some(width),
-            height: Some(height),
-            depth: Some(depth),
-        }
-    }
-}
-
 /// Response containing tile/chunk data
 #[derive(Debug, Clone)]
 pub struct TileData {
@@ -450,31 +384,6 @@ impl Default for TileUniforms {
         }
     }
 }
-
-/// Status returned by tile loader callback
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChunkStatus {
-    /// The chunk request was accepted and will be loaded asynchronously
-    Accepted,
-    /// The chunk is already being loaded (request is pending)
-    AlreadyPending,
-    /// The chunk request was rejected (e.g., at capacity)
-    Rejected,
-}
-
-/// Type alias for tile loader callback
-///
-/// The callback receives a TileRequest and should return ChunkStatus indicating
-/// whether the request was accepted, is already pending, or was rejected.
-/// When the chunk is ready, the loader should call set_chunk_data() on the strategy.
-///
-/// IMPORTANT: The loader is responsible for implementing backpressure control
-/// by returning ChunkStatus::Rejected when it cannot accept more requests.
-#[cfg(not(target_arch = "wasm32"))]
-pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus + Send + Sync>;
-
-#[cfg(target_arch = "wasm32")]
-pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus>;
 
 // ============================================================================
 // Geometry Utilities

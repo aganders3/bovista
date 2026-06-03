@@ -13,18 +13,6 @@ use crate::{
 };
 use bovista_codegen::{camera_methods, visual_methods};
 
-/// Python wrapper for ChunkStatus enum
-#[pyclass(name = "ChunkStatus", eq, eq_int)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PyChunkStatus {
-    /// The chunk request was accepted and will be loaded asynchronously
-    Accepted = 0,
-    /// The chunk is already being loaded (request is pending)
-    AlreadyPending = 1,
-    /// The chunk request was rejected (e.g., at capacity)
-    Rejected = 2,
-}
-
 /// Python wrapper for ProjectionMode enum
 #[pyclass(name = "ProjectionMode", eq, eq_int)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -830,9 +818,6 @@ impl PyImageVisual {
         // Pull-based: bovista publishes `wanted` each prepare; Python
         // polls it via `wanted_keys()` and pushes data via
         // `set_chunk_data_u16(...)`. No callback.
-        use crate::visuals::gpu_structs::{TileLoaderFn, ChunkStatus};
-        let loader_fn: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
-
         let visual = ImageVisual::new(
             renderer.device(),
             renderer.queue(),
@@ -840,7 +825,6 @@ impl PyImageVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_tiles,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks().unwrap();
@@ -1182,9 +1166,6 @@ impl PyVolumeVisual {
             .collect();
 
         // Pull-based: see PyImageVisual::new for the rationale.
-        use crate::visuals::gpu_structs::{TileLoaderFn, ChunkStatus};
-        let loader_fn: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
-
         use crate::visuals::VolumeVisual;
         let visual = VolumeVisual::new(
             renderer.device(),
@@ -1193,7 +1174,6 @@ impl PyVolumeVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_tiles,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks().unwrap();
@@ -1339,7 +1319,6 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLevelMetadata>()?;
     m.add_class::<PyCustomVisual>()?;
     m.add_class::<PyVertexBufferLayout>()?;
-    m.add_class::<PyChunkStatus>()?;
     m.add_class::<PyProjectionMode>()?;
     Ok(())
 }

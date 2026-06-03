@@ -1,13 +1,10 @@
 //! Virtual-texture rendering data: atlas, page table, LOD selection, tile streaming.
 
-use crate::visuals::gpu_structs::{
-    ChunkStatus, TileData, TileKey, TileLoaderFn, TileRequest, AABB,
-};
+use crate::visuals::gpu_structs::{TileData, TileKey, AABB};
 use crate::visuals::image::SlicePlane;
 use crate::visuals::atlas::AtlasAllocator;
 use crate::visuals::page_table::PageTable;
 use glam::Vec3;
-use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use wgpu::{Device, Queue};
@@ -90,17 +87,16 @@ pub struct VirtualTextureData {
     // TileKey → last frame the tile was accessed
     lru_map: HashMap<TileKey, u64>,
 
-    // Loader / pending-chunk infrastructure
+    /// Tile bytes that have been fetched (by whoever the consumer
+    /// wired up) and are waiting to be uploaded to the atlas. Drained
+    /// at the top of every prepare via `process_pending_chunks`.
     pub pending_chunks: PendingChunks,
     /// Set of tiles bovista currently wants resident in the atlas,
     /// keyed by full TileKey. Value is priority (lower = more urgent;
-    /// 0 means "user is looking at this t now"). REBUILT atomically
+    /// 0 means "user is looking at this t now"). Rebuilt atomically
     /// from scratch at the end of every prepare; loaders read it and
-    /// decide what to fetch and in what order. No callbacks, no push-
-    /// side scheduling, no in-flight tracking on the bovista side.
+    /// decide what to fetch and in what order. No callbacks.
     pub wanted: Wanted,
-    requested_keys: HashSet<TileKey>,
-    loader: TileLoaderFn,
 
     pub max_tiles: usize,
     frame_counter: u64,
@@ -135,7 +131,6 @@ impl VirtualTextureData {
         device: &Device,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
-        loader: TileLoaderFn,
     ) -> Self {
         assert!(!lod_levels.is_empty(), "VirtualTextureData requires at least one LOD level");
 
@@ -199,8 +194,6 @@ impl VirtualTextureData {
             lru_map: HashMap::new(),
             pending_chunks: Arc::new(Mutex::new(HashMap::new())),
             wanted: Arc::new(Mutex::new(HashMap::new())),
-            requested_keys: HashSet::new(),
-            loader,
             max_tiles,
             frame_counter: 0,
             visible_tile_keys: HashSet::new(),
@@ -264,7 +257,7 @@ impl VirtualTextureData {
         self.last_written_slot.clear();
         self.slot_map.clear();
         self.lru_map.clear();
-        self.requested_keys.clear();
+        self.wanted.lock().unwrap().clear();
         self.pending_chunks.lock().unwrap().clear();
         self.atlas_allocator.reset();
     }
@@ -313,17 +306,10 @@ impl VirtualTextureData {
             // Visibility is spatial — tiles at neighbor timepoints share
             // the same spatial as the user's current frame, so they pass.
             if !self.visible_tile_keys.contains(&key.spatial()) {
-                self.requested_keys.remove(&key);
                 continue;
             }
-            // pick_slot handles allocation + eviction in one shot. Returns
-            // None only when no resident slot is lower-priority than this
-            // incoming tile (e.g. trying to prefetch t+5 while every slot
-            // already holds something closer to desired_t).
-            let Some(slot) = self.pick_slot(queue, key.t) else {
-                self.requested_keys.remove(&key);
-                continue;
-            };
+            // pick_slot handles allocation + eviction in one shot.
+            let Some(slot) = self.pick_slot(queue, key.t) else { continue; };
 
             self.write_tile_to_atlas(queue, slot, &data);
 
@@ -446,7 +432,6 @@ impl VirtualTextureData {
         }
         self.slot_map.remove(&victim_key);
         self.lru_map.remove(&victim_key);
-        self.requested_keys.remove(&victim_key);
         self.atlas_allocator.free(victim_slot);
         let spatial = victim_key.spatial();
         if self.last_written_slot.get(&spatial) == Some(&victim_slot) {
@@ -455,23 +440,6 @@ impl VirtualTextureData {
             self.last_written_slot.remove(&spatial);
         }
         self.atlas_allocator.alloc()
-    }
-
-    fn request_tile(&mut self, key: TileKey) -> ChunkStatus {
-        if self.requested_keys.contains(&key)
-            || self.pending_chunks.lock().unwrap().contains_key(&key)
-        {
-            return ChunkStatus::AlreadyPending;
-        }
-
-        let TileKey { lod_level, t, z, y, x } = key;
-        let request = TileRequest::from_grid_t(lod_level, t, x, y, z);
-        let status = (self.loader)(request);
-
-        if status == ChunkStatus::Accepted {
-            self.requested_keys.insert(key);
-        }
-        status
     }
 
     // ── Visibility / LOD selection ────────────────────────────────────────────
@@ -757,15 +725,8 @@ impl VirtualTextureData {
     ) {
         self.frame_counter = frame_number;
         self.update_visible_tiles_volume(camera_info);
-        // Keep requests whose SPATIAL key is still visible (covers prefetched
-        // future-timepoint requests where camera hasn't moved) or whose tile
-        // already arrived in slot_map.
-        self.requested_keys.retain(|k|
-            self.visible_tile_keys.contains(&k.spatial()) || self.slot_map.contains_key(k)
-        );
-        // Touch LRU for the slots that are currently being displayed
-        // (those at desired_t — anything else can't pass the shader's
-        // t-filter, so it isn't on screen).
+        // Touch LRU for displayed slots (at desired_t — anything else
+        // is shader-filtered out by the page-table t-compare).
         let target = self.desired_t;
         for spatial in &self.visible_tile_keys {
             let key = TileKey { lod_level: spatial.lod_level, t: target,
@@ -775,59 +736,10 @@ impl VirtualTextureData {
             }
         }
         self.process_pending_chunks(queue);
-        // Request visible tiles at desired_t (where the user is heading).
-        let target_t = self.desired_t;
-        let mut visible: Vec<TileKey> = self.visible_tile_keys.iter()
-            .map(|s| TileKey { lod_level: s.lod_level, t: target_t,
-                               z: s.z, y: s.y, x: s.x })
-            .collect();
-        visible.sort_by_key(|k| Reverse(k.lod_level));
-        for key in visible {
-            if self.slot_map.contains_key(&key) { continue; }
-            match self.request_tile(key) {
-                ChunkStatus::Accepted | ChunkStatus::AlreadyPending => {}
-                ChunkStatus::Rejected => break,
-            }
-        }
-        self.prefetch_forward(target_t);
-        // Once all visible-at-desired-t tiles have arrived, flip the page
-        // table. Single in-frame swap, no flicker.
         self.refresh_page_table(queue);
+        // Publish what we want; the loader (whoever wired one up) picks
+        // it up on its next poll.
         self.publish_wanted();
-    }
-
-    /// Prefetch the next N timepoints after `target_t`. Runs every
-    /// prepare — no throttling needed because (a) `request_tile`
-    /// dedupes against `requested_keys` + slot_map so already-issued
-    /// or already-resident tiles cost only a HashMap lookup, and
-    /// (b) `refresh_page_table` is gated by `last_written_slot` so
-    /// it does zero `queue.write_texture` calls in steady state.
-    ///
-    /// Look-ahead only is sufficient because the recently-displayed
-    /// past stays resident via the LRU pool — eviction starts from the
-    /// LEAST-recently-used, so t-1, t-2 from the user's scrubbing
-    /// trail are still in the atlas. Asymmetric look-ahead uses budget
-    /// on what we DON'T already have.
-    fn prefetch_forward(&mut self, target_t: u32) {
-        let lookahead = self.prefetch_lookahead as i32;
-        if lookahead == 0 || self.t_count <= 1 { return; }
-        'pref: for offset in 1..=lookahead {
-            let pt = target_t as i32 + offset;
-            if pt >= self.t_count as i32 { break; }
-            let pt = pt as u32;
-            let mut pre: Vec<TileKey> = self.visible_tile_keys.iter()
-                .map(|s| TileKey { lod_level: s.lod_level, t: pt,
-                                   z: s.z, y: s.y, x: s.x })
-                .collect();
-            pre.sort_by_key(|k| Reverse(k.lod_level));
-            for key in pre {
-                if self.slot_map.contains_key(&key) { continue; }
-                match self.request_tile(key) {
-                    ChunkStatus::Accepted | ChunkStatus::AlreadyPending => {}
-                    ChunkStatus::Rejected => break 'pref,
-                }
-            }
-        }
     }
 
     // ── Main prepare ─────────────────────────────────────────────────────────
@@ -840,14 +752,7 @@ impl VirtualTextureData {
         camera_info: &crate::visual::CameraInfo,
     ) {
         self.frame_counter = frame_number;
-
         self.update_visible_tiles(slice_plane, camera_info);
-
-        // Visibility is spatial — keep requests + slots whose (lod, z, y, x)
-        // is still visible regardless of their timepoint.
-        self.requested_keys.retain(|k|
-            self.visible_tile_keys.contains(&k.spatial()) || self.slot_map.contains_key(k)
-        );
 
         // Touch LRU for displayed slots (at desired_t — anything else
         // is shader-filtered).
@@ -861,22 +766,6 @@ impl VirtualTextureData {
         }
 
         self.process_pending_chunks(queue);
-
-        // Request tiles at the timepoint the caller wants to display next.
-        let target_t = self.desired_t;
-        let mut visible: Vec<TileKey> = self.visible_tile_keys.iter()
-            .map(|s| TileKey { lod_level: s.lod_level, t: target_t,
-                               z: s.z, y: s.y, x: s.x })
-            .collect();
-        visible.sort_by_key(|k| Reverse(k.lod_level));
-        for key in visible {
-            if self.slot_map.contains_key(&key) { continue; }
-            match self.request_tile(key) {
-                ChunkStatus::Accepted | ChunkStatus::AlreadyPending => {}
-                ChunkStatus::Rejected => break,
-            }
-        }
-        self.prefetch_forward(target_t);
         self.refresh_page_table(queue);
         self.publish_wanted();
     }
