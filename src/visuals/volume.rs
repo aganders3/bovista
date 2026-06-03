@@ -419,6 +419,13 @@ impl VolumeVisual {
         Some(self.strategy.pending_chunks.clone())
     }
 
+    /// Shared handle to the "tiles bovista wants" map. Loaders read
+    /// this to decide what to fetch and in what order; written by
+    /// bovista at the end of each `prepare`.
+    pub fn wanted_handle(&self) -> crate::visuals::virtual_texture::Wanted {
+        self.strategy.wanted.clone()
+    }
+
     /// Drop every loaded tile so the next frame re-requests visible tiles.
     /// Rarely needed now that TileKey includes `t` — prefer
     /// `set_desired_timepoint(t)` which keeps adjacent timepoints resident

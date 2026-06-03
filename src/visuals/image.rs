@@ -441,6 +441,12 @@ impl ImageVisual {
         Some(self.strategy.pending_chunks.clone())
     }
 
+    /// Shared handle to the "tiles bovista wants" map. Loaders read
+    /// this to decide what to fetch and in what order.
+    pub fn wanted_handle(&self) -> crate::visuals::virtual_texture::Wanted {
+        self.strategy.wanted.clone()
+    }
+
     /// Request that the image display timepoint `t`. Identical semantics
     /// to `VolumeVisual::set_desired_timepoint` — page table flips once
     /// the visible tiles for `t` have arrived.

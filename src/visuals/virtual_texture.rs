@@ -15,6 +15,12 @@ use wgpu::{Device, Queue};
 /// Type alias for pending chunks queue (can be shared across threads)
 pub type PendingChunks = Arc<Mutex<HashMap<TileKey, TileData>>>;
 
+/// Set of tiles bovista currently wants in the atlas, keyed by full
+/// TileKey, value = priority (lower = more urgent). Rebuilt from
+/// scratch at the end of every prepare; loaders read it to decide
+/// what to fetch.
+pub type Wanted = Arc<Mutex<HashMap<TileKey, i32>>>;
+
 /// Configuration for a single LOD level in the pyramid
 #[derive(Debug, Clone)]
 pub struct LodLevelConfig {
@@ -86,6 +92,13 @@ pub struct VirtualTextureData {
 
     // Loader / pending-chunk infrastructure
     pub pending_chunks: PendingChunks,
+    /// Set of tiles bovista currently wants resident in the atlas,
+    /// keyed by full TileKey. Value is priority (lower = more urgent;
+    /// 0 means "user is looking at this t now"). REBUILT atomically
+    /// from scratch at the end of every prepare; loaders read it and
+    /// decide what to fetch and in what order. No callbacks, no push-
+    /// side scheduling, no in-flight tracking on the bovista side.
+    pub wanted: Wanted,
     requested_keys: HashSet<TileKey>,
     loader: TileLoaderFn,
 
@@ -185,6 +198,7 @@ impl VirtualTextureData {
             last_written_slot: HashMap::new(),
             lru_map: HashMap::new(),
             pending_chunks: Arc::new(Mutex::new(HashMap::new())),
+            wanted: Arc::new(Mutex::new(HashMap::new())),
             requested_keys: HashSet::new(),
             loader,
             max_tiles,
@@ -344,6 +358,34 @@ impl VirtualTextureData {
     /// In steady state (page table fully wired for desired_t), this runs
     /// zero `queue.write_texture` calls.
     ///
+    /// Rebuild `wanted` atomically from current state: every visible
+    /// spatial at `desired_t` (priority 0), plus the next N prefetch
+    /// timepoints (priority = offset), skipping anything already in
+    /// `slot_map`. Loaders read this map and decide what to fetch and
+    /// in what order.
+    fn publish_wanted(&self) {
+        let lookahead = self.prefetch_lookahead as i32;
+        let mut next: HashMap<TileKey, i32> = HashMap::with_capacity(
+            self.visible_tile_keys.len() * (1 + lookahead.max(0) as usize),
+        );
+        for spatial in &self.visible_tile_keys {
+            for offset in 0..=lookahead {
+                let t_i = self.desired_t as i32 + offset;
+                if t_i < 0 || (self.t_count > 1 && t_i >= self.t_count as i32) {
+                    continue;
+                }
+                let key = TileKey {
+                    lod_level: spatial.lod_level,
+                    t: t_i as u32,
+                    z: spatial.z, y: spatial.y, x: spatial.x,
+                };
+                if self.slot_map.contains_key(&key) { continue; }
+                next.insert(key, offset);
+            }
+        }
+        *self.wanted.lock().unwrap() = next;
+    }
+
     /// O(visible) per call; cheap enough to run every prepare.
     fn refresh_page_table(&mut self, queue: &Queue) {
         let target = self.desired_t;
@@ -751,6 +793,7 @@ impl VirtualTextureData {
         // Once all visible-at-desired-t tiles have arrived, flip the page
         // table. Single in-frame swap, no flicker.
         self.refresh_page_table(queue);
+        self.publish_wanted();
     }
 
     /// Prefetch the next N timepoints after `target_t`. Runs every
@@ -835,5 +878,6 @@ impl VirtualTextureData {
         }
         self.prefetch_forward(target_t);
         self.refresh_page_table(queue);
+        self.publish_wanted();
     }
 }
