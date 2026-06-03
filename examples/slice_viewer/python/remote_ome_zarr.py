@@ -9,6 +9,7 @@ import sys
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+import threading
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QHBoxLayout, QPushButton, QLabel, QSlider, QComboBox)
 from PyQt6.QtCore import Qt, QTimer
@@ -435,93 +436,92 @@ class MainWindow(QMainWindow):
                 self.executor.shutdown(wait=False)
             self.executor = ThreadPoolExecutor(max_workers=8)
 
-            # Create loader closure
-            def create_loader():
-                image = None
-                pending = {}
-                lock = Lock()
+            def load_chunk(lod, t, z, y, x):
+                try:
+                    path = datasets[lod].get("path", str(lod))
+                    arr = store[path]
+                    level = lod_levels[lod]
+                    cz, cy, cx = level.chunk_size
 
-                def load_chunk(lod, z, y, x):
-                    try:
-                        path = datasets[lod].get("path", str(lod))
-                        arr = store[path]
-                        level = lod_levels[lod]
-                        cz, cy, cx = level.chunk_size
+                    z_slice = slice(z * cz, min((z + 1) * cz, level.volume_size[0]))
+                    y_slice = slice(y * cy, min((y + 1) * cy, level.volume_size[1]))
+                    x_slice = slice(x * cx, min((x + 1) * cx, level.volume_size[2]))
 
-                        # Calculate slice bounds
-                        z_slice = slice(z * cz, min((z + 1) * cz, level.volume_size[0]))
-                        y_slice = slice(y * cy, min((y + 1) * cy, level.volume_size[1]))
-                        x_slice = slice(x * cx, min((x + 1) * cx, level.volume_size[2]))
+                    slices = [0] * len(arr.shape)
+                    slices[z_idx] = z_slice
+                    slices[y_idx] = y_slice
+                    slices[x_idx] = x_slice
+                    # This example doesn't expose t to the UI — t is always 0.
+                    # Real temporal viewers should plumb t through here too.
 
-                        # Build full slicing tuple (handle non-spatial dimensions)
-                        slices = [0] * len(arr.shape)  # Default to first index for non-spatial
-                        slices[z_idx] = z_slice
-                        slices[y_idx] = y_slice
-                        slices[x_idx] = x_slice
-
-                        # Load data — pass uint8 or uint16 directly; Rust handles both
-                        data = arr[tuple(slices)]
-                        if data.dtype == np.uint8:
-                            return np.ascontiguousarray(data)
-                        elif data.dtype == np.uint16:
-                            return np.ascontiguousarray(data)
-                        elif np.issubdtype(data.dtype, np.integer):
-                            # Other integer types: normalize to uint16 to preserve precision
-                            info = np.iinfo(data.dtype)
-                            data = ((data.astype(np.float32) - info.min) / (info.max - info.min) * 65535).astype(np.uint16)
-                            return np.ascontiguousarray(data)
+                    data = arr[tuple(slices)]
+                    if data.dtype == np.uint8:
+                        return np.ascontiguousarray(data)
+                    elif data.dtype == np.uint16:
+                        return np.ascontiguousarray(data)
+                    elif np.issubdtype(data.dtype, np.integer):
+                        info = np.iinfo(data.dtype)
+                        data = ((data.astype(np.float32) - info.min) /
+                                (info.max - info.min) * 65535).astype(np.uint16)
+                        return np.ascontiguousarray(data)
+                    else:
+                        lo, hi = data.min(), data.max()
+                        if hi > lo:
+                            data = ((data - lo) / (hi - lo) * 65535).astype(np.uint16)
                         else:
-                            # Float data: normalize to uint16
-                            lo, hi = data.min(), data.max()
-                            if hi > lo:
-                                data = ((data - lo) / (hi - lo) * 65535).astype(np.uint16)
-                            else:
-                                data = np.zeros_like(data, dtype=np.uint16)
-                            return np.ascontiguousarray(data)
-                    except Exception as e:
-                        print(f"Error loading chunk LOD{lod} ({z},{y},{x}): {e}")
-                        return None
+                            data = np.zeros_like(data, dtype=np.uint16)
+                        return np.ascontiguousarray(data)
+                except Exception as e:
+                    print(f"Error loading chunk LOD{lod} t={t} ({z},{y},{x}): {e}")
+                    return None
 
-                def on_loaded(lod, z, y, x, future):
-                    nonlocal image, pending
-                    with lock:
-                        pending.pop((lod, z, y, x), None)
-                    if not future.cancelled() and image:
-                        data = future.result()
-                        if data is not None:
-                            if data.dtype == np.uint8:
-                                data = (data.astype(np.uint16) * 257)  # 0-255 → 0-65535
-                            image.set_chunk_data_u16(lod, z, y, x, data)
-
-                def request(lod, z, y, x):
-                    nonlocal pending
-                    key = (lod, z, y, x)
-                    with lock:
-                        if key in pending:
-                            return bv.ChunkStatus.AlreadyPending
-                        if len(pending) >= 8:
-                            return bv.ChunkStatus.Rejected
-
-                        future = self.executor.submit(load_chunk, lod, z, y, x)
-                        future.add_done_callback(lambda f: on_loaded(lod, z, y, x, f))
-                        pending[key] = future
-
-                    return bv.ChunkStatus.Accepted
-
-                def set_image(img):
-                    nonlocal image
-                    image = img
-
-                request.set_image = set_image
-                return request
-
-            loader = create_loader()
             self.level_info = lod_levels  # Store for stats display
+
+            # Pull-based loader. A background thread polls
+            # `image.wanted_keys()` and dispatches fetches via the
+            # ThreadPoolExecutor; results are pushed back via
+            # `set_chunk_data_u16`. Cancellation is implicit — a key
+            # that leaves the wanted set simply doesn't get re-submitted.
+            def start_loader_thread(image):
+                in_flight = set()
+                lock = Lock()
+                stop = self.loader_stop = threading.Event()
+
+                def on_loaded(lod, t, z, y, x, future):
+                    with lock:
+                        in_flight.discard((lod, t, z, y, x))
+                    if future.cancelled():
+                        return
+                    data = future.result()
+                    if data is None:
+                        return
+                    if data.dtype == np.uint8:
+                        data = (data.astype(np.uint16) * 257)  # 0-255 → 0-65535
+                    image.set_chunk_data_u16(lod, t, z, y, x, data)
+
+                def poll():
+                    while not stop.is_set():
+                        try:
+                            wanted = image.wanted_keys()  # sorted by priority
+                        except Exception:
+                            return
+                        for lod, t, z, y, x, _pri in wanted:
+                            key = (lod, t, z, y, x)
+                            with lock:
+                                if key in in_flight or len(in_flight) >= 8:
+                                    continue
+                                in_flight.add(key)
+                            future = self.executor.submit(load_chunk, lod, t, z, y, x)
+                            future.add_done_callback(
+                                lambda f, k=key: on_loaded(*k, f))
+                        stop.wait(0.02)
+
+                threading.Thread(target=poll, daemon=True).start()
 
             # Setup scene
             def setup_scene(viewer):
-                image = bv.Image(viewer, lod_levels, 500, loader)
-                loader.set_image(image)  # Close the closure loop
+                image = bv.Image(viewer, lod_levels, 500)
+                start_loader_thread(image)
 
                 # Calculate world space
                 lod0 = lod_levels[0]

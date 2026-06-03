@@ -11,6 +11,7 @@ import math
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+import threading
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QComboBox)
 from PyQt6.QtCore import Qt, QTimer
@@ -302,75 +303,81 @@ class MainWindow(QMainWindow):
                 self.executor.shutdown(wait=False)
             self.executor = ThreadPoolExecutor(max_workers=8)
 
-            def create_loader():
-                volume = None
-                pending = {}
-                lock = Lock()
-
-                def load_chunk(lod, z, y, x):
-                    try:
-                        path = datasets[lod].get("path", str(lod))
-                        arr = store[path]
-                        level = lod_levels[lod]
-                        cz, cy, cx = level.chunk_size
-                        slices = [0] * len(arr.shape)
-                        slices[z_idx] = slice(z * cz, min((z + 1) * cz, level.volume_size[0]))
-                        slices[y_idx] = slice(y * cy, min((y + 1) * cy, level.volume_size[1]))
-                        slices[x_idx] = slice(x * cx, min((x + 1) * cx, level.volume_size[2]))
-                        data = arr[tuple(slices)]
-                        if data.dtype == np.uint8:
-                            return np.ascontiguousarray(data)
-                        elif data.dtype == np.uint16:
-                            return np.ascontiguousarray(data)
-                        elif np.issubdtype(data.dtype, np.integer):
-                            info = np.iinfo(data.dtype)
-                            data = ((data.astype(np.float32) - info.min) / (info.max - info.min) * 65535).astype(np.uint16)
-                            return np.ascontiguousarray(data)
+            def load_chunk(lod, t, z, y, x):
+                try:
+                    path = datasets[lod].get("path", str(lod))
+                    arr = store[path]
+                    level = lod_levels[lod]
+                    cz, cy, cx = level.chunk_size
+                    slices = [0] * len(arr.shape)
+                    slices[z_idx] = slice(z * cz, min((z + 1) * cz, level.volume_size[0]))
+                    slices[y_idx] = slice(y * cy, min((y + 1) * cy, level.volume_size[1]))
+                    slices[x_idx] = slice(x * cx, min((x + 1) * cx, level.volume_size[2]))
+                    # This example doesn't expose t to the UI — t is always 0.
+                    data = arr[tuple(slices)]
+                    if data.dtype == np.uint8:
+                        return np.ascontiguousarray(data)
+                    elif data.dtype == np.uint16:
+                        return np.ascontiguousarray(data)
+                    elif np.issubdtype(data.dtype, np.integer):
+                        info = np.iinfo(data.dtype)
+                        data = ((data.astype(np.float32) - info.min) /
+                                (info.max - info.min) * 65535).astype(np.uint16)
+                        return np.ascontiguousarray(data)
+                    else:
+                        lo, hi = data.min(), data.max()
+                        if hi > lo:
+                            data = ((data - lo) / (hi - lo) * 65535).astype(np.uint16)
                         else:
-                            lo, hi = data.min(), data.max()
-                            if hi > lo:
-                                data = ((data - lo) / (hi - lo) * 65535).astype(np.uint16)
-                            else:
-                                data = np.zeros_like(data, dtype=np.uint16)
-                            return np.ascontiguousarray(data)
-                    except Exception as e:
-                        print(f"Error loading chunk LOD{lod} ({z},{y},{x}): {e}")
-                        return None
+                            data = np.zeros_like(data, dtype=np.uint16)
+                        return np.ascontiguousarray(data)
+                except Exception as e:
+                    print(f"Error loading chunk LOD{lod} t={t} ({z},{y},{x}): {e}")
+                    return None
 
-                def on_loaded(lod, z, y, x, future):
+            # Pull-based loader. A background thread polls
+            # `volume.wanted_keys()` and dispatches fetches via the
+            # ThreadPoolExecutor; results are pushed via
+            # `set_chunk_data_u16`. Cancellation is implicit.
+            def start_loader_thread(volume):
+                in_flight = set()
+                lock = Lock()
+                stop = self.loader_stop = threading.Event()
+
+                def on_loaded(lod, t, z, y, x, future):
                     with lock:
-                        pending.pop((lod, z, y, x), None)
-                    if not future.cancelled() and volume:
-                        data = future.result()
-                        if data is not None:
-                            if data.dtype == np.uint8:
-                                data = (data.astype(np.uint16) * 257)
-                            volume.set_chunk_data_u16(lod, z, y, x, data)
+                        in_flight.discard((lod, t, z, y, x))
+                    if future.cancelled():
+                        return
+                    data = future.result()
+                    if data is None:
+                        return
+                    if data.dtype == np.uint8:
+                        data = (data.astype(np.uint16) * 257)
+                    volume.set_chunk_data_u16(lod, t, z, y, x, data)
 
-                def request(lod, z, y, x):
-                    key = (lod, z, y, x)
-                    with lock:
-                        if key in pending:
-                            return bv.ChunkStatus.AlreadyPending
-                        if len(pending) >= 8:
-                            return bv.ChunkStatus.Rejected
-                        future = self.executor.submit(load_chunk, lod, z, y, x)
-                        future.add_done_callback(lambda f: on_loaded(lod, z, y, x, f))
-                        pending[key] = future
-                    return bv.ChunkStatus.Accepted
+                def poll():
+                    while not stop.is_set():
+                        try:
+                            wanted = volume.wanted_keys()
+                        except Exception:
+                            return
+                        for lod, t, z, y, x, _pri in wanted:
+                            key = (lod, t, z, y, x)
+                            with lock:
+                                if key in in_flight or len(in_flight) >= 8:
+                                    continue
+                                in_flight.add(key)
+                            future = self.executor.submit(load_chunk, lod, t, z, y, x)
+                            future.add_done_callback(
+                                lambda f, k=key: on_loaded(*k, f))
+                        stop.wait(0.02)
 
-                def set_volume(vol):
-                    nonlocal volume
-                    volume = vol
-
-                request.set_volume = set_volume
-                return request
-
-            loader = create_loader()
+                threading.Thread(target=poll, daemon=True).start()
 
             def setup_scene(viewer):
-                volume = bv.Volume(viewer, lod_levels, 2000, loader)
-                loader.set_volume(volume)
+                volume = bv.Volume(viewer, lod_levels, 2000)
+                start_loader_thread(volume)
 
                 lod0 = lod_levels[0]
                 world_size = tuple(s * v for s, v in zip(lod0.volume_size, lod0.voxel_size))
