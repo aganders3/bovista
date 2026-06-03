@@ -201,6 +201,7 @@ fn main() {
         setup.lods.clone(), cache_capacity as usize, setup.loader,
     );
     *setup.pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
+    *setup.wanted_slot.lock().unwrap() = Some(volume.wanted_handle());
     // Background-prefetch ±2 neighbors of the current timepoint via
     // bovista's own request path. Single dedupe (slot_map + request_tile)
     // means already-resident tiles cost a HashMap lookup, not a re-decode.
@@ -559,9 +560,14 @@ struct SceneSetup {
     cache_capacity: u32,
     /// Number of timepoints if axes include a "t" axis, else 1.
     n_timepoints: u32,
-    /// Count of scheduler-queued tiles at a given timepoint. Used by the
-    /// render loop's progress log. Always returns 0 for synthetic data.
+    /// Count of tiles in bovista's `wanted` set at a given timepoint.
+    /// Used by the render loop's progress log. Returns 0 for synthetic
+    /// data (which has no wanted set since there's nothing to load).
     queue_count_at: Arc<dyn Fn(u32) -> usize + Send + Sync>,
+    /// Slot for the volume's `wanted_handle()` so the OME-Zarr loader
+    /// pool can read what bovista wants. Filled in after VolumeVisual
+    /// is constructed (chicken-and-egg with the visual's lifetime).
+    wanted_slot: Arc<Mutex<Option<bovista::visuals::virtual_texture::Wanted>>>,
 }
 
 fn synthetic_setup() -> SceneSetup {
@@ -600,6 +606,7 @@ fn synthetic_setup() -> SceneSetup {
         cache_capacity: 1,
         n_timepoints: 1,
         queue_count_at: Arc::new(|_| 0),
+        wanted_slot: Arc::new(Mutex::new(None)),
     }
 }
 
@@ -1496,9 +1503,10 @@ mod ome_zarr {
     use std::error::Error;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Duration;
 
     use bovista::visuals::gpu_structs::{
-        ChunkStatus, TileData, TileKey, TileLoaderFn, TileRequest,
+        ChunkStatus, TileData, TileKey, TileLoaderFn,
     };
     use bovista::visuals::virtual_texture::PendingChunks;
     use bovista::visuals::LodLevelConfig;
@@ -1728,93 +1736,103 @@ mod ome_zarr {
             )
         };
 
-        // Single priority queue → single worker pool. Priority = distance
-        // from the current displayed timepoint, computed at dequeue time so
-        // a t-change instantly reorders the queue. The bovista loader and
-        // the prefetcher both push into this same queue; whichever entry
-        // is currently closest to view_state.timepoint() pops first.
+        // Pull-based loader pool. Workers read bovista's `wanted` map
+        // (priority-ordered set of tiles bovista wants right now),
+        // claim the highest-priority unclaimed key, decode, and only
+        // write to `pending` if the key is STILL wanted at the end
+        // (otherwise the user scrubbed past it during the fetch).
         //
-        // Workers process FIFO from the priority queue, decoding into
-        // bovista's pending_chunks. No max_inflight cap — the queue's
-        // built-in size limit is the backpressure.
+        // No internal scheduler queue — bovista's `wanted` IS the
+        // queue. When bovista's prepare rebuilds it (every render
+        // frame), cancellations are implicit: keys that disappear are
+        // automatically forgotten on the next worker pick. No
+        // re-push, no backpressure logic, no max-inflight cap.
         let levels = Arc::new(levels);
         let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
-        let scheduler = LoaderScheduler::new(max_inflight.saturating_mul(16).max(512));
-        println!("[orbit] scheduler: {} worker(s), queue cap {} entries",
-                 max_inflight, scheduler.cap());
+        let wanted_slot: Arc<Mutex<Option<bovista::visuals::virtual_texture::Wanted>>> =
+            Arc::new(Mutex::new(None));
+        let claimed: Arc<Mutex<HashSet<TileKey>>> = Arc::new(Mutex::new(HashSet::new()));
+        println!("[orbit] loader pool: {} worker(s) (pull-based)", max_inflight);
+        let _ = prefetch_cap;
 
-        // Worker pool: each thread loops pop_best → decode → push to pending.
-        // `current_t` is read via closure inside pop_best so a worker blocked
-        // in cvar.wait re-evaluates priority against the live timepoint when
-        // it wakes (rather than the t-when-pop-was-called).
         for _ in 0..max_inflight {
-            let scheduler = scheduler.clone();
-            let levels = levels.clone();
-            let lods = lods.clone();
+            let wanted_slot = wanted_slot.clone();
+            let claimed = claimed.clone();
             let pending_slot = pending_slot.clone();
             let view_state = view_state.clone();
             let flush_diag = flush_diag.clone();
+            let levels = levels.clone();
+            let lods = lods.clone();
             thread::spawn(move || loop {
-                let key = match scheduler.pop_best(
-                    || view_state.timepoint(),
-                    3,
-                ) {
-                    Some(k) => k,
-                    None => break,
+                // Wait for bovista to hand us its wanted handle. Once
+                // populated this never goes back to None.
+                let wanted = loop {
+                    if let Some(w) = wanted_slot.lock().unwrap().clone() {
+                        break w;
+                    }
+                    thread::sleep(Duration::from_millis(20));
                 };
-                if key.lod_level >= levels.len() { continue; }
+
+                // Pick the highest-priority key bovista wants that no
+                // other worker has claimed. Tiebreak: coarser LOD
+                // first so the volume blocks in at low resolution
+                // before refining.
+                let key = {
+                    let w = wanted.lock().unwrap();
+                    let mut c = claimed.lock().unwrap();
+                    let pick = w.iter()
+                        .filter(|(k, _)| !c.contains(k))
+                        .min_by_key(|(k, p)| (**p, -(k.lod_level as i32)))
+                        .map(|(k, _)| *k);
+                    if let Some(k) = pick { c.insert(k); }
+                    pick
+                };
+                let Some(key) = key else {
+                    // Nothing to do. Poll again shortly. (No condvar:
+                    // wanted changes happen at render-frame cadence
+                    // — ~33 ms — so a 20 ms poll is in the noise.)
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                if key.lod_level >= levels.len() {
+                    claimed.lock().unwrap().remove(&key);
+                    continue;
+                }
                 let lod_cfg = &lods[key.lod_level];
                 let decode_start = std::time::Instant::now();
                 let result = read_tile(&levels[key.lod_level], lod_cfg, key, key.t);
                 let decode_ns = decode_start.elapsed().as_nanos() as u64;
+                // Re-check membership: if bovista has dropped this key
+                // since we claimed it (user scrubbed past, zoom changed
+                // visibility), don't waste a pending-slot.
+                let still_wanted = wanted.lock().unwrap().contains_key(&key);
                 match result {
-                    Ok(data) => {
+                    Ok(data) if still_wanted => {
                         if let Some(p) = pending_slot.lock().unwrap().clone() {
                             p.lock().unwrap().insert(key, data);
                             flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
                         }
                     }
+                    Ok(_) => { /* dropped by bovista; throw bytes away */ }
                     Err(e) => {
-                        // Transient HTTP errors (connection resets, partial
-                        // responses) are common on public datasets. Re-push
-                        // so another worker retries; pop_best's stale-drop
-                        // handles the case where the user has scrubbed past
-                        // this tile in the meantime.
-                        eprintln!("[orbit] tile load failed (lod={} t={} z={} y={} x={}): {} (requeue)",
+                        // Transient HTTP errors don't need explicit
+                        // re-push: if bovista still wants this key,
+                        // it's still in the `wanted` map and the next
+                        // pick iteration will grab it.
+                        eprintln!("[orbit] tile load failed (lod={} t={} z={} y={} x={}): {}",
                                   key.lod_level, key.t, key.z, key.y, key.x, e);
-                        let _ = scheduler.push(key, view_state.timepoint());
                     }
                 }
+                claimed.lock().unwrap().remove(&key);
             });
         }
 
-        // Prefetching now lives inside bovista's `prepare_volume` (via
-        // `volume.set_prefetch(...)`), so it shares the SAME request
-        // path as current-t — slot_map check + request_tile dedupe.
-        // The atlas is the single source of truth for "do we need to
-        // fetch this?"; no external dispatcher, no separate dedupe.
-        let _ = prefetch_cap;
-
-        // Bovista's loader callback: just push to the scheduler. If the
-        // queue is full and our key is lower-priority than what's already
-        // queued, return Rejected so bovista doesn't mark it as requested
-        // (we'll try again next frame when the queue has drained).
-        let scheduler_for_loader = scheduler.clone();
-        let view_state_for_loader = view_state.clone();
-        let levels_for_loader = levels.clone();
-        let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
-            let lod = req.lod_level.unwrap_or(0);
-            if lod >= levels_for_loader.len() {
-                return ChunkStatus::Rejected;
-            }
-            let key = TileKey { lod_level: lod, t: req.t, z: req.z, y: req.y, x: req.x };
-            let current_t = view_state_for_loader.timepoint();
-            if scheduler_for_loader.push(key, current_t) {
-                ChunkStatus::Accepted
-            } else {
-                ChunkStatus::Rejected
-            }
-        });
+        // Bovista still requires a TileLoaderFn at construction; the
+        // pull-based design makes it a no-op. Bovista's request_tile
+        // path runs and inserts into `requested_keys` but nothing else
+        // listens — the wanted map (rebuilt at the end of every
+        // prepare) is the single source of truth the loader pool reads.
+        let loader: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
 
         println!("[orbit] OME-Zarr: t axis has {} timepoint(s)", n_timepoints);
 
@@ -1823,14 +1841,20 @@ mod ome_zarr {
             loader,
             pending_slot,
             world_extents,
-            // Comfortably bigger than a single LOD's tile count for the
-            // OME-Zarr datasets we care about. Override with --cache-tiles.
             cache_capacity: 4096,
             n_timepoints,
             queue_count_at: {
-                let s = scheduler.clone();
-                Arc::new(move |t| s.count_at(t))
+                let ws = wanted_slot.clone();
+                Arc::new(move |t| {
+                    let guard = ws.lock().unwrap();
+                    match guard.as_ref() {
+                        Some(w) => w.lock().unwrap().iter()
+                            .filter(|(k, _)| k.t == t).count(),
+                        None => 0,
+                    }
+                })
             },
+            wanted_slot,
         })
     }
 
@@ -1853,111 +1877,6 @@ mod ome_zarr {
     /// When the user advances to t+1, the regular loader hits the cache
     /// instead of doing fresh I/O — sequential scrubbing / playback is
     /// reduced to GPU upload time only.
-    /// Single priority queue + condvar. Items are tile keys; priority is
-    /// `|key.t - current_t|` computed at *pop* time, so changes to the
-    /// current timepoint instantly re-prioritize everything in the queue.
-    ///
-    /// `push` returns false (rejected) only if the queue is full AND the
-    /// caller's priority isn't better than the worst item in it; bovista
-    /// gets `Rejected` for that case and won't mark it as requested, so
-    /// it'll retry next frame.
-    #[derive(Clone)]
-    pub struct LoaderScheduler {
-        inner: Arc<LoaderSchedulerInner>,
-    }
-    struct LoaderSchedulerInner {
-        queue: Mutex<HashSet<TileKey>>,
-        cvar:  std::sync::Condvar,
-        cap:   usize,
-    }
-    impl LoaderScheduler {
-        fn new(cap: usize) -> Self {
-            Self { inner: Arc::new(LoaderSchedulerInner {
-                queue: Mutex::new(HashSet::new()),
-                cvar:  std::sync::Condvar::new(),
-                cap,
-            })}
-        }
-        pub fn cap(&self) -> usize { self.inner.cap }
-        /// Enqueue a tile request. If the queue is at capacity, drop the
-        /// worst-priority existing entry IF this one is better, or reject.
-        pub fn push(&self, key: TileKey, current_t: u32) -> bool {
-            let mut q = self.inner.queue.lock().unwrap();
-            if q.contains(&key) { return true; }
-            if q.len() >= self.inner.cap {
-                let our_pri  = (key.t as i32 - current_t as i32).abs();
-                if let Some(worst) = q.iter()
-                    .max_by_key(|k| (k.t as i32 - current_t as i32).abs())
-                    .copied()
-                {
-                    let worst_pri = (worst.t as i32 - current_t as i32).abs();
-                    if our_pri < worst_pri {
-                        q.remove(&worst);
-                    } else {
-                        return false;
-                    }
-                }
-            }
-            q.insert(key);
-            self.inner.cvar.notify_one();
-            true
-        }
-        /// Block until a tile is available, then pop the one closest to
-        /// the current timepoint.
-        /// Pop the entry closest to the CURRENT timepoint (re-read each
-        /// scan), while opportunistically dropping entries farther than
-        /// `max_useful_dist` away. Re-reading `current_t` each iteration
-        /// matters: a worker may have been blocked in `cvar.wait` for a
-        /// long time while the user scrubbed; bovista pushes entries for
-        /// the NEW t, and if we kept using the stale `current_t` from
-        /// when this call started, those new entries would look "stale"
-        /// and get dropped — which is exactly the deadlock-via-mismatch
-        /// bug that produced "nothing ever loads" during scrubbing.
-        pub fn pop_best<F: Fn() -> u32>(
-            &self,
-            current_t: F,
-            max_useful_dist: i32,
-        ) -> Option<TileKey> {
-            let mut q = self.inner.queue.lock().unwrap();
-            loop {
-                let now_t = current_t();
-                let mut best: Option<TileKey> = None;
-                // Priority key: (t-distance, -lod_level). Lower is better.
-                // Coarser tiles (higher lod_level) win the tiebreak so the
-                // volume "blocks in" at coarse LOD first and refines to
-                // fine detail.
-                let mut best_key: (i32, i32) = (i32::MAX, i32::MAX);
-                let mut stale: Vec<TileKey> = Vec::new();
-                for &k in q.iter() {
-                    let pri = (k.t as i32 - now_t as i32).abs();
-                    if pri > max_useful_dist {
-                        stale.push(k);
-                        continue;
-                    }
-                    let cand_key = (pri, -(k.lod_level as i32));
-                    if cand_key < best_key {
-                        best_key = cand_key;
-                        best = Some(k);
-                    }
-                }
-                for k in &stale { q.remove(k); }
-                if let Some(b) = best {
-                    q.remove(&b);
-                    return Some(b);
-                }
-                q = self.inner.cvar.wait(q).unwrap();
-            }
-        }
-        /// Number of queued entries at exactly `target_t`. Used for the
-        /// terminal progress line ("Z current-t tiles in queue").
-        pub fn count_at(&self, target_t: u32) -> usize {
-            self.inner.queue.lock().unwrap()
-                .iter()
-                .filter(|k| k.t == target_t)
-                .count()
-        }
-    }
-
     /// Read the voxel sub-region for this tile and convert to R16Float bytes.
     ///
     /// We always go through `retrieve_array_subset`, which respects the codec
