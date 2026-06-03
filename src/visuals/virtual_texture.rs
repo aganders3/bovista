@@ -304,30 +304,78 @@ impl VirtualTextureData {
         let row   = (slot / self.atlas_cols) % self.atlas_rows;
         let layer = slot / (self.atlas_cols * self.atlas_rows);
         let (tile_d, tile_h, tile_w) = self.tile_size;
+        let origin = wgpu::Origin3d {
+            x: col   * tile_w,
+            y: row   * tile_h,
+            z: layer * tile_d,
+        };
+        let bpv = data.bytes_per_voxel() as usize;
 
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.atlas_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: col   * tile_w,
-                    y: row   * tile_h,
-                    z: layer * tile_d,
+        // Boundary tiles (z/y/x edge of the volume at this LOD) have
+        // smaller data extent than the full slot. If we only wrote the
+        // partial data, the rest of the slot would still hold whatever
+        // a previous tile left there → visible bleed at the volume's
+        // boundary, since `data_scale` in the shader is per-LOD and
+        // doesn't know about per-tile shrinkage. Zero-pad to the full
+        // slot extent and upload that instead.
+        let is_full =
+            data.width == tile_w && data.height == tile_h && data.depth == tile_d;
+        if is_full {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
                 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &data.data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(data.width * data.bytes_per_voxel()),
-                rows_per_image: Some(data.height),
-            },
-            wgpu::Extent3d {
-                width: data.width,
-                height: data.height,
-                depth_or_array_layers: data.depth,
-            },
-        );
+                &data.data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(data.width * bpv as u32),
+                    rows_per_image: Some(data.height),
+                },
+                wgpu::Extent3d {
+                    width: data.width,
+                    height: data.height,
+                    depth_or_array_layers: data.depth,
+                },
+            );
+        } else {
+            // Build a full-tile-sized buffer with zero padding. Copy
+            // the partial tile's rows into the top-left-front corner.
+            let stride_row_dst = tile_w as usize * bpv;
+            let stride_slice_dst = stride_row_dst * tile_h as usize;
+            let stride_row_src = data.width as usize * bpv;
+            let mut padded = vec![0u8; stride_slice_dst * tile_d as usize];
+            for z in 0..data.depth as usize {
+                for y in 0..data.height as usize {
+                    let dst = z * stride_slice_dst + y * stride_row_dst;
+                    let src = z * (data.height as usize) * stride_row_src
+                            + y * stride_row_src;
+                    padded[dst..dst + stride_row_src]
+                        .copy_from_slice(&data.data[src..src + stride_row_src]);
+                }
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &padded,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(tile_w * bpv as u32),
+                    rows_per_image: Some(tile_h),
+                },
+                wgpu::Extent3d {
+                    width: tile_w,
+                    height: tile_h,
+                    depth_or_array_layers: tile_d,
+                },
+            );
+        }
     }
 
     fn process_pending_chunks(&mut self, queue: &Queue) {
