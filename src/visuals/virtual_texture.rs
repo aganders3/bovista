@@ -122,6 +122,20 @@ pub struct VirtualTextureData {
     /// Total number of timepoints in the dataset. Used to clamp the
     /// prefetch range; otherwise the strategy has no way to know it.
     t_count: u32,
+    /// Per-prepare counter for throttling prefetch dispatch. Running
+    /// the full prefetch loop every render frame (30 fps) puts ~6× the
+    /// scheduler-queue lock pressure of the previous external 5-Hz
+    /// dispatcher; throttling restores that headroom while still
+    /// letting current-t (non-prefetch) requests fire every frame.
+    prefetch_tick: u32,
+    /// "Page table may need reconsideration." Set whenever something
+    /// happens that could change which slot the page table should
+    /// point at: a new tile lands in slot_map, an eviction clears a
+    /// slot, visibility changes, or `desired_t` changes. Cleared at
+    /// the end of `maybe_advance_presentation`. Lets that function
+    /// early-exit when nothing has changed — useful because in a
+    /// fully-loaded steady state the slot_map scan is pure overhead.
+    page_table_dirty: bool,
 }
 
 impl VirtualTextureData {
@@ -206,6 +220,8 @@ impl VirtualTextureData {
             desired_t: 0,
             prefetch_lookahead: 0,
             t_count: 1,
+            prefetch_tick: 0,
+            page_table_dirty: true,
         }
     }
 
@@ -223,7 +239,10 @@ impl VirtualTextureData {
     /// slot_map state at `t`. Tiles not yet loaded fall back through the
     /// shader's LOD chain; they snap in as fine tiles arrive.
     pub fn set_desired_timepoint(&mut self, t: u32) {
-        self.desired_t = t;
+        if t != self.desired_t {
+            self.desired_t = t;
+            self.page_table_dirty = true;
+        }
     }
 
     pub fn presentation_t(&self) -> u32 { self.presentation_t }
@@ -356,6 +375,7 @@ impl VirtualTextureData {
 
             self.slot_map.insert(key, slot);
             self.lru_map.insert(key, self.frame_counter);
+            self.page_table_dirty = true;
         }
     }
 
@@ -366,6 +386,16 @@ impl VirtualTextureData {
     /// every freshly-arrived neighbor lands in the page table on the
     /// next prepare even if no exact-t match exists.
     fn maybe_advance_presentation(&mut self, queue: &Queue) {
+        // Nothing happened that could change the page table since the
+        // last call — skip the slot_map scan entirely. Visibility
+        // changes alone don't dirty: spatials newly visible whose tile
+        // is still in atlas will get their page-table entry restored
+        // the next time a tile lands for them (process_pending closest-t
+        // check handles that); spatials going non-visible are handled
+        // lazily via eviction.
+        if !self.page_table_dirty && self.desired_t == self.presentation_t {
+            return;
+        }
         let target = self.desired_t;
         // Bucket slot_map by visible-spatial, keeping the closest-t entry.
         // Single O(slot_map) pass; faster than O(visible × slot_map).
@@ -389,6 +419,7 @@ impl VirtualTextureData {
             self.page_table_t.insert(*spatial, *t);
             if *dist == 0 { loaded_at_target += 1; }
         }
+        self.page_table_dirty = false;
         log::debug!(
             "VT presentation_t: {} → {} ({}/{} at-target, {} fallback)",
             self.presentation_t, target,
@@ -491,6 +522,7 @@ impl VirtualTextureData {
                     self.page_table.clear(queue, lod_level, z, y, x);
                     self.page_table_slot.remove(&spatial);
                     self.page_table_t.remove(&spatial);
+                    self.page_table_dirty = true;
                 }
             }
         }
@@ -834,17 +866,28 @@ impl VirtualTextureData {
         self.maybe_advance_presentation(queue);
     }
 
-    /// Prefetch the next N timepoints after `target_t`. Look-ahead only
-    /// is sufficient because the recently-displayed past stays resident
-    /// via the LRU pool — eviction starts from the LEAST-recently-used,
-    /// so t-1, t-2 from the user's scrubbing trail are still in the
-    /// atlas and don't need explicit prefetching. Asymmetric look-ahead
-    /// uses budget on what we DON'T already have.
+    /// Prefetch the next N timepoints after `target_t`. Throttled to
+    /// roughly 5 Hz via `PREFETCH_EVERY_N_PREPARES` to match the old
+    /// external dispatcher rate — running the full 360-key push on
+    /// every render frame (30 Hz) put 6× the lock pressure on the
+    /// scheduler queue, which the GL backend in particular doesn't
+    /// shrug off. Current-t (non-prefetch) requests still fire every
+    /// prepare; only the speculative neighbors are throttled.
+    ///
+    /// Look-ahead only is sufficient because the recently-displayed
+    /// past stays resident via the LRU pool — eviction starts from the
+    /// LEAST-recently-used, so t-1, t-2 from the user's scrubbing
+    /// trail are still in the atlas and don't need explicit
+    /// prefetching. Asymmetric look-ahead uses budget on what we
+    /// DON'T already have.
     ///
     /// Uses the same request path as current-t (slot_map check +
     /// request_tile dedupe) so the atlas is the single source of truth:
     /// already-resident tiles cost a HashMap lookup, not a re-decode.
     fn prefetch_forward(&mut self, target_t: u32) {
+        const PREFETCH_EVERY_N_PREPARES: u32 = 6;
+        self.prefetch_tick = self.prefetch_tick.wrapping_add(1);
+        if self.prefetch_tick % PREFETCH_EVERY_N_PREPARES != 0 { return; }
         let lookahead = self.prefetch_lookahead as i32;
         if lookahead == 0 || self.t_count <= 1 { return; }
         'pref: for offset in 1..=lookahead {
