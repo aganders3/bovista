@@ -115,12 +115,6 @@ pub struct VirtualTextureData {
     /// Total number of timepoints in the dataset. Used to clamp the
     /// prefetch range; otherwise the strategy has no way to know it.
     t_count: u32,
-    /// Per-prepare counter for throttling prefetch dispatch. Running
-    /// the full prefetch loop every render frame (30 fps) puts ~6× the
-    /// scheduler-queue lock pressure of the previous external 5-Hz
-    /// dispatcher; throttling restores that headroom while still
-    /// letting current-t (non-prefetch) requests fire every frame.
-    prefetch_tick: u32,
 }
 
 impl VirtualTextureData {
@@ -203,7 +197,6 @@ impl VirtualTextureData {
             desired_t: 0,
             prefetch_lookahead: 0,
             t_count: 1,
-            prefetch_tick: 0,
         }
     }
 
@@ -749,28 +742,19 @@ impl VirtualTextureData {
         self.refresh_page_table(queue);
     }
 
-    /// Prefetch the next N timepoints after `target_t`. Throttled to
-    /// roughly 5 Hz via `PREFETCH_EVERY_N_PREPARES` to match the old
-    /// external dispatcher rate — running the full 360-key push on
-    /// every render frame (30 Hz) put 6× the lock pressure on the
-    /// scheduler queue, which the GL backend in particular doesn't
-    /// shrug off. Current-t (non-prefetch) requests still fire every
-    /// prepare; only the speculative neighbors are throttled.
+    /// Prefetch the next N timepoints after `target_t`. Runs every
+    /// prepare — no throttling needed because (a) `request_tile`
+    /// dedupes against `requested_keys` + slot_map so already-issued
+    /// or already-resident tiles cost only a HashMap lookup, and
+    /// (b) `refresh_page_table` is gated by `last_written_slot` so
+    /// it does zero `queue.write_texture` calls in steady state.
     ///
     /// Look-ahead only is sufficient because the recently-displayed
     /// past stays resident via the LRU pool — eviction starts from the
     /// LEAST-recently-used, so t-1, t-2 from the user's scrubbing
-    /// trail are still in the atlas and don't need explicit
-    /// prefetching. Asymmetric look-ahead uses budget on what we
-    /// DON'T already have.
-    ///
-    /// Uses the same request path as current-t (slot_map check +
-    /// request_tile dedupe) so the atlas is the single source of truth:
-    /// already-resident tiles cost a HashMap lookup, not a re-decode.
+    /// trail are still in the atlas. Asymmetric look-ahead uses budget
+    /// on what we DON'T already have.
     fn prefetch_forward(&mut self, target_t: u32) {
-        const PREFETCH_EVERY_N_PREPARES: u32 = 6;
-        self.prefetch_tick = self.prefetch_tick.wrapping_add(1);
-        if self.prefetch_tick % PREFETCH_EVERY_N_PREPARES != 0 { return; }
         let lookahead = self.prefetch_lookahead as i32;
         if lookahead == 0 || self.t_count <= 1 { return; }
         'pref: for offset in 1..=lookahead {
