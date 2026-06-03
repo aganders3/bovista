@@ -21,8 +21,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
 
-use bovista::visuals::gpu_structs::{ChunkStatus, TileData, TileKey, TileLoaderFn, TileRequest};
-use bovista::visuals::virtual_texture::PendingChunks;
+use bovista::visuals::gpu_structs::{ChunkStatus, TileData, TileKey, TileLoaderFn};
 use bovista::visuals::{LodLevelConfig, VolumeVisual};
 use bovista::visual::CameraInfo;
 use bovista::{Camera, ProjectionMode, Renderer, Scene};
@@ -153,30 +152,10 @@ fn main() {
     println!("[headless] synthetic volume: {0}x{0}x{0} R16Float ({1} bytes)",
              VOLUME_DIM, tile_bytes.len());
 
-    // The loader needs a handle to pending_chunks, but pending_chunks() can only
-    // be called *after* VolumeVisual::new returns — chicken-and-egg. Use a shared
-    // Option that we fill in immediately after construction.
-    let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
-    let pending_for_loader = pending_slot.clone();
-    let tile_bytes_for_loader = tile_bytes.clone();
-
-    let loader: TileLoaderFn = Box::new(move |req: TileRequest| -> ChunkStatus {
-        let Some(pc) = pending_for_loader.lock().unwrap().clone() else {
-            return ChunkStatus::Rejected;
-        };
-        let key = TileKey {
-            lod_level: req.lod_level.unwrap_or(0),
-            t: req.t, z: req.z, y: req.y, x: req.x,
-        };
-        pc.lock().unwrap().insert(key, TileData {
-            data: (*tile_bytes_for_loader).clone(),
-            width: VOLUME_DIM,
-            height: VOLUME_DIM,
-            depth: VOLUME_DIM,
-            format: wgpu::TextureFormat::R16Float,
-        });
-        ChunkStatus::Accepted
-    });
+    // Pull-based: bovista publishes `wanted` at the end of each
+    // prepare; we synthesize whatever it asks for and push to pending.
+    // No-op loader because the constructor still requires one.
+    let loader: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
 
     // Center the volume on the origin: translation = -half_size on each axis.
     let half = VOLUME_DIM as f32 / 2.0;
@@ -197,7 +176,28 @@ fn main() {
         1,
         loader,
     );
-    *pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
+    // Background fill thread: on every poll, snapshot bovista's
+    // `wanted` set and push synthetic tiles for everything in it.
+    // Polls instead of using a condvar because bovista doesn't notify
+    // and the headless example doesn't care about latency below ~20ms.
+    {
+        let wanted = volume.wanted_handle();
+        let pending = volume.pending_chunks().unwrap();
+        let tile_bytes = tile_bytes.clone();
+        std::thread::spawn(move || loop {
+            let keys: Vec<TileKey> = wanted.lock().unwrap().keys().copied().collect();
+            for key in keys {
+                pending.lock().unwrap().insert(key, TileData {
+                    data: (*tile_bytes).clone(),
+                    width: VOLUME_DIM,
+                    height: VOLUME_DIM,
+                    depth: VOLUME_DIM,
+                    format: wgpu::TextureFormat::R16Float,
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        });
+    }
     match debug_mode {
         1 => volume.set_debug_mode(true),
         2 => volume.set_atlas_debug_mode(true),
