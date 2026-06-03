@@ -196,6 +196,7 @@ fn main() {
     // Bind a clone of the prefetcher's visible-snapshot here so the render
     // loop can refresh it without re-locking setup.
     let setup_visible_snapshot = setup.visible_snapshot.clone();
+    let queue_count_at = setup.queue_count_at.clone();
 
     let mut volume = VolumeVisual::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
@@ -364,10 +365,23 @@ fn main() {
         // scene.prepare just updated bovista's visible_tile_keys; snapshot
         // it now so the prefetcher always works on fresh geometry rather
         // than an accumulating shadow of stale camera positions.
-        {
+        let (loaded_now, visible_now, current_t_now) = {
             let v = volume_arc.lock().unwrap();
             let snap = v.visible_spatial_keys();
             *setup_visible_snapshot.lock().unwrap() = snap;
+            let (loaded, visible) = v.current_t_load_status();
+            (loaded, visible, v.desired_t())
+        };
+        // Progress line, once per second of wall-clock time. Suppress when
+        // the timepoint is fully loaded AND nothing is queued — that's the
+        // "settled, nothing changing" state and would just spam the log.
+        if frame_n.is_multiple_of(30) {
+            let in_queue = (queue_count_at)(current_t_now);
+            let all_loaded = loaded_now == visible_now;
+            if !(all_loaded && in_queue == 0) {
+                println!("[progress] t={} loaded {}/{} | queued {}",
+                         current_t_now, loaded_now, visible_now, in_queue);
+            }
         }
         // Attribute scene.prepare() time (which includes process_pending_chunks
         // → queue.write_texture for every newly-arrived tile) to the current
@@ -556,6 +570,9 @@ struct SceneSetup {
     /// Shared with the prefetcher: render thread refreshes this each frame
     /// with bovista's current visible spatial set. Empty if no prefetcher.
     visible_snapshot: Arc<Mutex<Vec<TileKey>>>,
+    /// Count of scheduler-queued tiles at a given timepoint. Used by the
+    /// render loop's progress log. Always returns 0 for synthetic data.
+    queue_count_at: Arc<dyn Fn(u32) -> usize + Send + Sync>,
 }
 
 fn synthetic_setup() -> SceneSetup {
@@ -594,6 +611,7 @@ fn synthetic_setup() -> SceneSetup {
         cache_capacity: 1,
         n_timepoints: 1,
         visible_snapshot: Arc::new(Mutex::new(Vec::new())),
+        queue_count_at: Arc::new(|_| 0),
     }
 }
 
@@ -1823,6 +1841,10 @@ mod ome_zarr {
             cache_capacity: 4096,
             n_timepoints,
             visible_snapshot,
+            queue_count_at: {
+                let s = scheduler.clone();
+                Arc::new(move |t| s.count_at(t))
+            },
         })
     }
 
@@ -1937,6 +1959,14 @@ mod ome_zarr {
                 }
                 q = self.inner.cvar.wait(q).unwrap();
             }
+        }
+        /// Number of queued entries at exactly `target_t`. Used for the
+        /// terminal progress line ("Z current-t tiles in queue").
+        pub fn count_at(&self, target_t: u32) -> usize {
+            self.inner.queue.lock().unwrap()
+                .iter()
+                .filter(|k| k.t == target_t)
+                .count()
         }
     }
 

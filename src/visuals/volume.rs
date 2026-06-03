@@ -448,6 +448,12 @@ impl VolumeVisual {
 
     pub fn desired_t(&self) -> u32 { self.strategy.desired_t() }
 
+    /// (resident, visible) at `desired_t` — see
+    /// `VirtualTextureData::current_t_load_status`.
+    pub fn current_t_load_status(&self) -> (usize, usize) {
+        self.strategy.current_t_load_status()
+    }
+
     /// Snapshot of the spatial tile keys bovista currently considers
     /// visible (TileKey entries with t=0, i.e. (lod, z, y, x) only). Used
     /// by external prefetchers to know which keys to populate for adjacent

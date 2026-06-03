@@ -219,6 +219,21 @@ impl VirtualTextureData {
 
     pub fn desired_t(&self) -> u32 { self.desired_t }
 
+    /// (resident, visible) — how many of the visible spatial tiles at
+    /// `desired_t` are actually in the atlas right now. Useful for
+    /// progress reporting; returns (0, 0) before the first prepare.
+    pub fn current_t_load_status(&self) -> (usize, usize) {
+        let target = self.desired_t;
+        let resident = self.visible_tile_keys.iter()
+            .filter(|s| {
+                let key = TileKey { lod_level: s.lod_level, t: target,
+                                    z: s.z, y: s.y, x: s.x };
+                self.slot_map.contains_key(&key)
+            })
+            .count();
+        (resident, self.visible_tile_keys.len())
+    }
+
     // ── Tile management ──────────────────────────────────────────────────────
 
     /// Drop all resident tiles. Now that `TileKey` includes `t`, the
