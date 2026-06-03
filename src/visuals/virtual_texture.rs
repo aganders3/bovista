@@ -209,10 +209,10 @@ impl VirtualTextureData {
     }
 
     /// Caller-facing knob: request that the displayed timepoint be `t`.
-    /// The switch is committed on the next `prepare()` call —
-    /// `maybe_advance_presentation` rewrites the page table from current
-    /// slot_map state at `t`. Tiles not yet loaded fall back through the
-    /// shader's LOD chain; they snap in as fine tiles arrive.
+    /// `refresh_page_table` on the next `prepare()` call points the
+    /// page table at any resident tiles at `t`. Spatials with no
+    /// resident `t` tile fall back through the shader's LOD chain;
+    /// they snap in as fine tiles arrive in `process_pending_chunks`.
     pub fn set_desired_timepoint(&mut self, t: u32) {
         self.desired_t = t;
     }
@@ -301,14 +301,12 @@ impl VirtualTextureData {
             let TileKey { lod_level, t, z, y, x } = key;
             // Only point the page table at this tile if it's the user's
             // currently-requested timepoint. Prefetched tiles (other t)
-            // sit in slot_map silently — `maybe_advance_presentation` will
-            // wire them in when desired_t reaches their t.
-            //
-            // Unconditional write here would be destructive: a prefetch
-            // arrival for the same spatial would overwrite a good
-            // desired_t entry; the shader filter would then reject it and
-            // the spatial would go blank even though the right tile is in
-            // atlas. It also tripled the GL traffic on `page_table.update`.
+            // sit in slot_map silently — `refresh_page_table` wires them
+            // in when desired_t reaches their t. Unconditional write here
+            // would be destructive: a prefetch arrival for the same
+            // spatial would overwrite a good desired_t entry, the shader
+            // filter would reject it, and the spatial would go blank
+            // even though the right tile is in atlas.
             if t == self.desired_t {
                 self.page_table.update(queue, lod_level, z, y, x, t, slot);
                 self.last_written_slot.insert(key.spatial(), slot);
@@ -719,8 +717,6 @@ impl VirtualTextureData {
                 self.lru_map.insert(key, frame_number);
             }
         }
-        // Eviction is now batched inside process_pending_chunks so it sizes
-        // to the actual incoming work.
         self.process_pending_chunks(queue);
         // Request visible tiles at desired_t (where the user is heading).
         let target_t = self.desired_t;

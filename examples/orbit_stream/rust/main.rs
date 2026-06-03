@@ -342,8 +342,7 @@ fn main() {
                 flush_active = true;
                 flush_started_ns = t_ns;
                 printed_loaded_snapshot = false;
-                println!("[orbit] timepoint → {} (desired; presentation will swap when loaded)",
-                         view_state.timepoint());
+                println!("[orbit] timepoint → {}", view_state.timepoint());
             }
         }
 
