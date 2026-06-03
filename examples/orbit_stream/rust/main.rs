@@ -29,7 +29,6 @@
 //!
 //! Set BOVISTA_FORCE_LIBX264=1 to skip the NVENC probe and always use libx264.
 
-use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
@@ -194,9 +193,6 @@ fn main() {
     };
     let cache_capacity = cache_override.unwrap_or(setup.cache_capacity);
     let n_timepoints = setup.n_timepoints;
-    // Bind a clone of the prefetcher's visible-snapshot here so the render
-    // loop can refresh it without re-locking setup.
-    let setup_visible_snapshot = setup.visible_snapshot.clone();
     let queue_count_at = setup.queue_count_at.clone();
 
     let mut volume = VolumeVisual::new(
@@ -211,11 +207,6 @@ fn main() {
     if n_timepoints > 1 {
         volume.set_prefetch(2, n_timepoints);
     }
-    // Hand bovista the visible-snapshot Arc so it publishes the visible
-    // set EARLY in prepare (before tile requests dispatch). Workers'
-    // visibility filter then sees fresh data when they wake on those
-    // pushes, instead of the previous frame's snapshot.
-    volume.set_visible_snapshot_publish(setup_visible_snapshot.clone());
 
     // Density scales with voxel-to-world ratio so the same visible opacity
     // works whether voxels are 1 mm or 20 nm. Matches the Python OME-Zarr
@@ -367,9 +358,7 @@ fn main() {
             &color_tex, &color_view, &depth_view,
             width, height,
         );
-        // bovista publishes `setup_visible_snapshot` itself from inside
-        // prepare_volume (early — before tile requests dispatch), so we
-        // just sample diagnostic counters here.
+        // Sample diagnostic counters from bovista for the progress log.
         let (loaded_now, visible_now, current_t_now) = {
             let v = volume_arc.lock().unwrap();
             let (loaded, visible) = v.current_t_load_status();
@@ -570,9 +559,6 @@ struct SceneSetup {
     cache_capacity: u32,
     /// Number of timepoints if axes include a "t" axis, else 1.
     n_timepoints: u32,
-    /// Shared with the prefetcher: render thread refreshes this each frame
-    /// with bovista's current visible spatial set. Empty if no prefetcher.
-    visible_snapshot: Arc<Mutex<HashSet<TileKey>>>,
     /// Count of scheduler-queued tiles at a given timepoint. Used by the
     /// render loop's progress log. Always returns 0 for synthetic data.
     queue_count_at: Arc<dyn Fn(u32) -> usize + Send + Sync>,
@@ -613,7 +599,6 @@ fn synthetic_setup() -> SceneSetup {
         world_extents: (VOLUME_DIM as f32, VOLUME_DIM as f32, VOLUME_DIM as f32),
         cache_capacity: 1,
         n_timepoints: 1,
-        visible_snapshot: Arc::new(Mutex::new(HashSet::new())),
         queue_count_at: Arc::new(|_| 0),
     }
 }
@@ -1754,13 +1739,14 @@ mod ome_zarr {
         // built-in size limit is the backpressure.
         let levels = Arc::new(levels);
         let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
-        let visible_snapshot: Arc<Mutex<HashSet<TileKey>>> =
-            Arc::new(Mutex::new(HashSet::new()));
         let scheduler = LoaderScheduler::new(max_inflight.saturating_mul(16).max(512));
         println!("[orbit] scheduler: {} worker(s), queue cap {} entries",
                  max_inflight, scheduler.cap());
 
         // Worker pool: each thread loops pop_best → decode → push to pending.
+        // `current_t` is read via closure inside pop_best so a worker blocked
+        // in cvar.wait re-evaluates priority against the live timepoint when
+        // it wakes (rather than the t-when-pop-was-called).
         for _ in 0..max_inflight {
             let scheduler = scheduler.clone();
             let levels = levels.clone();
@@ -1768,26 +1754,9 @@ mod ome_zarr {
             let pending_slot = pending_slot.clone();
             let view_state = view_state.clone();
             let flush_diag = flush_diag.clone();
-            let visible_snapshot = visible_snapshot.clone();
             thread::spawn(move || loop {
-                // Both closures are re-read every pop_best iteration so the
-                // worker tracks live state. The visibility filter drops
-                // entries whose spatial fell out of `visible_tile_keys`
-                // (most often because the user zoomed and the LOD selector
-                // promoted that spatial to a different lod_level) — without
-                // this, the queue accumulated current-t requests for
-                // non-ideal LODs that workers would decode only for
-                // process_pending to drop on its visibility check.
                 let key = match scheduler.pop_best(
                     || view_state.timepoint(),
-                    |k| {
-                        // Empty snapshot ⇒ render thread hasn't yet run a
-                        // prepare-then-publish cycle; we have no info, so
-                        // assume visible rather than drop everything as
-                        // stale. Otherwise filter by membership.
-                        let s = visible_snapshot.lock().unwrap();
-                        s.is_empty() || s.contains(&k.spatial())
-                    },
                     3,
                 ) {
                     Some(k) => k,
@@ -1858,7 +1827,6 @@ mod ome_zarr {
             // OME-Zarr datasets we care about. Override with --cache-tiles.
             cache_capacity: 4096,
             n_timepoints,
-            visible_snapshot,
             queue_count_at: {
                 let s = scheduler.clone();
                 Arc::new(move |t| s.count_at(t))
@@ -1945,16 +1913,11 @@ mod ome_zarr {
         /// when this call started, those new entries would look "stale"
         /// and get dropped — which is exactly the deadlock-via-mismatch
         /// bug that produced "nothing ever loads" during scrubbing.
-        pub fn pop_best<F, G>(
+        pub fn pop_best<F: Fn() -> u32>(
             &self,
             current_t: F,
-            is_visible: G,
             max_useful_dist: i32,
-        ) -> Option<TileKey>
-        where
-            F: Fn() -> u32,
-            G: Fn(&TileKey) -> bool,
-        {
+        ) -> Option<TileKey> {
             let mut q = self.inner.queue.lock().unwrap();
             loop {
                 let now_t = current_t();
@@ -1962,28 +1925,12 @@ mod ome_zarr {
                 // Priority key: (t-distance, -lod_level). Lower is better.
                 // Coarser tiles (higher lod_level) win the tiebreak so the
                 // volume "blocks in" at coarse LOD first and refines to
-                // fine detail. Without this, HashSet iteration order makes
-                // tile selection within a distance tier effectively random.
+                // fine detail.
                 let mut best_key: (i32, i32) = (i32::MAX, i32::MAX);
                 let mut stale: Vec<TileKey> = Vec::new();
                 for &k in q.iter() {
-                    // Stale by t: too far from the live current_t. Bovista
-                    // has likely already forgotten this request (via
-                    // `requested_keys.retain` once its spatial fell out of
-                    // visibility), so workers shouldn't waste a decode.
                     let pri = (k.t as i32 - now_t as i32).abs();
                     if pri > max_useful_dist {
-                        stale.push(k);
-                        continue;
-                    }
-                    // Stale by visibility: the spatial fell out of
-                    // `visible_tile_keys`. Most common cause is a zoom
-                    // that promoted this spatial to a different LOD —
-                    // the OLD lod_level's TileKey is no longer in the
-                    // visible set, and bovista will drop the tile on
-                    // arrival via its own visibility check. Skipping
-                    // the decode entirely saves the round-trip.
-                    if !is_visible(&k) {
                         stale.push(k);
                         continue;
                     }
