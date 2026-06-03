@@ -288,29 +288,22 @@ impl VirtualTextureData {
             let mut guard = self.pending_chunks.lock().unwrap();
             guard.drain().collect()
         };
-        // Make room for the whole batch up front. Phase 2 of eviction will
-        // surrender prefetched-other-t slots specifically — so the current
-        // frame's tiles can always land regardless of how full the atlas
-        // got with neighbor-timepoint prefetch material.
-        if !pending.is_empty() {
-            self.evict_tiles(queue, pending.len());
-        }
 
         for (key, data) in pending {
             if self.slot_map.contains_key(&key) {
                 continue;
             }
-
-            // Visibility is spatial — compare the (lod, z, y, x) part only.
-            // Tiles for adjacent timepoints (prefetched ahead) hit this
-            // path because the camera hasn't moved, so the spatial key IS
-            // visible even though the tile's `t` isn't current.
+            // Visibility is spatial — tiles at neighbor timepoints share
+            // the same spatial as the user's current frame, so they pass.
             if !self.visible_tile_keys.contains(&key.spatial()) {
                 self.requested_keys.remove(&key);
                 continue;
             }
-
-            let Some(slot) = self.atlas_allocator.alloc() else {
+            // pick_slot handles allocation + eviction in one shot. Returns
+            // None only when no resident slot is lower-priority than this
+            // incoming tile (e.g. trying to prefetch t+5 while every slot
+            // already holds something closer to desired_t).
+            let Some(slot) = self.pick_slot(queue, key.t) else {
                 self.requested_keys.remove(&key);
                 continue;
             };
@@ -318,37 +311,16 @@ impl VirtualTextureData {
             self.write_tile_to_atlas(queue, slot, &data);
 
             let TileKey { lod_level, t, z, y, x } = key;
-            if log::log_enabled!(log::Level::Trace) {
-                let (gx, gy, _gz) = {
-                    let (gz2, gy2, gx2) = self.levels[lod_level].grid_size();
-                    (gx2, gy2, gz2)
-                };
-                let linear = z * gy * gx + y * gx + x;
-                log::trace!(
-                    "VT load: lod={lod_level} t={t} ({x},{y},{z}) linear={linear} slot={slot} \
-                     col={} row={} layer={}",
-                    slot % self.atlas_cols,
-                    (slot / self.atlas_cols) % self.atlas_rows,
-                    slot / (self.atlas_cols * self.atlas_rows),
-                );
-            }
             // Only point the page table at this tile if it's the user's
             // currently-requested timepoint. Prefetched tiles (other t)
-            // sit in slot_map silently — `maybe_advance_presentation`
-            // will wire them into the page table on the prepare where
-            // `desired_t` reaches their t.
+            // sit in slot_map silently — `maybe_advance_presentation` will
+            // wire them in when desired_t reaches their t.
             //
-            // Two reasons we DON'T unconditionally write here:
-            //   1. Each write is a `queue.write_texture` on the page-table
-            //      texture; on the GL backend that adds up fast. Bounding
-            //      writes to "tiles the user actually wants on screen
-            //      RIGHT NOW" cuts ~lookahead× the GL traffic per frame.
-            //   2. Worse, unconditional write is destructive: a prefetch
-            //      tile arriving for the same spatial would overwrite a
-            //      good `desired_t` entry with a different-t entry. The
-            //      shader filter would then reject the prefetch entry
-            //      and the spatial would go blank even though we have
-            //      the right tile in atlas.
+            // Unconditional write here would be destructive: a prefetch
+            // arrival for the same spatial would overwrite a good
+            // desired_t entry; the shader filter would then reject it and
+            // the spatial would go blank even though the right tile is in
+            // atlas. It also tripled the GL traffic on `page_table.update`.
             if t == self.desired_t {
                 self.page_table.update(queue, lod_level, z, y, x, t, slot);
                 self.last_written_slot.insert(key.spatial(), slot);
