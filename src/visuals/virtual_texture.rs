@@ -330,12 +330,27 @@ impl VirtualTextureData {
                     slot / (self.atlas_cols * self.atlas_rows),
                 );
             }
-            // Always write the page-table entry: tag it with this tile's
-            // `t` so the shader can filter against `desired_t`. Stale-t
-            // entries left behind after a scrub are rejected at sample
-            // time, so they don't need explicit clearing here.
-            self.page_table.update(queue, lod_level, z, y, x, t, slot);
-            self.page_table_slot.insert(key.spatial(), slot);
+            // Only point the page table at this tile if it's the user's
+            // currently-requested timepoint. Prefetched tiles (other t)
+            // sit in slot_map silently — `maybe_advance_presentation`
+            // will wire them into the page table on the prepare where
+            // `desired_t` reaches their t.
+            //
+            // Two reasons we DON'T unconditionally write here:
+            //   1. Each write is a `queue.write_texture` on the page-table
+            //      texture; on the GL backend that adds up fast. Bounding
+            //      writes to "tiles the user actually wants on screen
+            //      RIGHT NOW" cuts ~lookahead× the GL traffic per frame.
+            //   2. Worse, unconditional write is destructive: a prefetch
+            //      tile arriving for the same spatial would overwrite a
+            //      good `desired_t` entry with a different-t entry. The
+            //      shader filter would then reject the prefetch entry
+            //      and the spatial would go blank even though we have
+            //      the right tile in atlas.
+            if t == self.desired_t {
+                self.page_table.update(queue, lod_level, z, y, x, t, slot);
+                self.page_table_slot.insert(key.spatial(), slot);
+            }
 
             self.slot_map.insert(key, slot);
             self.lru_map.insert(key, self.frame_counter);
