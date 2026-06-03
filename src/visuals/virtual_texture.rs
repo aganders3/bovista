@@ -331,35 +331,32 @@ impl VirtualTextureData {
         }
     }
 
-    /// For every visible spatial, ensure the page table points at the
-    /// slot holding the `desired_t` tile (if resident). Tiles at other
-    /// timepoints sit in the atlas with their page-table entries left
-    /// alone — the shader's `desired_t` compare rejects them, so no
-    /// explicit clear is needed.
+    /// For every visible spatial, point the page table at the slot
+    /// holding the `desired_t` tile if resident. Tiles at other
+    /// timepoints sit in slot_map silently — the shader's `desired_t`
+    /// compare rejects any page-table entries left at other t's, so no
+    /// explicit clear is needed when desired_t changes.
     ///
-    /// O(visible) per call: each visible spatial does one slot_map
-    /// lookup. Cheap enough to run every prepare without any dirty-bit
-    /// gating.
-    fn maybe_advance_presentation(&mut self, queue: &Queue) {
+    /// Two cheap gates keep the GL traffic bounded:
+    ///   - skip spatials with no resident `desired_t` tile (slot_map miss),
+    ///   - skip spatials where `last_written_slot` already shows this slot.
+    /// In steady state (page table fully wired for desired_t), this runs
+    /// zero `queue.write_texture` calls.
+    ///
+    /// O(visible) per call; cheap enough to run every prepare.
+    fn refresh_page_table(&mut self, queue: &Queue) {
         let target = self.desired_t;
-        let mut loaded = 0usize;
-        let visible: Vec<TileKey> = self.visible_tile_keys.iter().copied().collect();
+        let visible: Vec<TileKey> =
+            self.visible_tile_keys.iter().copied().collect();
         for spatial in &visible {
             let key = TileKey { lod_level: spatial.lod_level, t: target,
                                 z: spatial.z, y: spatial.y, x: spatial.x };
-            if let Some(&slot) = self.slot_map.get(&key) {
-                if self.last_written_slot.get(spatial) != Some(&slot) {
-                    self.page_table.update(queue,
-                        spatial.lod_level, spatial.z, spatial.y, spatial.x, target, slot);
-                    self.last_written_slot.insert(*spatial, slot);
-                }
-                loaded += 1;
-            }
+            let Some(&slot) = self.slot_map.get(&key) else { continue; };
+            if self.last_written_slot.get(spatial) == Some(&slot) { continue; }
+            self.page_table.update(queue,
+                spatial.lod_level, spatial.z, spatial.y, spatial.x, target, slot);
+            self.last_written_slot.insert(*spatial, slot);
         }
-        log::debug!(
-            "VT presentation_t: {} → {} ({}/{} resident at target)",
-            self.presentation_t, target, loaded, visible.len(),
-        );
         self.presentation_t = target;
     }
 
@@ -753,7 +750,7 @@ impl VirtualTextureData {
         self.prefetch_forward(target_t);
         // Once all visible-at-desired-t tiles have arrived, flip the page
         // table. Single in-frame swap, no flicker.
-        self.maybe_advance_presentation(queue);
+        self.refresh_page_table(queue);
     }
 
     /// Prefetch the next N timepoints after `target_t`. Throttled to
@@ -846,6 +843,6 @@ impl VirtualTextureData {
             }
         }
         self.prefetch_forward(target_t);
-        self.maybe_advance_presentation(queue);
+        self.refresh_page_table(queue);
     }
 }
