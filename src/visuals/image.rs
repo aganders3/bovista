@@ -448,8 +448,7 @@ impl ImageVisual {
         self.strategy.set_desired_timepoint(t);
     }
 
-    pub fn presentation_t(&self) -> u32 { self.strategy.presentation_t() }
-    pub fn desired_t(&self)      -> u32 { self.strategy.desired_t() }
+    pub fn desired_t(&self) -> u32 { self.strategy.desired_t() }
 
     /// Enable look-ahead prefetching of the next `lookahead` timepoints.
     /// Look-ahead only by design — the LRU pool keeps recently-displayed

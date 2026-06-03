@@ -446,8 +446,7 @@ impl VolumeVisual {
         self.strategy.set_prefetch(lookahead, t_count);
     }
 
-    pub fn presentation_t(&self) -> u32 { self.strategy.presentation_t() }
-    pub fn desired_t(&self)      -> u32 { self.strategy.desired_t() }
+    pub fn desired_t(&self) -> u32 { self.strategy.desired_t() }
 
     /// Snapshot of the spatial tile keys bovista currently considers
     /// visible (TileKey entries with t=0, i.e. (lod, z, y, x) only). Used

@@ -100,14 +100,11 @@ pub struct VirtualTextureData {
     pub lod_bias: f32,
     target_pixels_per_voxel: f32,
     pub cached_ideal_lod: usize,
-    /// Timepoint currently reflected in the page table (what the shader is
-    /// actually displaying).
-    presentation_t: u32,
-    /// Timepoint the caller wants to display. The page table flips to
-    /// `desired_t` immediately on each call to `set_desired_timepoint` —
-    /// missing tiles at the new t just fall back to coarser LODs via the
-    /// shader's existing fallback path. As fine tiles arrive (via
-    /// `process_pending_chunks`) the page table refines.
+    /// Timepoint the caller wants to display. Missing tiles at this t
+    /// fall back to coarser LODs via the shader's existing LOD-walk;
+    /// the shader's `desired_t` uniform compare also rejects any stale
+    /// entries left in the page table from a previous t. As fine tiles
+    /// arrive via `process_pending_chunks` the page table refines.
     desired_t: u32,
     /// Prefetch ±N timepoints around `desired_t` every prepare. Runs
     /// through the SAME request path as current-t (slot_map check +
@@ -203,7 +200,6 @@ impl VirtualTextureData {
             target_pixels_per_voxel: 1.0,
             cached_ideal_lod: 0,
             levels: lod_levels,
-            presentation_t: 0,
             desired_t: 0,
             prefetch_lookahead: 0,
             t_count: 1,
@@ -228,7 +224,6 @@ impl VirtualTextureData {
         self.desired_t = t;
     }
 
-    pub fn presentation_t(&self) -> u32 { self.presentation_t }
     pub fn desired_t(&self) -> u32 { self.desired_t }
 
     // ── Tile management ──────────────────────────────────────────────────────
@@ -357,7 +352,6 @@ impl VirtualTextureData {
                 spatial.lod_level, spatial.z, spatial.y, spatial.x, target, slot);
             self.last_written_slot.insert(*spatial, slot);
         }
-        self.presentation_t = target;
     }
 
     /// Return an atlas slot suitable for storing a tile at `tile_t`. If the
@@ -721,10 +715,12 @@ impl VirtualTextureData {
         self.requested_keys.retain(|k|
             self.visible_tile_keys.contains(&k.spatial()) || self.slot_map.contains_key(k)
         );
-        // Touch LRU for the slots that are currently being displayed.
-        let presentation_t = self.presentation_t;
+        // Touch LRU for the slots that are currently being displayed
+        // (those at desired_t — anything else can't pass the shader's
+        // t-filter, so it isn't on screen).
+        let target = self.desired_t;
         for spatial in &self.visible_tile_keys {
-            let key = TileKey { lod_level: spatial.lod_level, t: presentation_t,
+            let key = TileKey { lod_level: spatial.lod_level, t: target,
                                 z: spatial.z, y: spatial.y, x: spatial.x };
             if self.slot_map.contains_key(&key) {
                 self.lru_map.insert(key, frame_number);
@@ -815,17 +811,17 @@ impl VirtualTextureData {
             self.visible_tile_keys.contains(&k.spatial()) || self.slot_map.contains_key(k)
         );
 
-        let presentation_t = self.presentation_t;
+        // Touch LRU for displayed slots (at desired_t — anything else
+        // is shader-filtered).
+        let target = self.desired_t;
         for spatial in &self.visible_tile_keys {
-            let key = TileKey { lod_level: spatial.lod_level, t: presentation_t,
+            let key = TileKey { lod_level: spatial.lod_level, t: target,
                                 z: spatial.z, y: spatial.y, x: spatial.x };
             if self.slot_map.contains_key(&key) {
                 self.lru_map.insert(key, frame_number);
             }
         }
 
-        // Eviction is now batched inside process_pending_chunks so it sizes
-        // to the actual incoming work.
         self.process_pending_chunks(queue);
 
         // Request tiles at the timepoint the caller wants to display next.
