@@ -18,6 +18,38 @@ pub type PendingChunks = Arc<Mutex<HashMap<TileKey, TileData>>>;
 /// what to fetch.
 pub type Wanted = Arc<Mutex<HashMap<TileKey, i32>>>;
 
+/// Per-prepare timing + counts. Refreshed by every `prepare` /
+/// `prepare_volume` call, exposed via `VolumeVisual::stats()` /
+/// `ImageVisual::stats()` for performance diagnostics. Read it from
+/// the render loop after `scene.prepare` returns; it reflects the
+/// most recent prepare.
+#[derive(Default, Clone, Debug)]
+pub struct PrepareStats {
+    /// Frame number this snapshot covers.
+    pub frame: u64,
+    /// Tiles drained from `pending_chunks` and successfully written.
+    pub tiles_installed: usize,
+    /// Tiles drained from `pending_chunks` but dropped (slot_map
+    /// already had them, no longer visible, or `pick_slot` returned
+    /// None because no resident slot was lower-priority).
+    pub tiles_dropped: usize,
+    /// Wallclock time spent in `process_pending_chunks`.
+    pub process_pending_ns: u64,
+    /// Wallclock time spent in `refresh_page_table`.
+    pub refresh_page_table_ns: u64,
+    /// Wallclock time spent in `publish_wanted`.
+    pub publish_wanted_ns: u64,
+    /// `queue.write_texture` calls into the atlas this prepare.
+    pub atlas_writes: usize,
+    /// `queue.write_texture` calls into the page table this prepare.
+    pub page_table_writes: usize,
+    /// `slot_map` size at end of prepare (atlas occupancy).
+    pub slot_map_len: usize,
+    /// `pending_chunks` size at end of prepare (tiles waiting after
+    /// any per-frame cap).
+    pub pending_len: usize,
+}
+
 /// Configuration for a single LOD level in the pyramid
 #[derive(Debug, Clone)]
 pub struct LodLevelConfig {
@@ -97,6 +129,10 @@ pub struct VirtualTextureData {
     /// from scratch at the end of every prepare; loaders read it and
     /// decide what to fetch and in what order. No callbacks.
     pub wanted: Wanted,
+
+    /// Diagnostic snapshot of the most recent prepare. Read by the
+    /// example's render loop to print [perf] lines.
+    pub stats: PrepareStats,
 
     pub max_tiles: usize,
     frame_counter: u64,
@@ -194,6 +230,7 @@ impl VirtualTextureData {
             lru_map: HashMap::new(),
             pending_chunks: Arc::new(Mutex::new(HashMap::new())),
             wanted: Arc::new(Mutex::new(HashMap::new())),
+            stats: PrepareStats::default(),
             max_tiles,
             frame_counter: 0,
             visible_tile_keys: HashSet::new(),
@@ -294,24 +331,35 @@ impl VirtualTextureData {
     }
 
     fn process_pending_chunks(&mut self, queue: &Queue) {
+        let t0 = std::time::Instant::now();
         let pending: Vec<(TileKey, TileData)> = {
             let mut guard = self.pending_chunks.lock().unwrap();
             guard.drain().collect()
         };
 
+        let mut installed = 0usize;
+        let mut dropped = 0usize;
+        let mut atlas_writes = 0usize;
+        let mut page_table_writes = 0usize;
         for (key, data) in pending {
             if self.slot_map.contains_key(&key) {
+                dropped += 1;
                 continue;
             }
             // Visibility is spatial — tiles at neighbor timepoints share
             // the same spatial as the user's current frame, so they pass.
             if !self.visible_tile_keys.contains(&key.spatial()) {
+                dropped += 1;
                 continue;
             }
             // pick_slot handles allocation + eviction in one shot.
-            let Some(slot) = self.pick_slot(queue, key.t) else { continue; };
+            let Some(slot) = self.pick_slot(queue, key.t) else {
+                dropped += 1;
+                continue;
+            };
 
             self.write_tile_to_atlas(queue, slot, &data);
+            atlas_writes += 1;
 
             let TileKey { lod_level, t, z, y, x } = key;
             // Only point the page table at this tile if it's the user's
@@ -325,11 +373,19 @@ impl VirtualTextureData {
             if t == self.desired_t {
                 self.page_table.update(queue, lod_level, z, y, x, t, slot);
                 self.last_written_slot.insert(key.spatial(), slot);
+                page_table_writes += 1;
             }
 
             self.slot_map.insert(key, slot);
             self.lru_map.insert(key, self.frame_counter);
+            installed += 1;
         }
+
+        self.stats.process_pending_ns = t0.elapsed().as_nanos() as u64;
+        self.stats.tiles_installed = installed;
+        self.stats.tiles_dropped = dropped;
+        self.stats.atlas_writes = atlas_writes;
+        self.stats.page_table_writes = page_table_writes;
     }
 
     /// For every visible spatial, point the page table at the slot
@@ -349,7 +405,8 @@ impl VirtualTextureData {
     /// timepoints (priority = offset), skipping anything already in
     /// `slot_map`. Loaders read this map and decide what to fetch and
     /// in what order.
-    fn publish_wanted(&self) {
+    fn publish_wanted(&mut self) {
+        let t0 = std::time::Instant::now();
         let lookahead = self.prefetch_lookahead as i32;
         let mut next: HashMap<TileKey, i32> = HashMap::with_capacity(
             self.visible_tile_keys.len() * (1 + lookahead.max(0) as usize),
@@ -370,11 +427,14 @@ impl VirtualTextureData {
             }
         }
         *self.wanted.lock().unwrap() = next;
+        self.stats.publish_wanted_ns = t0.elapsed().as_nanos() as u64;
     }
 
     /// O(visible) per call; cheap enough to run every prepare.
     fn refresh_page_table(&mut self, queue: &Queue) {
+        let t0 = std::time::Instant::now();
         let target = self.desired_t;
+        let mut writes = 0usize;
         let visible: Vec<TileKey> =
             self.visible_tile_keys.iter().copied().collect();
         for spatial in &visible {
@@ -385,7 +445,12 @@ impl VirtualTextureData {
             self.page_table.update(queue,
                 spatial.lod_level, spatial.z, spatial.y, spatial.x, target, slot);
             self.last_written_slot.insert(*spatial, slot);
+            writes += 1;
         }
+        self.stats.refresh_page_table_ns = t0.elapsed().as_nanos() as u64;
+        // Add to atlas-vs-page-table breakdown so it's clear how many
+        // page-table writes came from this path vs process_pending.
+        self.stats.page_table_writes += writes;
     }
 
     /// Return an atlas slot suitable for storing a tile at `tile_t`. If the
@@ -723,6 +788,7 @@ impl VirtualTextureData {
         frame_number: u64,
         camera_info: &crate::visual::CameraInfo,
     ) {
+        self.stats = PrepareStats { frame: frame_number, ..Default::default() };
         self.frame_counter = frame_number;
         self.update_visible_tiles_volume(camera_info);
         // Touch LRU for displayed slots (at desired_t — anything else
@@ -740,6 +806,8 @@ impl VirtualTextureData {
         // Publish what we want; the loader (whoever wired one up) picks
         // it up on its next poll.
         self.publish_wanted();
+        self.stats.slot_map_len = self.slot_map.len();
+        self.stats.pending_len = self.pending_chunks.lock().unwrap().len();
     }
 
     // ── Main prepare ─────────────────────────────────────────────────────────
@@ -751,6 +819,7 @@ impl VirtualTextureData {
         frame_number: u64,
         camera_info: &crate::visual::CameraInfo,
     ) {
+        self.stats = PrepareStats { frame: frame_number, ..Default::default() };
         self.frame_counter = frame_number;
         self.update_visible_tiles(slice_plane, camera_info);
 
@@ -768,5 +837,7 @@ impl VirtualTextureData {
         self.process_pending_chunks(queue);
         self.refresh_page_table(queue);
         self.publish_wanted();
+        self.stats.slot_map_len = self.slot_map.len();
+        self.stats.pending_len = self.pending_chunks.lock().unwrap().len();
     }
 }

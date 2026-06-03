@@ -444,6 +444,11 @@ impl ImageVisual {
         self.strategy.wanted.clone()
     }
 
+    /// Snapshot of the most recent prepare's timing/counts.
+    pub fn stats(&self) -> crate::visuals::virtual_texture::PrepareStats {
+        self.strategy.stats.clone()
+    }
+
     /// Request that the image display timepoint `t`. Identical semantics
     /// to `VolumeVisual::set_desired_timepoint` — page table flips once
     /// the visible tiles for `t` have arrived.

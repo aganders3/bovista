@@ -278,6 +278,13 @@ fn main() {
     // Last seen t_generation so we can detect timepoint changes and flush
     // the atlas exactly once per change (rather than every frame).
     let mut last_t_gen: u32 = view_state.t_generation();
+    // Perf accumulators — flushed once per wall-clock second.
+    let mut perf_last_report = Instant::now();
+    let mut perf_frame_count: u32 = 0;
+    let mut perf_prepare_ns_sum: u128 = 0;
+    let mut perf_prepare_ns_max: u128 = 0;
+    #[allow(unused_assignments)]
+    let mut perf_last_stats = bovista::visuals::virtual_texture::PrepareStats::default();
     // True while we're in the post-flush diagnostic window.
     let mut flush_active = false;
     // ns since program start when the current flush began (0 = none).
@@ -360,21 +367,50 @@ fn main() {
             width, height,
         );
         // Sample diagnostic counters from bovista for the progress log.
-        let (loaded_now, visible_now, current_t_now) = {
+        let (loaded_now, visible_now, current_t_now, prep_stats) = {
             let v = volume_arc.lock().unwrap();
             let (loaded, visible) = v.current_t_load_status();
-            (loaded, visible, v.desired_t())
+            (loaded, visible, v.desired_t(), v.stats())
         };
-        // Progress line, once per second of wall-clock time. Suppress when
-        // the timepoint is fully loaded AND nothing is queued — that's the
-        // "settled, nothing changing" state and would just spam the log.
-        if frame_n.is_multiple_of(30) {
+        // Perf accumulators.
+        perf_frame_count += 1;
+        let prep_ns = prepare_dt.as_nanos();
+        perf_prepare_ns_sum += prep_ns;
+        if prep_ns > perf_prepare_ns_max { perf_prepare_ns_max = prep_ns; }
+        perf_last_stats = prep_stats;
+
+        // Once per wall-clock second: emit [progress] + [perf]. The
+        // wall-clock gate (vs `frame_n % 30`) means the report rate
+        // is independent of any frame-pacer skips.
+        if perf_last_report.elapsed() >= Duration::from_secs(1) {
+            let elapsed_s = perf_last_report.elapsed().as_secs_f32();
             let in_queue = (queue_count_at)(current_t_now);
+            let fps = perf_frame_count as f32 / elapsed_s;
+            let avg_ms = (perf_prepare_ns_sum as f32 / perf_frame_count as f32) / 1_000_000.0;
+            let max_ms = perf_prepare_ns_max as f32 / 1_000_000.0;
+            let s = &perf_last_stats;
+            let pp_ms     = s.process_pending_ns as f32 / 1_000_000.0;
+            let rpt_ms    = s.refresh_page_table_ns as f32 / 1_000_000.0;
+            let pw_ms     = s.publish_wanted_ns as f32 / 1_000_000.0;
             let all_loaded = loaded_now == visible_now;
             if !(all_loaded && in_queue == 0) {
                 println!("[progress] t={} loaded {}/{} | queued {}",
                          current_t_now, loaded_now, visible_now, in_queue);
             }
+            println!(
+                "[perf] fps={:.1} prepare avg={:.1}ms max={:.1}ms | \
+                 pp={:.1}ms (in {}, drop {}, atlas {}, pt {}) | \
+                 refresh={:.1}ms | publish={:.1}ms | \
+                 slot_map={} pending={}",
+                fps, avg_ms, max_ms,
+                pp_ms, s.tiles_installed, s.tiles_dropped, s.atlas_writes, s.page_table_writes,
+                rpt_ms, pw_ms,
+                s.slot_map_len, s.pending_len,
+            );
+            perf_last_report = Instant::now();
+            perf_frame_count = 0;
+            perf_prepare_ns_sum = 0;
+            perf_prepare_ns_max = 0;
         }
         // Attribute scene.prepare() time (which includes process_pending_chunks
         // → queue.write_texture for every newly-arrived tile) to the current

@@ -423,6 +423,12 @@ impl VolumeVisual {
         self.strategy.wanted.clone()
     }
 
+    /// Snapshot of the most recent prepare's timing/counts. Refreshed
+    /// every `prepare()` call.
+    pub fn stats(&self) -> crate::visuals::virtual_texture::PrepareStats {
+        self.strategy.stats.clone()
+    }
+
     /// Drop every loaded tile so the next frame re-requests visible tiles.
     /// Rarely needed now that TileKey includes `t` — prefer
     /// `set_desired_timepoint(t)` which keeps adjacent timepoints resident
