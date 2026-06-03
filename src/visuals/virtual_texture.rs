@@ -72,13 +72,15 @@ pub struct VirtualTextureData {
 
     // TileKey → atlas slot index
     pub slot_map: HashMap<TileKey, u32>,
-    // Reverse index: SPATIAL key (t forced to 0) → atlas slot currently
-    // pointed at by the page table. Lets us detect when the slot a
-    // page-table entry references is about to be evicted, so we can clear
-    // the page-table entry instead of letting the shader read garbage
-    // from a now-recycled slot. Decoupled from `slot_map` because the
-    // page table only ever points at one t-version per spatial.
-    page_table_slot: HashMap<TileKey, u32>,
+    // SPATIAL key (t forced to 0) → atlas slot the page table currently
+    // points at for that spatial. Two uses, both about gating GPU writes:
+    //   1. `refresh_page_table` skips `queue.write_texture` calls for
+    //      spatials whose entry already points at the right slot.
+    //   2. On eviction, lets us detect when the slot a page-table entry
+    //      references is about to be recycled, so we can clear the
+    //      entry instead of letting the shader read garbage.
+    // NOT consulted by the eviction filter — that's the deadlock trap.
+    last_written_slot: HashMap<TileKey, u32>,
     // TileKey → last frame the tile was accessed
     lru_map: HashMap<TileKey, u64>,
 
@@ -189,7 +191,7 @@ impl VirtualTextureData {
             atlas_layers: layers,
             page_table,
             slot_map: HashMap::new(),
-            page_table_slot: HashMap::new(),
+            last_written_slot: HashMap::new(),
             lru_map: HashMap::new(),
             pending_chunks: Arc::new(Mutex::new(HashMap::new())),
             requested_keys: HashSet::new(),
@@ -239,10 +241,10 @@ impl VirtualTextureData {
     /// data shape itself has changed.
     pub fn clear_atlas(&mut self, queue: &Queue) {
         // Clear every page-table entry that's been written.
-        for spatial in self.page_table_slot.keys() {
+        for spatial in self.last_written_slot.keys() {
             self.page_table.clear(queue, spatial.lod_level, spatial.z, spatial.y, spatial.x);
         }
-        self.page_table_slot.clear();
+        self.last_written_slot.clear();
         self.slot_map.clear();
         self.lru_map.clear();
         self.requested_keys.clear();
@@ -349,7 +351,7 @@ impl VirtualTextureData {
             //      the right tile in atlas.
             if t == self.desired_t {
                 self.page_table.update(queue, lod_level, z, y, x, t, slot);
-                self.page_table_slot.insert(key.spatial(), slot);
+                self.last_written_slot.insert(key.spatial(), slot);
             }
 
             self.slot_map.insert(key, slot);
@@ -374,10 +376,10 @@ impl VirtualTextureData {
             let key = TileKey { lod_level: spatial.lod_level, t: target,
                                 z: spatial.z, y: spatial.y, x: spatial.x };
             if let Some(&slot) = self.slot_map.get(&key) {
-                if self.page_table_slot.get(spatial) != Some(&slot) {
+                if self.last_written_slot.get(spatial) != Some(&slot) {
                     self.page_table.update(queue,
                         spatial.lod_level, spatial.z, spatial.y, spatial.x, target, slot);
-                    self.page_table_slot.insert(*spatial, slot);
+                    self.last_written_slot.insert(*spatial, slot);
                 }
                 loaded += 1;
             }
@@ -387,6 +389,61 @@ impl VirtualTextureData {
             self.presentation_t, target, loaded, visible.len(),
         );
         self.presentation_t = target;
+    }
+
+    /// Return an atlas slot suitable for storing a tile at `tile_t`. If the
+    /// allocator has a free slot, use it. Otherwise pick the worst-priority
+    /// resident slot and evict it — but only if it really is lower-priority
+    /// than the incoming tile.
+    ///
+    /// Effective distance per slot:
+    ///   non-visible spatial → u64::MAX (always evictable)
+    ///   visible spatial     → |slot.t - desired_t|
+    /// Within a tier, oldest LRU loses. The incoming tile claims the slot
+    /// iff `eff > |tile_t - desired_t|`, so a current-t arrival (dist 0)
+    /// can claim any non-current slot; a prefetch at distance D can only
+    /// claim slots at distance > D.
+    fn pick_slot(&mut self, queue: &Queue, tile_t: u32) -> Option<u32> {
+        if let Some(slot) = self.atlas_allocator.alloc() {
+            return Some(slot);
+        }
+        let current = self.desired_t;
+        let incoming_dist = (tile_t as i64 - current as i64).unsigned_abs();
+        // Single pass over slot_map. Tuple ordering: (eff_dist, age, key, slot)
+        // sorts as we want — eff_dist descending then age descending — when
+        // we keep the maximum.
+        let mut best: Option<(u64, u64, TileKey, u32)> = None;
+        for (k, &slot) in &self.slot_map {
+            let eff = if self.visible_tile_keys.contains(&k.spatial()) {
+                (k.t as i64 - current as i64).unsigned_abs()
+            } else {
+                u64::MAX
+            };
+            let age = self.frame_counter
+                .saturating_sub(*self.lru_map.get(k).unwrap_or(&0));
+            let better = match best {
+                None => true,
+                Some((b_eff, b_age, _, _)) => (eff, age) > (b_eff, b_age),
+            };
+            if better {
+                best = Some((eff, age, *k, slot));
+            }
+        }
+        let (eff, _age, victim_key, victim_slot) = best?;
+        if eff <= incoming_dist {
+            return None;
+        }
+        self.slot_map.remove(&victim_key);
+        self.lru_map.remove(&victim_key);
+        self.requested_keys.remove(&victim_key);
+        self.atlas_allocator.free(victim_slot);
+        let spatial = victim_key.spatial();
+        if self.last_written_slot.get(&spatial) == Some(&victim_slot) {
+            let TileKey { lod_level, z, y, x, .. } = victim_key;
+            self.page_table.clear(queue, lod_level, z, y, x);
+            self.last_written_slot.remove(&spatial);
+        }
+        self.atlas_allocator.alloc()
     }
 
     /// Evict enough slots to make room for `needed_free` new tiles.
@@ -424,7 +481,7 @@ impl VirtualTextureData {
                 .filter(|(k, &slot)| {
                     self.visible_tile_keys.contains(&k.spatial())
                         && k.t != cur_ts.0 && k.t != cur_ts.1
-                        && self.page_table_slot.get(&k.spatial()) != Some(&slot)
+                        && self.last_written_slot.get(&k.spatial()) != Some(&slot)
                 })
                 .map(|(k, _)| *k)
                 .collect();
@@ -477,10 +534,10 @@ impl VirtualTextureData {
                 // as long as the slot still holds the right tile, which
                 // is what we're checking here.)
                 let spatial = key.spatial();
-                if self.page_table_slot.get(&spatial) == Some(&slot) {
+                if self.last_written_slot.get(&spatial) == Some(&slot) {
                     let TileKey { lod_level, z, y, x, .. } = key;
                     self.page_table.clear(queue, lod_level, z, y, x);
-                    self.page_table_slot.remove(&spatial);
+                    self.last_written_slot.remove(&spatial);
                 }
             }
         }
