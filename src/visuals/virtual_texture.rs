@@ -79,12 +79,6 @@ pub struct VirtualTextureData {
     // from a now-recycled slot. Decoupled from `slot_map` because the
     // page table only ever points at one t-version per spatial.
     page_table_slot: HashMap<TileKey, u32>,
-    // SPATIAL key → which `t` the page table currently displays for that
-    // spatial. Different from `presentation_t` because under fast scrubbing
-    // each spatial may settle on a different t — we always point at the
-    // closest available t per spatial. Used to decide whether an incoming
-    // tile is an improvement worth writing to the page table.
-    page_table_t: HashMap<TileKey, u32>,
     // TileKey → last frame the tile was accessed
     lru_map: HashMap<TileKey, u64>,
 
@@ -128,14 +122,6 @@ pub struct VirtualTextureData {
     /// dispatcher; throttling restores that headroom while still
     /// letting current-t (non-prefetch) requests fire every frame.
     prefetch_tick: u32,
-    /// "Page table may need reconsideration." Set whenever something
-    /// happens that could change which slot the page table should
-    /// point at: a new tile lands in slot_map, an eviction clears a
-    /// slot, visibility changes, or `desired_t` changes. Cleared at
-    /// the end of `maybe_advance_presentation`. Lets that function
-    /// early-exit when nothing has changed — useful because in a
-    /// fully-loaded steady state the slot_map scan is pure overhead.
-    page_table_dirty: bool,
 }
 
 impl VirtualTextureData {
@@ -204,7 +190,6 @@ impl VirtualTextureData {
             page_table,
             slot_map: HashMap::new(),
             page_table_slot: HashMap::new(),
-            page_table_t: HashMap::new(),
             lru_map: HashMap::new(),
             pending_chunks: Arc::new(Mutex::new(HashMap::new())),
             requested_keys: HashSet::new(),
@@ -221,7 +206,6 @@ impl VirtualTextureData {
             prefetch_lookahead: 0,
             t_count: 1,
             prefetch_tick: 0,
-            page_table_dirty: true,
         }
     }
 
@@ -239,10 +223,7 @@ impl VirtualTextureData {
     /// slot_map state at `t`. Tiles not yet loaded fall back through the
     /// shader's LOD chain; they snap in as fine tiles arrive.
     pub fn set_desired_timepoint(&mut self, t: u32) {
-        if t != self.desired_t {
-            self.desired_t = t;
-            self.page_table_dirty = true;
-        }
+        self.desired_t = t;
     }
 
     pub fn presentation_t(&self) -> u32 { self.presentation_t }
@@ -262,7 +243,6 @@ impl VirtualTextureData {
             self.page_table.clear(queue, spatial.lod_level, spatial.z, spatial.y, spatial.x);
         }
         self.page_table_slot.clear();
-        self.page_table_t.clear();
         self.slot_map.clear();
         self.lru_map.clear();
         self.requested_keys.clear();
@@ -350,81 +330,46 @@ impl VirtualTextureData {
                     slot / (self.atlas_cols * self.atlas_rows),
                 );
             }
-            // Page table points at whichever resident tile is closest to
-            // `desired_t` per spatial — not strictly `t == presentation_t`.
-            // The strict-equality variant freezes the display under fast
-            // scrubbing: a worker finishing decode after the user moved on
-            // would fail the equality check and leave its tile orphaned in
-            // slot_map, never reaching the page table. Closeness-to-desired
-            // lets every fresh tile improve the displayed image, even when
-            // the user is scrubbing too fast for any single t to fully load.
-            let spatial = key.spatial();
-            let new_dist = (t as i32 - self.desired_t as i32).abs();
-            let should_update = match self.page_table_t.get(&spatial) {
-                None => true,
-                Some(&existing_t) => {
-                    let old_dist = (existing_t as i32 - self.desired_t as i32).abs();
-                    new_dist < old_dist
-                }
-            };
-            if should_update {
-                self.page_table.update(queue, lod_level, z, y, x, slot);
-                self.page_table_slot.insert(spatial, slot);
-                self.page_table_t.insert(spatial, t);
-            }
+            // Always write the page-table entry: tag it with this tile's
+            // `t` so the shader can filter against `desired_t`. Stale-t
+            // entries left behind after a scrub are rejected at sample
+            // time, so they don't need explicit clearing here.
+            self.page_table.update(queue, lod_level, z, y, x, t, slot);
+            self.page_table_slot.insert(key.spatial(), slot);
 
             self.slot_map.insert(key, slot);
             self.lru_map.insert(key, self.frame_counter);
-            self.page_table_dirty = true;
         }
     }
 
-    /// For every visible spatial, repoint the page table at whichever
-    /// resident tile is closest in `t` to `desired_t`. Walking slot_map
-    /// once per prepare gives us "best available everywhere" without
-    /// needing per-tile bookkeeping — and under fast scrubbing it means
-    /// every freshly-arrived neighbor lands in the page table on the
-    /// next prepare even if no exact-t match exists.
+    /// For every visible spatial, ensure the page table points at the
+    /// slot holding the `desired_t` tile (if resident). Tiles at other
+    /// timepoints sit in the atlas with their page-table entries left
+    /// alone — the shader's `desired_t` compare rejects them, so no
+    /// explicit clear is needed.
+    ///
+    /// O(visible) per call: each visible spatial does one slot_map
+    /// lookup. Cheap enough to run every prepare without any dirty-bit
+    /// gating.
     fn maybe_advance_presentation(&mut self, queue: &Queue) {
-        // Nothing happened that could change the page table since the
-        // last call — skip the slot_map scan entirely. Visibility
-        // changes alone don't dirty: spatials newly visible whose tile
-        // is still in atlas will get their page-table entry restored
-        // the next time a tile lands for them (process_pending closest-t
-        // check handles that); spatials going non-visible are handled
-        // lazily via eviction.
-        if !self.page_table_dirty && self.desired_t == self.presentation_t {
-            return;
-        }
         let target = self.desired_t;
-        // Bucket slot_map by visible-spatial, keeping the closest-t entry.
-        // Single O(slot_map) pass; faster than O(visible × slot_map).
-        let mut best: HashMap<TileKey, (u32, u32, i32)> =
-            HashMap::with_capacity(self.visible_tile_keys.len());
-        for (k, &slot) in &self.slot_map {
-            let sp = k.spatial();
-            if !self.visible_tile_keys.contains(&sp) { continue; }
-            let dist = (k.t as i32 - target as i32).abs();
-            best.entry(sp)
-                .and_modify(|e| if dist < e.2 { *e = (k.t, slot, dist); })
-                .or_insert((k.t, slot, dist));
+        let mut loaded = 0usize;
+        let visible: Vec<TileKey> = self.visible_tile_keys.iter().copied().collect();
+        for spatial in &visible {
+            let key = TileKey { lod_level: spatial.lod_level, t: target,
+                                z: spatial.z, y: spatial.y, x: spatial.x };
+            if let Some(&slot) = self.slot_map.get(&key) {
+                if self.page_table_slot.get(spatial) != Some(&slot) {
+                    self.page_table.update(queue,
+                        spatial.lod_level, spatial.z, spatial.y, spatial.x, target, slot);
+                    self.page_table_slot.insert(*spatial, slot);
+                }
+                loaded += 1;
+            }
         }
-        let mut loaded_at_target = 0usize;
-        for (spatial, (t, slot, dist)) in &best {
-            // Skip if page table already points at this exact slot.
-            if self.page_table_slot.get(spatial) == Some(slot) { continue; }
-            self.page_table.update(queue,
-                spatial.lod_level, spatial.z, spatial.y, spatial.x, *slot);
-            self.page_table_slot.insert(*spatial, *slot);
-            self.page_table_t.insert(*spatial, *t);
-            if *dist == 0 { loaded_at_target += 1; }
-        }
-        self.page_table_dirty = false;
         log::debug!(
-            "VT presentation_t: {} → {} ({}/{} at-target, {} fallback)",
-            self.presentation_t, target,
-            loaded_at_target, self.visible_tile_keys.len(),
-            best.len().saturating_sub(loaded_at_target),
+            "VT presentation_t: {} → {} ({}/{} resident at target)",
+            self.presentation_t, target, loaded, visible.len(),
         );
         self.presentation_t = target;
     }
@@ -521,8 +466,6 @@ impl VirtualTextureData {
                     let TileKey { lod_level, z, y, x, .. } = key;
                     self.page_table.clear(queue, lod_level, z, y, x);
                     self.page_table_slot.remove(&spatial);
-                    self.page_table_t.remove(&spatial);
-                    self.page_table_dirty = true;
                 }
             }
         }

@@ -524,7 +524,7 @@ impl Visual for ImageVisual {
             debug_mode: self.debug_mode as u32,
             page_table_width: vt.page_table.width,
             target_lod: vt.cached_ideal_lod as u32,
-            _pad_c: 0,
+            desired_t: vt.desired_t(),
             lods,
         };
         queue.write_buffer(&self.vt_uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));

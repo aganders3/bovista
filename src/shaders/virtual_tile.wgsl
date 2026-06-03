@@ -62,7 +62,10 @@ struct VTUniforms {
     // CPU-computed ideal LOD for this frame (accounts for lod_bias + camera distance).
     // The shader starts its page-table walk here rather than at LOD 0.
     target_lod: u32,
-    _pad_c: u32,
+    // Currently-displayed timepoint. Page-table entries whose embedded t
+    // doesn't match this are rejected (treated as non-resident), so the
+    // display stays strictly on this t with no cross-t blending.
+    desired_t: u32,
     // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
     lods: array<VTLodInfo, 16>,
 }
@@ -124,7 +127,10 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let pt_x = i32(linear % vt.page_table_width);
     let pt_y = i32(linear / vt.page_table_width);
     let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
-    if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
+    // bit 31 = resident; bits 16-30 = t (15 bits); bits 0-15 = slot.
+    let resident = (entry >> 31u) & 1u;
+    let slot_t   = (entry >> 16u) & 0x7FFFu;
+    if resident == 0u || slot_t != vt.desired_t { return vec2f(0.0, -1.0); }
     let slot = entry & 0xFFFFu;
     let atlas_col   = slot % vt.atlas_cols;
     let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;

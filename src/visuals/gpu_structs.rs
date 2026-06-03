@@ -321,7 +321,12 @@ pub struct VTUniforms {
     /// CPU-computed ideal LOD for this frame (accounts for lod_bias and camera distance).
     /// The shader starts its page-table walk here rather than at LOD 0.
     pub target_lod: u32,
-    pub _pad_c: u32,
+    /// Currently-displayed timepoint. The shader compares this against the
+    /// `t` embedded in each page-table texel; a mismatch is treated as
+    /// non-resident, which keeps the display strictly on this t (no
+    /// blending across timepoints) while letting stale entries from a
+    /// previous t persist harmlessly in the page table.
+    pub desired_t: u32,
     // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
     pub lods: [VTLodInfo; VT_MAX_LODS],
 }
@@ -340,7 +345,7 @@ impl Default for VTUniforms {
             debug_mode: 0,
             page_table_width: 1,
             target_lod: 0,
-            _pad_c: 0,
+            desired_t: 0,
             lods: [VTLodInfo { grid_dims: [1, 1, 1], _pad: 0, tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0, data_scale: [1.0, 1.0, 1.0], _pad3: 0.0 }; VT_MAX_LODS],
         }
     }

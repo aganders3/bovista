@@ -525,7 +525,7 @@ impl Visual for VolumeVisual {
             debug_mode: self.debug_mode,
             page_table_width: vt.page_table.width,
             target_lod: vt.cached_ideal_lod as u32,
-            _pad_c: 0,
+            desired_t: vt.desired_t(),
             lods,
         };
 

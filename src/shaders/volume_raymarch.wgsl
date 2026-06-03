@@ -46,7 +46,7 @@ struct VTUniforms {
     debug_mode: u32,
     page_table_width: u32,
     target_lod: u32,
-    _pad_c: u32,
+    desired_t: u32,
     lods: array<VTLodInfo, 16>,
 }
 
@@ -134,7 +134,11 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let pt_x = i32(linear % uni.vt.page_table_width);
     let pt_y = i32(linear / uni.vt.page_table_width);
     let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
-    if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
+    // bit 31 = resident; bits 16-30 = t (15 bits); bits 0-15 = slot.
+    // Not-resident OR wrong-t → tell caller to walk to coarser LOD.
+    let resident = (entry >> 31u) & 1u;
+    let slot_t   = (entry >> 16u) & 0x7FFFu;
+    if resident == 0u || slot_t != uni.vt.desired_t { return vec2f(0.0, -1.0); }
     let slot = entry & 0xFFFFu;
     let atlas_col   = slot % uni.vt.atlas_cols;
     let atlas_row   = (slot / uni.vt.atlas_cols) % uni.vt.atlas_rows;
