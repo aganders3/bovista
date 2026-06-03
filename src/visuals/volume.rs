@@ -454,6 +454,16 @@ impl VolumeVisual {
         self.strategy.current_t_load_status()
     }
 
+    /// Publish `visible_tile_keys` into a shared snapshot at the start
+    /// of each prepare. See
+    /// `VirtualTextureData::set_visible_snapshot_publish`.
+    pub fn set_visible_snapshot_publish(
+        &mut self,
+        snapshot: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<crate::visuals::gpu_structs::TileKey>>>,
+    ) {
+        self.strategy.set_visible_snapshot_publish(snapshot);
+    }
+
     /// Snapshot of the spatial tile keys bovista currently considers
     /// visible (TileKey entries with t=0, i.e. (lod, z, y, x) only). Used
     /// by external prefetchers to know which keys to populate for adjacent

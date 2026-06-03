@@ -211,6 +211,11 @@ fn main() {
     if n_timepoints > 1 {
         volume.set_prefetch(2, n_timepoints);
     }
+    // Hand bovista the visible-snapshot Arc so it publishes the visible
+    // set EARLY in prepare (before tile requests dispatch). Workers'
+    // visibility filter then sees fresh data when they wake on those
+    // pushes, instead of the previous frame's snapshot.
+    volume.set_visible_snapshot_publish(setup_visible_snapshot.clone());
 
     // Density scales with voxel-to-world ratio so the same visible opacity
     // works whether voxels are 1 mm or 20 nm. Matches the Python OME-Zarr
@@ -362,14 +367,11 @@ fn main() {
             &color_tex, &color_view, &depth_view,
             width, height,
         );
-        // Refresh the visible-spatial snapshot the prefetcher reads.
-        // scene.prepare just updated bovista's visible_tile_keys; snapshot
-        // it now so the prefetcher always works on fresh geometry rather
-        // than an accumulating shadow of stale camera positions.
+        // bovista publishes `setup_visible_snapshot` itself from inside
+        // prepare_volume (early — before tile requests dispatch), so we
+        // just sample diagnostic counters here.
         let (loaded_now, visible_now, current_t_now) = {
             let v = volume_arc.lock().unwrap();
-            let snap: HashSet<TileKey> = v.visible_spatial_keys().into_iter().collect();
-            *setup_visible_snapshot.lock().unwrap() = snap;
             let (loaded, visible) = v.current_t_load_status();
             (loaded, visible, v.desired_t())
         };

@@ -97,6 +97,13 @@ pub struct VirtualTextureData {
     /// Pending-drain and LRU touching compare against the SPATIAL part of
     /// stored slot_map keys.
     pub visible_tile_keys: HashSet<TileKey>,
+    /// Optional shared mirror of `visible_tile_keys` for other threads.
+    /// Updated inside `prepare` / `prepare_volume` immediately after
+    /// `update_visible_tiles*` and BEFORE the request loop pushes
+    /// anything to the loader — so workers reading this snapshot to
+    /// decide "is this tile still visible?" can't observe a value
+    /// older than the keys they're being asked to load.
+    visible_snapshot_pub: Option<Arc<Mutex<HashSet<TileKey>>>>,
     pub lod_bias: f32,
     target_pixels_per_voxel: f32,
     pub cached_ideal_lod: usize,
@@ -190,6 +197,7 @@ impl VirtualTextureData {
             max_tiles,
             frame_counter: 0,
             visible_tile_keys: HashSet::new(),
+            visible_snapshot_pub: None,
             lod_bias: 0.0,
             target_pixels_per_voxel: 1.0,
             cached_ideal_lod: 0,
@@ -218,6 +226,27 @@ impl VirtualTextureData {
     }
 
     pub fn desired_t(&self) -> u32 { self.desired_t }
+
+    /// Hand the strategy an `Arc<Mutex<HashSet<TileKey>>>` and it will
+    /// refresh the set with `visible_tile_keys` early in every
+    /// `prepare` / `prepare_volume`, before any tile requests are
+    /// dispatched. Other threads (e.g. a loader pool's visibility
+    /// filter) read from the snapshot and don't see a value older than
+    /// the keys they'd be asked to load. Pass once at setup.
+    pub fn set_visible_snapshot_publish(
+        &mut self,
+        snapshot: Arc<Mutex<HashSet<TileKey>>>,
+    ) {
+        self.visible_snapshot_pub = Some(snapshot);
+    }
+
+    /// Write `visible_tile_keys` into the shared snapshot if one is set.
+    fn publish_visibility(&self) {
+        let Some(pub_) = &self.visible_snapshot_pub else { return; };
+        let mut s = pub_.lock().unwrap();
+        s.clear();
+        s.extend(self.visible_tile_keys.iter().copied());
+    }
 
     /// (resident, visible) — how many of the visible spatial tiles at
     /// `desired_t` are actually in the atlas right now. Useful for
@@ -715,6 +744,11 @@ impl VirtualTextureData {
     ) {
         self.frame_counter = frame_number;
         self.update_visible_tiles_volume(camera_info);
+        // Publish before we dispatch any tile requests so the loader's
+        // visibility filter doesn't see a value older than the keys it's
+        // about to be asked to load. Otherwise zoom-driven LOD swaps race
+        // against the worker pool and tiles get dropped as "stale".
+        self.publish_visibility();
         // Keep requests whose SPATIAL key is still visible (covers prefetched
         // future-timepoint requests where camera hasn't moved) or whose tile
         // already arrived in slot_map.
@@ -799,6 +833,7 @@ impl VirtualTextureData {
         self.frame_counter = frame_number;
 
         self.update_visible_tiles(slice_plane, camera_info);
+        self.publish_visibility();
 
         // Visibility is spatial — keep requests + slots whose (lod, z, y, x)
         // is still visible regardless of their timepoint.
