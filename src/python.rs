@@ -787,6 +787,7 @@ impl PyLinesVisual {
 pub struct PyImageVisual {
     inner: VisualRef,
     pending_chunks: crate::visuals::virtual_texture::PendingChunks,
+    wanted: crate::visuals::virtual_texture::Wanted,
 }
 
 impl PyVisualWrapper for PyImageVisual {
@@ -799,12 +800,11 @@ impl PyVisualWrapper for PyImageVisual {
 #[pymethods]
 impl PyImageVisual {
     #[new]
-    #[pyo3(signature = (viewer, levels, max_tiles, loader))]
+    #[pyo3(signature = (viewer, levels, max_tiles))]
     fn new(
         viewer: &PyViewer,
         levels: Vec<PyLevelMetadata>,
         max_tiles: usize,
-        loader: PyObject,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
@@ -827,32 +827,11 @@ impl PyImageVisual {
             })
             .collect();
 
-        use crate::visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus};
-        let loader_arc = Arc::new(loader);
-        let loader_clone = loader_arc.clone();
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            Python::with_gil(|py| {
-                let lod_level = request.lod_level.unwrap_or(0);
-                let result = loader_clone.bind(py).call1((lod_level, request.z, request.y, request.x));
-                match result {
-                    Ok(obj) => {
-                        if let Ok(status) = obj.extract::<PyChunkStatus>() {
-                            match status {
-                                PyChunkStatus::Accepted => ChunkStatus::Accepted,
-                                PyChunkStatus::AlreadyPending => ChunkStatus::AlreadyPending,
-                                PyChunkStatus::Rejected => ChunkStatus::Rejected,
-                            }
-                        } else {
-                            ChunkStatus::Rejected
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[Image] Error calling loader: {}", e);
-                        ChunkStatus::Rejected
-                    }
-                }
-            })
-        });
+        // Pull-based: bovista publishes `wanted` each prepare; Python
+        // polls it via `wanted_keys()` and pushes data via
+        // `set_chunk_data_u16(...)`. No callback.
+        use crate::visuals::gpu_structs::{TileLoaderFn, ChunkStatus};
+        let loader_fn: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
 
         let visual = ImageVisual::new(
             renderer.device(),
@@ -865,8 +844,22 @@ impl PyImageVisual {
         );
 
         let pending_chunks = visual.pending_chunks().unwrap();
+        let wanted = visual.wanted_handle();
         let inner = Arc::new(Mutex::new(visual));
-        Ok(Self { inner, pending_chunks })
+        Ok(Self { inner, pending_chunks, wanted })
+    }
+
+    /// Snapshot of the tile keys bovista currently wants in the atlas.
+    /// Returned as `[(lod_level, t, z, y, x, priority), ...]` sorted by
+    /// priority (lower = more urgent; 0 = "user is looking at this t now",
+    /// positive = prefetch offset). Poll periodically to drive the loader.
+    fn wanted_keys(&self) -> Vec<(usize, u32, u32, u32, u32, i32)> {
+        let w = self.wanted.lock().unwrap();
+        let mut v: Vec<_> = w.iter()
+            .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
+            .collect();
+        v.sort_by_key(|e| e.5);
+        v
     }
 
     /// Set the slice plane position along Z axis
@@ -922,6 +915,7 @@ impl PyImageVisual {
     fn set_chunk_data_u16(
         &self,
         lod_level: usize,
+        t: u32,
         z: u32,
         y: u32,
         x: u32,
@@ -938,7 +932,8 @@ impl PyImageVisual {
             depth: a.shape()[0] as u32,
             format: wgpu::TextureFormat::R16Float,
         };
-        self.pending_chunks.lock().unwrap().insert(TileKey { lod_level, z, y, x }, tile_data);
+        self.pending_chunks.lock().unwrap()
+            .insert(TileKey { lod_level, t, z, y, x }, tile_data);
         Ok(())
     }
 
@@ -1146,6 +1141,7 @@ impl PyVertexBufferLayout {
 pub struct PyVolumeVisual {
     inner: VisualRef,
     pending_chunks: crate::visuals::virtual_texture::PendingChunks,
+    wanted: crate::visuals::virtual_texture::Wanted,
 }
 
 impl PyVisualWrapper for PyVolumeVisual {
@@ -1158,12 +1154,11 @@ impl PyVisualWrapper for PyVolumeVisual {
 #[pymethods]
 impl PyVolumeVisual {
     #[new]
-    #[pyo3(signature = (viewer, levels, max_tiles, loader))]
+    #[pyo3(signature = (viewer, levels, max_tiles))]
     fn new(
         viewer: &PyViewer,
         levels: Vec<PyLevelMetadata>,
         max_tiles: usize,
-        loader: PyObject,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
@@ -1186,32 +1181,9 @@ impl PyVolumeVisual {
             })
             .collect();
 
-        use crate::visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus};
-        let loader_arc = Arc::new(loader);
-        let loader_clone = loader_arc.clone();
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            Python::with_gil(|py| {
-                let lod_level = request.lod_level.unwrap_or(0);
-                let result = loader_clone.bind(py).call1((lod_level, request.z, request.y, request.x));
-                match result {
-                    Ok(obj) => {
-                        if let Ok(status) = obj.extract::<PyChunkStatus>() {
-                            match status {
-                                PyChunkStatus::Accepted => ChunkStatus::Accepted,
-                                PyChunkStatus::AlreadyPending => ChunkStatus::AlreadyPending,
-                                PyChunkStatus::Rejected => ChunkStatus::Rejected,
-                            }
-                        } else {
-                            ChunkStatus::Rejected
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[Volume] Error calling loader: {}", e);
-                        ChunkStatus::Rejected
-                    }
-                }
-            })
-        });
+        // Pull-based: see PyImageVisual::new for the rationale.
+        use crate::visuals::gpu_structs::{TileLoaderFn, ChunkStatus};
+        let loader_fn: TileLoaderFn = Box::new(|_| ChunkStatus::Accepted);
 
         use crate::visuals::VolumeVisual;
         let visual = VolumeVisual::new(
@@ -1225,8 +1197,20 @@ impl PyVolumeVisual {
         );
 
         let pending_chunks = visual.pending_chunks().unwrap();
+        let wanted = visual.wanted_handle();
         let inner = Arc::new(Mutex::new(visual));
-        Ok(Self { inner, pending_chunks })
+        Ok(Self { inner, pending_chunks, wanted })
+    }
+
+    /// Snapshot of the tile keys bovista currently wants. See
+    /// `PyImageVisual::wanted_keys`.
+    fn wanted_keys(&self) -> Vec<(usize, u32, u32, u32, u32, i32)> {
+        let w = self.wanted.lock().unwrap();
+        let mut v: Vec<_> = w.iter()
+            .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
+            .collect();
+        v.sort_by_key(|e| e.5);
+        v
     }
 
     /// Set contrast limits
@@ -1307,6 +1291,7 @@ impl PyVolumeVisual {
     fn set_chunk_data_u16(
         &self,
         lod_level: usize,
+        t: u32,
         z: u32,
         y: u32,
         x: u32,
@@ -1323,7 +1308,8 @@ impl PyVolumeVisual {
             depth: a.shape()[0] as u32,
             format: wgpu::TextureFormat::R16Float,
         };
-        self.pending_chunks.lock().unwrap().insert(TileKey { lod_level, z, y, x }, tile_data);
+        self.pending_chunks.lock().unwrap()
+            .insert(TileKey { lod_level, t, z, y, x }, tile_data);
         Ok(())
     }
 
