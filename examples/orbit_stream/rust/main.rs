@@ -31,6 +31,9 @@
 //!   --bench-sparsity[=N] estimate non-empty-tile fraction per LOD vs current
 //!                        --contrast-min, then exit; samples N timepoints
 //!                        (default 4) and prints a tier-fit summary
+//!   --bench-decode[=N]   time parallel decode of N random tiles at
+//!                        --bench-decode-lod, report throughput and chunk
+//!                        redundancy; default N=200, default LOD=1
 //!
 //! Set BOVISTA_FORCE_LIBX264=1 to skip the NVENC probe and always use libx264.
 
@@ -57,7 +60,7 @@ fn main() {
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles", "--max-inflight", "--prefetch",
         "--contrast-min", "--contrast-max", "--density-mult", "--lod-bias",
-        "--bench-sparsity",
+        "--bench-sparsity", "--bench-decode", "--bench-decode-lod",
         "--timepoint", "--bench",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
@@ -127,6 +130,17 @@ fn main() {
     } else {
         None
     };
+    let bench_decode: Option<usize> = if args.iter()
+        .any(|a| a == "--bench-decode" || a.starts_with("--bench-decode="))
+    {
+        Some(flag_str_opt(&args, "--bench-decode")
+            .and_then(|v| v.parse().ok()).unwrap_or(200))
+    } else {
+        None
+    };
+    let bench_decode_lod: usize = flag_str_opt(&args, "--bench-decode-lod")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
 
     println!("[orbit] {}x{} @ {} fps, serving on port {}, backend={}",
              width, height, fps, port, backend);
@@ -201,7 +215,8 @@ fn main() {
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
         Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(),
-                                             max_inflight, bench_sparsity, contrast_min) {
+                                             max_inflight, bench_sparsity, contrast_min,
+                                             bench_decode, bench_decode_lod) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -1710,6 +1725,8 @@ mod ome_zarr {
         max_inflight: usize,
         bench_sparsity: Option<usize>,
         contrast_min: f32,
+        bench_decode: Option<usize>,
+        bench_decode_lod: usize,
     ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
@@ -1907,6 +1924,10 @@ mod ome_zarr {
         // a tier-fit summary, and exits without starting the loader pool.
         if let Some(samples) = bench_sparsity {
             run_sparsity_bench(&levels, &lods, n_timepoints, contrast_min, samples);
+            std::process::exit(0);
+        }
+        if let Some(n) = bench_decode {
+            run_decode_bench(&levels, &lods, n_timepoints, bench_decode_lod, n);
             std::process::exit(0);
         }
 
@@ -2209,6 +2230,170 @@ mod ome_zarr {
                                     r.est_bytes as f64 / 1024.0 / 1024.0 / 1024.0),
                 None    => println!("  {:<24} → no LOD fits dense; need finer-grain RAM tier", label),
             }
+        }
+        println!();
+    }
+
+    /// Time the parallel decode-through-conversion path for a random sample
+    /// of tiles at one LOD. Reports throughput, per-tile timing, and how
+    /// many of the touched zarr chunks would be shared across multiple
+    /// tiles (= the upper bound on speedup from a chunk-cache layer).
+    fn run_decode_bench(
+        levels: &[Level],
+        lods: &[LodLevelConfig],
+        n_timepoints: u32,
+        lod_target: usize,
+        n_tiles: usize,
+    ) {
+        use rayon::prelude::*;
+        use std::collections::HashSet;
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+        if lod_target >= levels.len() {
+            eprintln!("[bench-decode] LOD{} out of range (have {} LODs)",
+                      lod_target, levels.len());
+            return;
+        }
+
+        let level = &levels[lod_target];
+        let lod_cfg = &lods[lod_target];
+        let ndim = level.array.shape().len();
+
+        // Chunk shape vs tile shape — tells us whether a chunk-cache layer
+        // would help (if zarr chunks are larger than our 128³ tiles, the
+        // same chunk gets decoded once per overlapping tile).
+        let chunk_shape = match level.array.chunk_shape(&vec![0; ndim]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[bench-decode] chunk_shape failed: {}", e);
+                return;
+            }
+        };
+        let cz = chunk_shape[level.z_idx].get();
+        let cy = chunk_shape[level.y_idx].get();
+        let cx = chunk_shape[level.x_idx].get();
+        let (tz, ty, tx) = lod_cfg.tile_size;
+
+        println!();
+        println!("[bench-decode] LOD{}: zarr chunk {}×{}×{}, tile {}×{}×{}",
+                 lod_target, cz, cy, cx, tz, ty, tx);
+        let chunk_equals_tile =
+            cz == tz as u64 && cy == ty as u64 && cx == tx as u64;
+        if chunk_equals_tile {
+            println!("  → 1:1 chunk-tile alignment (chunk cache won't help)");
+        } else if cz < tz as u64 || cy < ty as u64 || cx < tx as u64 {
+            println!("  → zarr chunks SMALLER than tile; one tile reads several chunks");
+        } else {
+            println!("  → zarr chunks LARGER than tile; chunk cache would amortize across {}× tiles",
+                     ((cz as f64 / tz as f64) * (cy as f64 / ty as f64)
+                      * (cx as f64 / tx as f64)).max(1.0));
+        }
+
+        // Deterministic "random" tile picks across all of (t, z, y, x) at
+        // this LOD. Using a hash of the index so the bench is reproducible.
+        let (gz, gy, gx) = lod_cfg.grid_size();
+        let mix = |seed: u64| -> u64 {
+            // splitmix64-like avalanche
+            let mut x = seed.wrapping_add(0x9E3779B97F4A7C15);
+            x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+            x ^ (x >> 31)
+        };
+        let mut work: Vec<TileKey> = Vec::with_capacity(n_tiles);
+        for i in 0..n_tiles {
+            let r0 = mix(i as u64);
+            let r1 = mix(i as u64 + 0xDEADBEEF);
+            let t = (r0 & 0xFFFFFFFF) as u32 % n_timepoints.max(1);
+            let z = ((r0 >> 32) as u32) % gz;
+            let y = (r1 as u32) % gy;
+            let x = ((r1 >> 32) as u32) % gx;
+            work.push(TileKey { lod_level: lod_target, t, z, y, x });
+        }
+
+        // Chunk-set analysis: enumerate the unique zarr chunks the work-set
+        // would touch, including (t, c) axes since chunks aren't shared
+        // across timepoints for this dataset layout.
+        let ct = level.t_idx.and_then(|ti| level.array.chunk_shape(&vec![0; ndim]).ok()
+                                      .map(|cs| cs[ti].get()))
+                 .unwrap_or(1);
+        let mut touched: HashSet<(u32, u64, u64, u64)> = HashSet::with_capacity(n_tiles * 4);
+        for key in &work {
+            let z0 = (key.z as u64) * (tz as u64);
+            let z1 = (z0 + tz as u64 - 1).min(level.volume_zyx.0 - 1);
+            let y0 = (key.y as u64) * (ty as u64);
+            let y1 = (y0 + ty as u64 - 1).min(level.volume_zyx.1 - 1);
+            let x0 = (key.x as u64) * (tx as u64);
+            let x1 = (x0 + tx as u64 - 1).min(level.volume_zyx.2 - 1);
+            let t_chunk = (key.t as u64) / ct;
+            for zc in (z0 / cz)..=(z1 / cz) {
+                for yc in (y0 / cy)..=(y1 / cy) {
+                    for xc in (x0 / cx)..=(x1 / cx) {
+                        touched.insert((t_chunk as u32, zc, yc, xc));
+                    }
+                }
+            }
+        }
+        println!("[bench-decode] {} tile reads → {} unique chunks ({:.2}× redundancy)",
+                 n_tiles, touched.len(),
+                 n_tiles as f64 / touched.len() as f64);
+
+        // Per-tile timings + parallel wall time.
+        let started = std::time::Instant::now();
+        let total_bytes = AtomicUsize::new(0);
+        let max_ns = AtomicU64::new(0);
+        let total_ns = AtomicU64::new(0);
+        let failures = AtomicUsize::new(0);
+        work.par_iter().for_each(|key| {
+            let tile_start = std::time::Instant::now();
+            match read_tile(level, lod_cfg, *key, key.t) {
+                Ok(data) => {
+                    let dt = tile_start.elapsed().as_nanos() as u64;
+                    total_ns.fetch_add(dt, Ordering::Relaxed);
+                    total_bytes.fetch_add(data.data.len(), Ordering::Relaxed);
+                    let mut cur = max_ns.load(Ordering::Relaxed);
+                    while dt > cur {
+                        match max_ns.compare_exchange_weak(
+                            cur, dt, Ordering::Relaxed, Ordering::Relaxed,
+                        ) {
+                            Ok(_) => break,
+                            Err(c) => cur = c,
+                        }
+                    }
+                }
+                Err(_) => { failures.fetch_add(1, Ordering::Relaxed); }
+            }
+        });
+        let elapsed = started.elapsed();
+
+        let bytes = total_bytes.load(Ordering::Relaxed);
+        let mean_ms = total_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0
+                      / n_tiles.max(1) as f64;
+        let max_ms = max_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let parallel_throughput_gibs = bytes as f64 / elapsed.as_secs_f64()
+                                       / 1024.0 / 1024.0 / 1024.0;
+        let failed = failures.load(Ordering::Relaxed);
+
+        println!();
+        println!("[bench-decode] {} tiles in {:.2}s ({} failed); decoded {:.1} MiB",
+                 n_tiles, elapsed.as_secs_f64(), failed,
+                 bytes as f64 / 1024.0 / 1024.0);
+        println!("  per-tile (per-thread):  mean {:.1} ms,  max {:.1} ms",
+                 mean_ms, max_ms);
+        println!("  parallel throughput:    {:.2} GiB/s (decoded R16Float)",
+                 parallel_throughput_gibs);
+
+        // Per-frame projection: how long would N visible tiles take?
+        println!();
+        println!("[bench-decode] per-scrub-frame projection at LOD{}:", lod_target);
+        for visible in [10usize, 20, 30, 50, 100] {
+            let frame_mib = (visible * 4) as f64;
+            let frame_ms = frame_mib / parallel_throughput_gibs / 1024.0 * 1000.0;
+            let verdict = if frame_ms < 16.0 { "60 fps ✓" }
+                          else if frame_ms < 33.0 { "30 fps ✓" }
+                          else if frame_ms < 66.0 { "15 fps ✓" }
+                          else { "too slow" };
+            println!("  {:>3} visible tiles ({:>4.0} MiB): {:>5.1} ms → {}",
+                     visible, frame_mib, frame_ms, verdict);
         }
         println!();
     }
