@@ -253,10 +253,11 @@ fn main() {
     // HTTP connection handler.
     let frame_slot = Arc::new(LatestFrame::new());
     let client_connected = Arc::new(AtomicBool::new(false));
+    let perf = Arc::new(PerfCounters::new());
     spawn_http_server(
         port, width, height, fps,
         frame_slot.clone(), client_connected.clone(),
-        view_state.clone(), n_timepoints,
+        view_state.clone(), n_timepoints, perf.clone(),
     );
 
     println!("[orbit] ready; open http://localhost:{}/ (Ctrl-C to stop)", port);
@@ -392,13 +393,27 @@ fn main() {
             let pp_ms     = s.process_pending_ns as f32 / 1_000_000.0;
             let rpt_ms    = s.refresh_page_table_ns as f32 / 1_000_000.0;
             let pw_ms     = s.publish_wanted_ns as f32 / 1_000_000.0;
+            // Snapshot + reset the cross-thread counters.
+            let writer_pops    = perf.writer_pops.swap(0, Ordering::Relaxed);
+            let writer_bytes   = perf.writer_bytes.swap(0, Ordering::Relaxed);
+            let stream_bytes   = perf.stream_bytes_out.swap(0, Ordering::Relaxed);
+            let set_count      = perf.set_count.swap(0, Ordering::Relaxed);
+            let set_ns_total   = perf.set_ns_total.swap(0, Ordering::Relaxed);
+            let set_ns_max     = perf.set_ns_max.swap(0, Ordering::Relaxed);
+            let writer_fps     = writer_pops as f32 / elapsed_s;
+            let writer_mibps   = (writer_bytes as f32 / 1_048_576.0) / elapsed_s;
+            let stream_mibps   = (stream_bytes as f32 / 1_048_576.0) / elapsed_s;
+            let set_avg_ms     = if set_count > 0 {
+                (set_ns_total as f32 / set_count as f32) / 1_000_000.0
+            } else { 0.0 };
+            let set_max_ms     = set_ns_max as f32 / 1_000_000.0;
             let all_loaded = loaded_now == visible_now;
             if !(all_loaded && in_queue == 0) {
                 println!("[progress] t={} loaded {}/{} | queued {}",
                          current_t_now, loaded_now, visible_now, in_queue);
             }
             println!(
-                "[perf] fps={:.1} prepare avg={:.1}ms max={:.1}ms | \
+                "[perf] render fps={:.1} prep avg={:.1}ms max={:.1}ms | \
                  pp={:.1}ms (in {}, drop {}, atlas {}, pt {}) | \
                  refresh={:.1}ms | publish={:.1}ms | \
                  slot_map={} pending={}",
@@ -406,6 +421,14 @@ fn main() {
                 pp_ms, s.tiles_installed, s.tiles_dropped, s.atlas_writes, s.page_table_writes,
                 rpt_ms, pw_ms,
                 s.slot_map_len, s.pending_len,
+            );
+            println!(
+                "[perf] writer fps={:.1} ({:.1} MiB/s to ffmpeg) | \
+                 stream out {:.1} MiB/s | \
+                 /set count={} avg={:.1}ms max={:.1}ms",
+                writer_fps, writer_mibps,
+                stream_mibps,
+                set_count, set_avg_ms, set_max_ms,
             );
             perf_last_report = Instant::now();
             perf_frame_count = 0;
@@ -975,6 +998,54 @@ struct ViewState {
 /// (e.g. browser tab in background), the writer blocks on stdin and the
 /// render thread keeps producing frames into the slot, with old frames
 /// silently overwritten. No backlog accumulates anywhere.
+/// Per-second counters covering paths that aren't in the render
+/// thread's `[perf]` line: the stream writer + socket loop, and the
+/// /set HTTP handler. All read+reset once per second from the render
+/// loop alongside bovista's stats.
+struct PerfCounters {
+    /// Successful `LatestFrame::pop()` calls (= frames actually
+    /// handed off to ffmpeg). Should be ~fps if encoder is keeping up.
+    writer_pops: AtomicU64,
+    /// Bytes written to ffmpeg's stdin (BGRA raw frames). Roughly
+    /// `writer_pops × width × height × 4`.
+    writer_bytes: AtomicU64,
+    /// Bytes pulled out of ffmpeg's stdout and written to the /stream
+    /// socket. Roughly `bitrate / 8` if encoder + socket are healthy.
+    stream_bytes_out: AtomicU64,
+    /// Number of /set requests served in this interval.
+    set_count: AtomicU64,
+    /// Cumulative ns spent in /set requests (from accept to response
+    /// flush). `/set_ns_total / set_count` = avg duration.
+    set_ns_total: AtomicU64,
+    /// Max single-request duration seen.
+    set_ns_max: AtomicU64,
+}
+
+impl PerfCounters {
+    fn new() -> Self {
+        Self {
+            writer_pops: AtomicU64::new(0),
+            writer_bytes: AtomicU64::new(0),
+            stream_bytes_out: AtomicU64::new(0),
+            set_count: AtomicU64::new(0),
+            set_ns_total: AtomicU64::new(0),
+            set_ns_max: AtomicU64::new(0),
+        }
+    }
+    /// Atomic max — updates `set_ns_max` to `value` if greater.
+    fn record_set_max(&self, value: u64) {
+        let mut cur = self.set_ns_max.load(Ordering::Relaxed);
+        while value > cur {
+            match self.set_ns_max.compare_exchange_weak(
+                cur, value, Ordering::Relaxed, Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(c) => cur = c,
+            }
+        }
+    }
+}
+
 struct LatestFrame {
     inner: Mutex<Option<Vec<u8>>>,
     cvar: Condvar,
@@ -1150,6 +1221,7 @@ fn spawn_http_server(
     client_connected: Arc<AtomicBool>,
     view_state: Arc<ViewState>,
     n_timepoints: u32,
+    perf: Arc<PerfCounters>,
 ) {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .unwrap_or_else(|e| panic!("bind 0.0.0.0:{} failed: {}", port, e));
@@ -1160,10 +1232,11 @@ fn spawn_http_server(
             let frame_slot = frame_slot.clone();
             let client_connected = client_connected.clone();
             let view_state = view_state.clone();
+            let perf = perf.clone();
             std::thread::spawn(move || {
                 handle_request(
                     socket, width, height, fps,
-                    frame_slot, client_connected, view_state, n_timepoints,
+                    frame_slot, client_connected, view_state, n_timepoints, perf,
                 );
             });
         }
@@ -1177,7 +1250,9 @@ fn handle_request(
     client_connected: Arc<AtomicBool>,
     view_state: Arc<ViewState>,
     n_timepoints: u32,
+    perf: Arc<PerfCounters>,
 ) {
+    let accept_t = Instant::now();
     // Read the request line + headers (up to first blank line).
     let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
     let mut buf = [0u8; 2048];
@@ -1194,9 +1269,15 @@ fn handle_request(
     if path == "/" || path.starts_with("/?") {
         serve_html(&mut socket, &view_state, n_timepoints, width, height);
     } else if path == "/stream" {
-        serve_stream(&mut socket, width, height, fps, frame_slot, client_connected);
+        serve_stream(&mut socket, width, height, fps, frame_slot, client_connected, perf);
     } else if let Some(query) = path.strip_prefix("/set?") {
         serve_set(&mut socket, query, &view_state);
+        // /set request timing — accept → response written. The
+        // [perf] line samples per-second avg + max for this.
+        let dt_ns = accept_t.elapsed().as_nanos() as u64;
+        perf.set_count.fetch_add(1, Ordering::Relaxed);
+        perf.set_ns_total.fetch_add(dt_ns, Ordering::Relaxed);
+        perf.record_set_max(dt_ns);
     } else {
         let _ = socket.write_all(
             b"HTTP/1.0 404 Not Found\r\n\
@@ -1244,6 +1325,7 @@ fn serve_stream(
     width: u32, height: u32, fps: u32,
     frame_slot: Arc<LatestFrame>,
     client_connected: Arc<AtomicBool>,
+    perf: Arc<PerfCounters>,
 ) {
     // Single-client policy: refuse if someone else is already streaming.
     if client_connected
@@ -1285,17 +1367,30 @@ fn serve_stream(
     // backlog accumulates and slider events still apply promptly.
     frame_slot.reopen();
     let slot_for_writer = frame_slot.clone();
+    let perf_for_writer = perf.clone();
     let writer = std::thread::spawn(move || {
         while let Some(frame) = slot_for_writer.pop() {
+            let n = frame.len() as u64;
             if ffmpeg_stdin.write_all(&frame).is_err() {
                 break;
             }
+            // Count pops + bytes that successfully reached ffmpeg.
+            perf_for_writer.writer_pops.fetch_add(1, Ordering::Relaxed);
+            perf_for_writer.writer_bytes.fetch_add(n, Ordering::Relaxed);
         }
     });
 
-    // Block here until the client TCP socket closes (i.e. browser
-    // disconnects) or ffmpeg's stdout closes.
-    let _ = std::io::copy(&mut stdout, socket);
+    // ffmpeg stdout → socket. Counted copy so we can see whether the
+    // socket write side is keeping up with the encoder.
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = match stdout.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        if socket.write_all(&buf[..n]).is_err() { break; }
+        perf.stream_bytes_out.fetch_add(n as u64, Ordering::Relaxed);
+    }
 
     // Tear down: stop accepting new frames, wake the writer if it's blocked
     // in pop(), kill ffmpeg so any in-flight write_all returns an error.
