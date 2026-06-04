@@ -30,7 +30,7 @@ pub struct PrepareStats {
     /// Tiles drained from `pending_chunks` and successfully written.
     pub tiles_installed: usize,
     /// Tiles drained from `pending_chunks` but dropped (slot_map
-    /// already had them, no longer visible, or `pick_slot` returned
+    /// already had them, no longer visible, or `alloc_or_evict` returned
     /// None because no resident slot was lower-priority).
     pub tiles_dropped: usize,
     /// Wallclock time spent in `process_pending_chunks`.
@@ -299,75 +299,130 @@ impl VirtualTextureData {
         self.atlas_allocator.reset();
     }
 
-    fn write_tile_to_atlas(&self, queue: &Queue, slot: u32, data: &TileData) {
-        let col   = slot % self.atlas_cols;
-        let row   = (slot / self.atlas_cols) % self.atlas_rows;
-        let layer = slot / (self.atlas_cols * self.atlas_rows);
-        let (tile_d, tile_h, tile_w) = self.tile_size;
-        let origin = wgpu::Origin3d {
-            x: col   * tile_w,
-            y: row   * tile_h,
-            z: layer * tile_d,
+    fn process_pending_chunks(&mut self, device: &Device, queue: &Queue) {
+        let started = std::time::Instant::now();
+        let pending: Vec<(TileKey, TileData)> = {
+            let mut guard = self.pending_chunks.lock().unwrap();
+            guard.drain().collect()
         };
-        let bpv = data.bytes_per_voxel() as usize;
+        if pending.is_empty() {
+            self.stats.process_pending_ns = started.elapsed().as_nanos() as u64;
+            return;
+        }
 
-        // Boundary tiles (z/y/x edge of the volume at this LOD) have
-        // smaller data extent than the full slot. If we only wrote the
-        // partial data, the rest of the slot would still hold whatever
-        // a previous tile left there → visible bleed at the volume's
-        // boundary, since `data_scale` in the shader is per-LOD and
-        // doesn't know about per-tile shrinkage. Zero-pad to the full
-        // slot extent and upload that instead.
-        let is_full =
-            data.width == tile_w && data.height == tile_h && data.depth == tile_d;
-        if is_full {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.atlas_texture,
-                    mip_level: 0,
-                    origin,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &data.data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(data.width * bpv as u32),
-                    rows_per_image: Some(data.height),
-                },
-                wgpu::Extent3d {
-                    width: data.width,
-                    height: data.height,
-                    depth_or_array_layers: data.depth,
-                },
-            );
-        } else {
-            // Build a full-tile-sized buffer with zero padding. Copy
-            // the partial tile's rows into the top-left-front corner.
-            let stride_row_dst = tile_w as usize * bpv;
-            let stride_slice_dst = stride_row_dst * tile_h as usize;
-            let stride_row_src = data.width as usize * bpv;
-            let mut padded = vec![0u8; stride_slice_dst * tile_d as usize];
-            for z in 0..data.depth as usize {
-                for y in 0..data.height as usize {
-                    let dst = z * stride_slice_dst + y * stride_row_dst;
-                    let src = z * (data.height as usize) * stride_row_src
-                            + y * stride_row_src;
-                    padded[dst..dst + stride_row_src]
-                        .copy_from_slice(&data.data[src..src + stride_row_src]);
+        // Build the eviction candidate list ONCE for this batch
+        // (single O(N log N) sort vs O(N) scan per tile).
+        let current_t = self.desired_t;
+        let frame_counter = self.frame_counter;
+        let mut candidates: Vec<(u64, u64, TileKey, u32)> = self.slot_map.iter()
+            .map(|(k, &slot)| {
+                let eff = if self.visible_tile_keys.contains(&k.spatial()) {
+                    (k.t as i64 - current_t as i64).unsigned_abs()
+                } else {
+                    u64::MAX
+                };
+                let age = frame_counter
+                    .saturating_sub(*self.lru_map.get(k).unwrap_or(&0));
+                (eff, age, *k, slot)
+            })
+            .collect();
+        candidates.sort_by_key(|&(eff, age, _, _)| (eff, age));
+
+        // First pass: decide which tiles to install + allocate slots.
+        let mut to_install: Vec<(TileKey, TileData, u32)> = Vec::with_capacity(pending.len());
+        let mut dropped = 0usize;
+        for (key, data) in pending {
+            if self.slot_map.contains_key(&key) { dropped += 1; continue; }
+            if !self.visible_tile_keys.contains(&key.spatial()) {
+                dropped += 1; continue;
+            }
+            let Some(slot) = self.alloc_or_evict(queue, key.t, &mut candidates) else {
+                dropped += 1; continue;
+            };
+            to_install.push((key, data, slot));
+        }
+        if to_install.is_empty() {
+            self.stats.process_pending_ns = started.elapsed().as_nanos() as u64;
+            self.stats.tiles_dropped = dropped;
+            return;
+        }
+
+        // Batch upload: one staging buffer holding N full-tile-sized
+        // slots, mapped at creation so we write CPU-side directly into
+        // GPU-visible memory, then one CommandEncoder issuing N
+        // copy_buffer_to_texture commands, then one submit. This
+        // replaces N separate `queue.write_texture` calls — each of
+        // those had ~2-3 ms of per-call overhead on the wgpu GL
+        // backend (allocate driver staging + glTexSubImage3D + sync),
+        // and 50+ in a burst froze the render thread for ~150 ms.
+        // The batch path turns N small syncs into one large one.
+        let (tile_d, tile_h, tile_w) = self.tile_size;
+        let bpv = to_install[0].1.bytes_per_voxel() as usize;
+        let bytes_per_tile = tile_w as usize * tile_h as usize * tile_d as usize * bpv;
+        let total_bytes = bytes_per_tile * to_install.len();
+
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("VT atlas-upload staging"),
+            size: total_bytes as u64,
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        {
+            let mut mapped = staging.slice(..).get_mapped_range_mut();
+            let stride_row_full = tile_w as usize * bpv;
+            let stride_slice_full = stride_row_full * tile_h as usize;
+            for (i, (_, data, _)) in to_install.iter().enumerate() {
+                let dst = &mut mapped[i * bytes_per_tile..(i + 1) * bytes_per_tile];
+                let is_full = data.width == tile_w
+                           && data.height == tile_h
+                           && data.depth == tile_d;
+                if is_full {
+                    dst.copy_from_slice(&data.data);
+                } else {
+                    // Boundary tile — zero-pad the unused region of the
+                    // slot so the shader's data_scale (per-LOD) doesn't
+                    // sample stale data from a previously-resident tile.
+                    dst.fill(0);
+                    let stride_row_src = data.width as usize * bpv;
+                    for z in 0..data.depth as usize {
+                        for y in 0..data.height as usize {
+                            let dst_off = z * stride_slice_full + y * stride_row_full;
+                            let src_off = z * (data.height as usize) * stride_row_src
+                                        + y * stride_row_src;
+                            dst[dst_off..dst_off + stride_row_src]
+                                .copy_from_slice(&data.data[src_off..src_off + stride_row_src]);
+                        }
+                    }
                 }
             }
-            queue.write_texture(
+        }
+        staging.unmap();
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("VT atlas-upload"),
+        });
+        for (i, (_, _, slot)) in to_install.iter().enumerate() {
+            let col   = slot % self.atlas_cols;
+            let row   = (slot / self.atlas_cols) % self.atlas_rows;
+            let layer = slot / (self.atlas_cols * self.atlas_rows);
+            enc.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: (i * bytes_per_tile) as u64,
+                        bytes_per_row: Some(tile_w * bpv as u32),
+                        rows_per_image: Some(tile_h),
+                    },
+                },
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.atlas_texture,
                     mip_level: 0,
-                    origin,
+                    origin: wgpu::Origin3d {
+                        x: col   * tile_w,
+                        y: row   * tile_h,
+                        z: layer * tile_d,
+                    },
                     aspect: wgpu::TextureAspect::All,
-                },
-                &padded,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(tile_w * bpv as u32),
-                    rows_per_image: Some(tile_h),
                 },
                 wgpu::Extent3d {
                     width: tile_w,
@@ -376,63 +431,29 @@ impl VirtualTextureData {
                 },
             );
         }
-    }
+        queue.submit(std::iter::once(enc.finish()));
 
-    fn process_pending_chunks(&mut self, queue: &Queue) {
-        let t0 = std::time::Instant::now();
-        let pending: Vec<(TileKey, TileData)> = {
-            let mut guard = self.pending_chunks.lock().unwrap();
-            guard.drain().collect()
-        };
-
-        let mut installed = 0usize;
-        let mut dropped = 0usize;
-        let mut atlas_writes = 0usize;
+        // Bookkeeping + page-table updates. The page-table writes
+        // stay as individual queue.write_texture calls — they're 4
+        // bytes each, only fire for tiles at desired_t (so capped at
+        // visible count), and aren't the bottleneck.
         let mut page_table_writes = 0usize;
-        for (key, data) in pending {
-            if self.slot_map.contains_key(&key) {
-                dropped += 1;
-                continue;
-            }
-            // Visibility is spatial — tiles at neighbor timepoints share
-            // the same spatial as the user's current frame, so they pass.
-            if !self.visible_tile_keys.contains(&key.spatial()) {
-                dropped += 1;
-                continue;
-            }
-            // pick_slot handles allocation + eviction in one shot.
-            let Some(slot) = self.pick_slot(queue, key.t) else {
-                dropped += 1;
-                continue;
-            };
-
-            self.write_tile_to_atlas(queue, slot, &data);
-            atlas_writes += 1;
-
-            let TileKey { lod_level, t, z, y, x } = key;
-            // Only point the page table at this tile if it's the user's
-            // currently-requested timepoint. Prefetched tiles (other t)
-            // sit in slot_map silently — `refresh_page_table` wires them
-            // in when desired_t reaches their t. Unconditional write here
-            // would be destructive: a prefetch arrival for the same
-            // spatial would overwrite a good desired_t entry, the shader
-            // filter would reject it, and the spatial would go blank
-            // even though the right tile is in atlas.
+        for (key, _, slot) in &to_install {
+            let TileKey { lod_level, t, z, y, x } = *key;
             if t == self.desired_t {
-                self.page_table.update(queue, lod_level, z, y, x, t, slot);
-                self.last_written_slot.insert(key.spatial(), slot);
+                self.page_table.update(queue, lod_level, z, y, x, t, *slot);
+                self.last_written_slot.insert(key.spatial(), *slot);
                 page_table_writes += 1;
             }
-
-            self.slot_map.insert(key, slot);
-            self.lru_map.insert(key, self.frame_counter);
-            installed += 1;
+            self.slot_map.insert(*key, *slot);
+            self.lru_map.insert(*key, self.frame_counter);
         }
 
-        self.stats.process_pending_ns = t0.elapsed().as_nanos() as u64;
+        let installed = to_install.len();
+        self.stats.process_pending_ns = started.elapsed().as_nanos() as u64;
         self.stats.tiles_installed = installed;
         self.stats.tiles_dropped = dropped;
-        self.stats.atlas_writes = atlas_writes;
+        self.stats.atlas_writes = installed;
         self.stats.page_table_writes = page_table_writes;
     }
 
@@ -513,46 +534,47 @@ impl VirtualTextureData {
     /// iff `eff > |tile_t - desired_t|`, so a current-t arrival (dist 0)
     /// can claim any non-current slot; a prefetch at distance D can only
     /// claim slots at distance > D.
-    fn pick_slot(&mut self, queue: &Queue, tile_t: u32) -> Option<u32> {
+    /// Return a slot for a tile at `tile_t`. Free-list first; if
+    /// exhausted, evict the worst-priority entry from `candidates`
+    /// (a sorted-ascending list built once per `process_pending`
+    /// batch — see there for the priority rule).
+    fn alloc_or_evict(
+        &mut self,
+        queue: &Queue,
+        tile_t: u32,
+        candidates: &mut Vec<(u64, u64, TileKey, u32)>,
+    ) -> Option<u32> {
         if let Some(slot) = self.atlas_allocator.alloc() {
             return Some(slot);
         }
         let current = self.desired_t;
         let incoming_dist = (tile_t as i64 - current as i64).unsigned_abs();
-        // Single pass over slot_map. Tuple ordering: (eff_dist, age, key, slot)
-        // sorts as we want — eff_dist descending then age descending — when
-        // we keep the maximum.
-        let mut best: Option<(u64, u64, TileKey, u32)> = None;
-        for (k, &slot) in &self.slot_map {
-            let eff = if self.visible_tile_keys.contains(&k.spatial()) {
-                (k.t as i64 - current as i64).unsigned_abs()
-            } else {
-                u64::MAX
-            };
-            let age = self.frame_counter
-                .saturating_sub(*self.lru_map.get(k).unwrap_or(&0));
-            let better = match best {
-                None => true,
-                Some((b_eff, b_age, _, _)) => (eff, age) > (b_eff, b_age),
-            };
-            if better {
-                best = Some((eff, age, *k, slot));
+        // Pop from the prebuilt sorted list (tail is most-evictable).
+        // Skip entries whose slot already changed hands earlier in
+        // this same batch (e.g. another iteration already evicted
+        // them).
+        while let Some((eff, age, vkey, vslot)) = candidates.pop() {
+            if eff <= incoming_dist {
+                // Push back: a later iteration with smaller
+                // incoming_dist may still be able to claim this.
+                candidates.push((eff, age, vkey, vslot));
+                return None;
             }
+            if self.slot_map.get(&vkey) != Some(&vslot) {
+                continue;
+            }
+            self.slot_map.remove(&vkey);
+            self.lru_map.remove(&vkey);
+            self.atlas_allocator.free(vslot);
+            let spatial = vkey.spatial();
+            if self.last_written_slot.get(&spatial) == Some(&vslot) {
+                let TileKey { lod_level, z, y, x, .. } = vkey;
+                self.page_table.clear(queue, lod_level, z, y, x);
+                self.last_written_slot.remove(&spatial);
+            }
+            return self.atlas_allocator.alloc();
         }
-        let (eff, _age, victim_key, victim_slot) = best?;
-        if eff <= incoming_dist {
-            return None;
-        }
-        self.slot_map.remove(&victim_key);
-        self.lru_map.remove(&victim_key);
-        self.atlas_allocator.free(victim_slot);
-        let spatial = victim_key.spatial();
-        if self.last_written_slot.get(&spatial) == Some(&victim_slot) {
-            let TileKey { lod_level, z, y, x, .. } = victim_key;
-            self.page_table.clear(queue, lod_level, z, y, x);
-            self.last_written_slot.remove(&spatial);
-        }
-        self.atlas_allocator.alloc()
+        None
     }
 
     // ── Visibility / LOD selection ────────────────────────────────────────────
@@ -832,6 +854,7 @@ impl VirtualTextureData {
 
     pub(crate) fn prepare_volume(
         &mut self,
+        device: &Device,
         queue: &Queue,
         frame_number: u64,
         camera_info: &crate::visual::CameraInfo,
@@ -849,7 +872,7 @@ impl VirtualTextureData {
                 self.lru_map.insert(key, frame_number);
             }
         }
-        self.process_pending_chunks(queue);
+        self.process_pending_chunks(device, queue);
         self.refresh_page_table(queue);
         // Publish what we want; the loader (whoever wired one up) picks
         // it up on its next poll.
@@ -862,6 +885,7 @@ impl VirtualTextureData {
 
     pub(crate) fn prepare(
         &mut self,
+        device: &Device,
         queue: &Queue,
         slice_plane: &SlicePlane,
         frame_number: u64,
@@ -882,7 +906,7 @@ impl VirtualTextureData {
             }
         }
 
-        self.process_pending_chunks(queue);
+        self.process_pending_chunks(device, queue);
         self.refresh_page_table(queue);
         self.publish_wanted();
         self.stats.slot_map_len = self.slot_map.len();
