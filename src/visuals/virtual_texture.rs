@@ -354,6 +354,23 @@ impl VirtualTextureData {
             .collect();
         candidates.sort_by_key(|&(eff, age, _, _)| (eff, age));
 
+        // Sort pending by install priority so current-t visible tiles
+        // install before prefetch-t tiles within the per-frame budget.
+        // Without this, `pending.drain()` returns tiles in HashMap order
+        // (effectively random) — and when pending is dominated by
+        // prefetch entries, current-t tiles starve and `loaded N/M`
+        // stays well below M even though the missing tiles are sitting
+        // in pending.
+        let mut pending = pending;
+        pending.sort_by_key(|(k, _)| {
+            let eff = if self.visible_tile_keys.contains(&k.spatial()) {
+                (k.t as i64 - current_t as i64).unsigned_abs()
+            } else {
+                u64::MAX
+            };
+            (eff, k.lod_level as u64)
+        });
+
         let mut installed = 0usize;
         let mut dropped = 0usize;
         let mut page_table_writes = 0usize;
@@ -361,9 +378,8 @@ impl VirtualTextureData {
 
         for (key, data) in pending {
             if installed >= MAX_TILES_PER_FRAME {
-                // Frame budget spent — defer the rest. Order doesn't
-                // matter; whichever this worker decoded next frame
-                // will get processed first.
+                // Frame budget spent — defer the rest. Lower-priority
+                // tiles fall to the back of next frame's sort.
                 deferred.push((key, data));
                 continue;
             }
@@ -532,24 +548,25 @@ impl VirtualTextureData {
             }
         }
 
-        // Bound the wanted set so workers can't race ahead of the
-        // installer. The budget is `atlas_capacity - pending.len()`:
-        // as pending fills, wanted shrinks, so workers self-throttle.
-        // At pending == atlas_capacity, wanted is empty and workers
-        // idle until the installer drains pending into slot_map.
+        // Bound the wanted set so pending doesn't accumulate to host
+        // RAM OOM. The earlier `atlas_capacity - pending` cap kept
+        // pending bounded but it plateaued near atlas_capacity (~4 GB+
+        // host RAM at 4 MB/tile) because the rate equilibrium settled
+        // wherever publish lets enough through to match the install
+        // drain rate. We want pending to plateau MUCH lower.
         //
-        // Cap-by-atlas-capacity alone isn't enough: the wanted set
-        // always *excludes* current pending, so workers always see
-        // ~atlas_capacity fresh keys to chase. Steady-state worker
-        // throughput (~max_inflight completions / publish_wanted)
-        // can exceed the installer's drain (MAX_TILES_PER_FRAME) and
-        // pending grows monotonically. Subtracting pending closes
-        // that gap.
+        // PENDING_TARGET is a small constant: workers can only race
+        // ahead of the installer by this many tiles. Equilibrium
+        // pending sits at ~PENDING_TARGET minus the few keys in flight
+        // at any moment. Tradeoff: prefetch lookahead at LOD0 (where
+        // visible count dominates) is silently bounded by this target,
+        // because the same wanted slots prioritize current-t first.
         //
-        // Prefetch lookahead silently shrinks at zoomed-in LOD0 where
-        // visible tile count dominates — acceptable since those tiles
-        // couldn't fit in the atlas anyway.
-        let effective_cap = self.atlas_capacity.saturating_sub(pending_keys.len());
+        // 512 ≈ 2 GB host RAM at 4 MB/tile, well under any sane
+        // budget. The renderer drains 16/frame so 512 is ~1 s of
+        // install buffer.
+        const PENDING_TARGET: usize = 512;
+        let effective_cap = PENDING_TARGET.saturating_sub(pending_keys.len());
         if candidates.len() > effective_cap {
             // Sort by (priority, lod_level desc) so we keep current-t
             // tiles first, then nearest-t prefetch; among same-priority
