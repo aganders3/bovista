@@ -22,7 +22,8 @@
 //!   --fps N              (default 30)
 //!   --port N             (default 8080)
 //!   --backend NAME       auto | vulkan | gl | metal  (default auto)
-//!   --cache-tiles N      atlas slot count (default 1 synthetic, 1024 zarr)
+//!   --cache-tiles N      atlas slot count (default 1 synthetic, 4096 zarr)
+//!   --prefetch N         timepoints to prefetch ahead of desired_t (default 16)
 //!   --contrast-min F     contrast window floor (default 0.0)
 //!   --contrast-max F     contrast window ceiling (default 1.0)
 //!   --density-mult F     multiplier on the auto-density heuristic (default 1.0)
@@ -50,7 +51,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     const KNOWN_FLAGS: &[&str] = &[
         "--width", "--height", "--fps", "--port", "--backend",
-        "--zarr", "--cache-tiles", "--max-inflight", "--prefetch-cap",
+        "--zarr", "--cache-tiles", "--max-inflight", "--prefetch",
         "--contrast-min", "--contrast-max", "--density-mult",
         "--timepoint", "--bench",
     ];
@@ -86,15 +87,17 @@ fn main() {
     let max_inflight: usize = flag_str_opt(&args, "--max-inflight")
         .and_then(|v| v.parse().ok())
         .unwrap_or(auto_inflight);
-    // Prefetch cap defaults to 4096 (~16 GB at LOD 1 / 128³ R16F = 4 MB/tile);
-    // override with --prefetch-cap N. Visible tile counts up to ~1500 at LOD 0
-    // benefit from a high cap × (2*lookahead + 1).
-    let prefetch_cap: usize = flag_str_opt(&args, "--prefetch-cap")
+    // How many timepoints ahead of `desired_t` to prefetch. Atlas
+    // capacity / visible-tile-count tiles per timepoint puts a natural
+    // ceiling (e.g. 4096 / 180 ≈ 22 timepoints). Lookahead = 16 fills
+    // most of that on a stock --cache-tiles=4096; bump higher with
+    // --cache-tiles for more.
+    let prefetch_lookahead: u32 = flag_str_opt(&args, "--prefetch")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(4096);
+        .unwrap_or(16);
     println!(
-        "[orbit] thread budget: rayon={} max_inflight={} prefetch_cap={} (cpus={})",
-        rayon_threads, max_inflight, prefetch_cap, cpus,
+        "[orbit] thread budget: rayon={} max_inflight={} prefetch={} (cpus={})",
+        rayon_threads, max_inflight, prefetch_lookahead, cpus,
     );
 
     // Standalone benchmark mode: no rendering, no streaming. Just open the
@@ -182,7 +185,7 @@ fn main() {
 
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
-        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(), max_inflight, prefetch_cap) {
+        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(), max_inflight) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -202,11 +205,12 @@ fn main() {
     );
     *setup.pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
     *setup.wanted_slot.lock().unwrap() = Some(volume.wanted_handle());
-    // Background-prefetch ±2 neighbors of the current timepoint via
-    // bovista's own request path. Single dedupe (slot_map + request_tile)
-    // means already-resident tiles cost a HashMap lookup, not a re-decode.
+    // Background-prefetch the next `--prefetch` timepoints. Workers
+    // pull current-t first (priority 0) and only fetch prefetch keys
+    // when current-t is satisfied; `pick_slot` evicts prefetch slots
+    // before current ones, so prefetch never starves a live scrub.
     if n_timepoints > 1 {
-        volume.set_prefetch(2, n_timepoints);
+        volume.set_prefetch(prefetch_lookahead, n_timepoints);
     }
 
     // Density scales with voxel-to-world ratio so the same visible opacity
@@ -1678,7 +1682,6 @@ mod ome_zarr {
         view_state: Arc<ViewState>,
         flush_diag: Arc<FlushDiag>,
         max_inflight: usize,
-        prefetch_cap: usize,
     ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
@@ -1888,7 +1891,6 @@ mod ome_zarr {
             Arc::new(Mutex::new(None));
         let claimed: Arc<Mutex<HashSet<TileKey>>> = Arc::new(Mutex::new(HashSet::new()));
         println!("[orbit] loader pool: {} worker(s) (pull-based)", max_inflight);
-        let _ = prefetch_cap;
 
         for _ in 0..max_inflight {
             let wanted_slot = wanted_slot.clone();
