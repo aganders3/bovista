@@ -1946,8 +1946,23 @@ mod ome_zarr {
                 match result {
                     Ok(data) if still_wanted => {
                         if let Some(p) = pending_slot.lock().unwrap().clone() {
-                            p.lock().unwrap().insert(key, data);
-                            flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
+                            // Backstop: bovista's publish_wanted already
+                            // subtracts pending size from its budget, so
+                            // wanted shrinks as pending fills. This check
+                            // catches the residual race where workers
+                            // claimed against a slightly stale wanted
+                            // snapshot. 512 ≈ 1 s of install buffer at
+                            // MAX_TILES_PER_FRAME=16 × 30 fps — well
+                            // above what publish_wanted lets through, so
+                            // it almost never fires; when it does, the
+                            // decode is just discarded.
+                            const PENDING_BACKSTOP: usize = 512;
+                            let mut guard = p.lock().unwrap();
+                            if guard.len() < PENDING_BACKSTOP {
+                                guard.insert(key, data);
+                                drop(guard);
+                                flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
+                            }
                         }
                     }
                     Ok(_) => { /* dropped by bovista; throw bytes away */ }

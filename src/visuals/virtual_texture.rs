@@ -532,18 +532,30 @@ impl VirtualTextureData {
             }
         }
 
-        // Bound the wanted set to what the atlas can actually hold.
-        // Anything beyond `atlas_capacity` would just churn evictions
-        // and (more importantly) blow up host RAM via pending_chunks
-        // as workers race to decode the long tail. Prefetch lookahead
-        // silently shrinks at zoomed-in LOD0 where visible tile count
-        // dominates — acceptable since those tiles couldn't fit anyway.
-        if candidates.len() > self.atlas_capacity {
+        // Bound the wanted set so workers can't race ahead of the
+        // installer. The budget is `atlas_capacity - pending.len()`:
+        // as pending fills, wanted shrinks, so workers self-throttle.
+        // At pending == atlas_capacity, wanted is empty and workers
+        // idle until the installer drains pending into slot_map.
+        //
+        // Cap-by-atlas-capacity alone isn't enough: the wanted set
+        // always *excludes* current pending, so workers always see
+        // ~atlas_capacity fresh keys to chase. Steady-state worker
+        // throughput (~max_inflight completions / publish_wanted)
+        // can exceed the installer's drain (MAX_TILES_PER_FRAME) and
+        // pending grows monotonically. Subtracting pending closes
+        // that gap.
+        //
+        // Prefetch lookahead silently shrinks at zoomed-in LOD0 where
+        // visible tile count dominates — acceptable since those tiles
+        // couldn't fit in the atlas anyway.
+        let effective_cap = self.atlas_capacity.saturating_sub(pending_keys.len());
+        if candidates.len() > effective_cap {
             // Sort by (priority, lod_level desc) so we keep current-t
             // tiles first, then nearest-t prefetch; among same-priority
             // ties, prefer coarser LOD (which blocks in faster).
             candidates.sort_by_key(|&(k, p)| (p, -(k.lod_level as i32)));
-            candidates.truncate(self.atlas_capacity);
+            candidates.truncate(effective_cap);
         }
 
         let mut next: HashMap<TileKey, i32> = HashMap::with_capacity(candidates.len());
