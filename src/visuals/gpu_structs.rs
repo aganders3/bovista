@@ -221,12 +221,19 @@ pub struct VTLodInfo {
     /// Used for exact sub-tile UV computation independent of grid rounding.
     pub tile_scale: [f32; 3],
     pub _pad2: f32,
-    /// Fraction of the atlas slot actually filled with data for this LOD.
-    /// = lod_tile_size / atlas_slot_size (element-wise).
-    /// Coarser LODs have fewer voxels per chunk; multiplying within_tile by
-    /// data_scale restricts sampling to the populated region of the slot.
+    /// Multiplier on `voxel_frac` (= vol_in_tiles - floor(vol_in_tiles)).
+    /// = (tile_size - 1) / atlas_slot_size per axis. Together with
+    /// `data_offset`, maps `voxel_frac` in [0, 1] to the closed atlas-UV
+    /// range [0.5/atlas_slot, (atlas_slot - 0.5)/atlas_slot] — i.e.
+    /// onto the *centres* of the first and last texels of the slot. With
+    /// Nearest filtering this avoids the tie-break at half-texel
+    /// boundaries that produces visible lines at tile edges.
     pub data_scale: [f32; 3],
     pub _pad3: f32,
+    /// Half-texel inset added BEFORE scaling within_tile. = 0.5 /
+    /// atlas_slot_size per axis. See `data_scale`.
+    pub data_offset: [f32; 3],
+    pub _pad4: f32,
 }
 
 /// Uniform block for the VT pipeline.
@@ -280,7 +287,12 @@ impl Default for VTUniforms {
             page_table_width: 1,
             target_lod: 0,
             desired_t: 0,
-            lods: [VTLodInfo { grid_dims: [1, 1, 1], _pad: 0, tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0, data_scale: [1.0, 1.0, 1.0], _pad3: 0.0 }; VT_MAX_LODS],
+            lods: [VTLodInfo {
+                grid_dims: [1, 1, 1], _pad: 0,
+                tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
+                data_scale: [1.0, 1.0, 1.0], _pad3: 0.0,
+                data_offset: [0.0, 0.0, 0.0], _pad4: 0.0,
+            }; VT_MAX_LODS],
         }
     }
 }

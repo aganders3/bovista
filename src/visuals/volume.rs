@@ -502,6 +502,7 @@ impl Visual for VolumeVisual {
             grid_dims: [1, 1, 1], _pad: 0,
             tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
             data_scale: [1.0, 1.0, 1.0], _pad3: 0.0,
+            data_offset: [0.0, 0.0, 0.0], _pad4: 0.0,
         }; VT_MAX_LODS];
         let (atlas_tile_d, atlas_tile_h, atlas_tile_w) = vt.levels[0].tile_size;
         for (i, level) in vt.levels.iter().take(VT_MAX_LODS).enumerate() {
@@ -518,23 +519,25 @@ impl Visual for VolumeVisual {
                 ],
                 _pad2: 0.0,
                 data_scale: [
-                    // Aim for the LEFT edge of the last texel (pixel
-                    // index = tile - 1.0), not its centre. With Nearest
-                    // filtering, the midpoint between two texel centres
-                    // (pixel 127.5 for a 128-wide slot) is implementation-
-                    // defined — half the time the sampler returns the
-                    // NEXT slot's first texel and we see thin "edge"
-                    // lines at every internal tile boundary. Subtracting
-                    // 1.0 instead of 0.5 keeps the sample inside the
-                    // last texel even after FP rounding. If we ever
-                    // switch the atlas sampler to Linear, this should
-                    // go back to (tile - 0.5) so interpolation lands
-                    // exactly on the last texel's centre.
+                    // (tile - 1) / atlas paired with a 0.5/atlas
+                    // data_offset (below) maps voxel_frac in [0, 1] to
+                    // the centres of the first and last texels in the
+                    // atlas slot (pixel 0.5 and pixel `atlas_tile - 0.5`).
+                    // Nearest filtering returns those texels
+                    // unambiguously. Half-texel inset on both ends is
+                    // what stops the "thin edge line at every tile
+                    // boundary" artifact.
                     (tile_w as f32 - 1.0) / atlas_tile_w as f32,
                     (tile_h as f32 - 1.0) / atlas_tile_h as f32,
                     (tile_d as f32 - 1.0) / atlas_tile_d as f32,
                 ],
                 _pad3: 0.0,
+                data_offset: [
+                    0.5 / atlas_tile_w as f32,
+                    0.5 / atlas_tile_h as f32,
+                    0.5 / atlas_tile_d as f32,
+                ],
+                _pad4: 0.0,
             };
         }
         let vt_uniforms = VTUniforms {

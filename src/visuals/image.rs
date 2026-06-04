@@ -493,6 +493,7 @@ impl Visual for ImageVisual {
             grid_dims: [1, 1, 1], _pad: 0,
             tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
             data_scale: [1.0, 1.0, 1.0], _pad3: 0.0,
+            data_offset: [0.0, 0.0, 0.0], _pad4: 0.0,
         }; VT_MAX_LODS];
         // Atlas slot size is fixed at LOD 0's tile dimensions.
         let (atlas_tile_d, atlas_tile_h, atlas_tile_w) = vt.levels[0].tile_size;
@@ -510,20 +511,21 @@ impl Visual for ImageVisual {
                 ],
                 _pad2: 0.0,
                 data_scale: [
-                    // (tile - 1.0) / atlas_tile: aim at the LEFT edge of the
-                    // last texel, not its centre. With Nearest filtering, a
-                    // half-texel inset puts the sample on pixel 127.5 — the
-                    // exact midpoint between texel 127 and texel 128 (= the
-                    // next slot's first texel) — and the tie-break is
-                    // implementation-defined, so we'd intermittently sample
-                    // the wrong slot. Full-texel inset keeps the sample
-                    // unambiguously inside the last texel. (See the matching
-                    // comment in volume.rs.)
+                    // See volume.rs for the math: (tile - 1) / atlas
+                    // paired with 0.5/atlas data_offset maps voxel_frac
+                    // [0, 1] to the centres of the first and last
+                    // texels in the slot, avoiding Nearest tie-breaks.
                     (tile_w as f32 - 1.0) / atlas_tile_w as f32,
                     (tile_h as f32 - 1.0) / atlas_tile_h as f32,
                     (tile_d as f32 - 1.0) / atlas_tile_d as f32,
                 ],
                 _pad3: 0.0,
+                data_offset: [
+                    0.5 / atlas_tile_w as f32,
+                    0.5 / atlas_tile_h as f32,
+                    0.5 / atlas_tile_d as f32,
+                ],
+                _pad4: 0.0,
             };
         }
         let uniforms = VTUniforms {

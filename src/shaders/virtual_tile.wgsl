@@ -39,10 +39,14 @@ struct VTLodInfo {
     // tile_size / volume_size per axis (x, y, z) — used for exact sub-tile UV.
     tile_scale: vec3<f32>,
     _pad2: f32,
-    // Fraction of atlas slot filled with data at this LOD = lod_tile_size / atlas_slot_size.
-    // Coarser LODs have fewer voxels; multiply within_tile by this to stay in the valid region.
+    // Multiplier on voxel_frac. = (tile - 1) / atlas. Paired with
+    // data_offset = 0.5 / atlas to land voxel_frac in [0, 1] on the
+    // *centres* of the first and last texels of the slot.
     data_scale: vec3<f32>,
     _pad3: f32,
+    // Half-texel inset added before scaling. = 0.5 / atlas per axis.
+    data_offset: vec3<f32>,
+    _pad4: f32,
 }
 
 struct VTUniforms {
@@ -137,7 +141,8 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let atlas_layer = slot / (vt.atlas_cols * vt.atlas_rows);
 
     // Scale within-tile UV to the populated region of the atlas slot.
-    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * vt.lods[lod].data_scale;
+    let within_tile = vt.lods[lod].data_offset
+                    + (vol_in_tiles - floor(vol_in_tiles)) * vt.lods[lod].data_scale;
 
     let u = (f32(atlas_col)   + within_tile.x) * vt.atlas_tile_pitch_x;
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;

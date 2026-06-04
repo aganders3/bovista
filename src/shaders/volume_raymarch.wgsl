@@ -32,6 +32,8 @@ struct VTLodInfo {
     _pad2: f32,
     data_scale: vec3<f32>,
     _pad3: f32,
+    data_offset: vec3<f32>,
+    _pad4: f32,
 }
 
 struct VTUniforms {
@@ -144,7 +146,12 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let atlas_row   = (slot / uni.vt.atlas_cols) % uni.vt.atlas_rows;
     let atlas_layer = slot / (uni.vt.atlas_cols * uni.vt.atlas_rows);
 
-    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * uni.vt.lods[lod].data_scale;
+    // voxel_frac in [0, 1] within the tile → atlas-slot UV in
+    // [0.5/slot, (slot - 0.5)/slot]. The 0.5 inset on both ends puts
+    // the sample at the centre of the first / last texels, avoiding
+    // Nearest-filter tie-breaks at the slot boundary.
+    let within_tile = uni.vt.lods[lod].data_offset
+                    + (vol_in_tiles - floor(vol_in_tiles)) * uni.vt.lods[lod].data_scale;
 
     let u = (f32(atlas_col)   + within_tile.x) * uni.vt.atlas_tile_pitch_x;
     let v = (f32(atlas_row)   + within_tile.y) * uni.vt.atlas_tile_pitch_y;
