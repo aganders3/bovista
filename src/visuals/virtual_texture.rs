@@ -359,79 +359,90 @@ impl VirtualTextureData {
         let (tile_d, tile_h, tile_w) = self.tile_size;
         let bpv = to_install[0].1.bytes_per_voxel() as usize;
         let bytes_per_tile = tile_w as usize * tile_h as usize * tile_d as usize * bpv;
-        let total_bytes = bytes_per_tile * to_install.len();
+        // The staging buffer can't exceed the device's max buffer size.
+        // L40 advertises 256 MB; at 4 MB / R16Float 128³ tile that's
+        // 64 tiles per chunk. Above that we split the batch into
+        // multiple chunks, each with its own buffer + encoder + submit
+        // — still way fewer syncs than the original 1-per-tile path.
+        let max_buf = device.limits().max_buffer_size as usize;
+        let tiles_per_chunk = (max_buf / bytes_per_tile).max(1);
 
-        let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("VT atlas-upload staging"),
-            size: total_bytes as u64,
-            usage: wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: true,
-        });
-        {
-            let mut mapped = staging.slice(..).get_mapped_range_mut();
-            let stride_row_full = tile_w as usize * bpv;
-            let stride_slice_full = stride_row_full * tile_h as usize;
-            for (i, (_, data, _)) in to_install.iter().enumerate() {
-                let dst = &mut mapped[i * bytes_per_tile..(i + 1) * bytes_per_tile];
-                let is_full = data.width == tile_w
-                           && data.height == tile_h
-                           && data.depth == tile_d;
-                if is_full {
-                    dst.copy_from_slice(&data.data);
-                } else {
-                    // Boundary tile — zero-pad the unused region of the
-                    // slot so the shader's data_scale (per-LOD) doesn't
-                    // sample stale data from a previously-resident tile.
-                    dst.fill(0);
-                    let stride_row_src = data.width as usize * bpv;
-                    for z in 0..data.depth as usize {
-                        for y in 0..data.height as usize {
-                            let dst_off = z * stride_slice_full + y * stride_row_full;
-                            let src_off = z * (data.height as usize) * stride_row_src
-                                        + y * stride_row_src;
-                            dst[dst_off..dst_off + stride_row_src]
-                                .copy_from_slice(&data.data[src_off..src_off + stride_row_src]);
+        let stride_row_full = tile_w as usize * bpv;
+        let stride_slice_full = stride_row_full * tile_h as usize;
+        for chunk_start in (0..to_install.len()).step_by(tiles_per_chunk) {
+            let chunk_end = (chunk_start + tiles_per_chunk).min(to_install.len());
+            let chunk = &to_install[chunk_start..chunk_end];
+            let chunk_bytes = bytes_per_tile * chunk.len();
+
+            let staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("VT atlas-upload staging"),
+                size: chunk_bytes as u64,
+                usage: wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            });
+            {
+                let mut mapped = staging.slice(..).get_mapped_range_mut();
+                for (i, (_, data, _)) in chunk.iter().enumerate() {
+                    let dst = &mut mapped[i * bytes_per_tile..(i + 1) * bytes_per_tile];
+                    let is_full = data.width == tile_w
+                               && data.height == tile_h
+                               && data.depth == tile_d;
+                    if is_full {
+                        dst.copy_from_slice(&data.data);
+                    } else {
+                        // Boundary tile — zero-pad so the shader's
+                        // per-LOD data_scale doesn't sample stale data.
+                        dst.fill(0);
+                        let stride_row_src = data.width as usize * bpv;
+                        for z in 0..data.depth as usize {
+                            for y in 0..data.height as usize {
+                                let dst_off = z * stride_slice_full + y * stride_row_full;
+                                let src_off = z * (data.height as usize) * stride_row_src
+                                            + y * stride_row_src;
+                                dst[dst_off..dst_off + stride_row_src]
+                                    .copy_from_slice(&data.data[src_off..src_off + stride_row_src]);
+                            }
                         }
                     }
                 }
             }
-        }
-        staging.unmap();
+            staging.unmap();
 
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("VT atlas-upload"),
-        });
-        for (i, (_, _, slot)) in to_install.iter().enumerate() {
-            let col   = slot % self.atlas_cols;
-            let row   = (slot / self.atlas_cols) % self.atlas_rows;
-            let layer = slot / (self.atlas_cols * self.atlas_rows);
-            enc.copy_buffer_to_texture(
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &staging,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: (i * bytes_per_tile) as u64,
-                        bytes_per_row: Some(tile_w * bpv as u32),
-                        rows_per_image: Some(tile_h),
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("VT atlas-upload"),
+            });
+            for (i, (_, _, slot)) in chunk.iter().enumerate() {
+                let col   = slot % self.atlas_cols;
+                let row   = (slot / self.atlas_cols) % self.atlas_rows;
+                let layer = slot / (self.atlas_cols * self.atlas_rows);
+                enc.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &staging,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: (i * bytes_per_tile) as u64,
+                            bytes_per_row: Some(tile_w * bpv as u32),
+                            rows_per_image: Some(tile_h),
+                        },
                     },
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.atlas_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: col   * tile_w,
-                        y: row   * tile_h,
-                        z: layer * tile_d,
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.atlas_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: col   * tile_w,
+                            y: row   * tile_h,
+                            z: layer * tile_d,
+                        },
+                        aspect: wgpu::TextureAspect::All,
                     },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: tile_w,
-                    height: tile_h,
-                    depth_or_array_layers: tile_d,
-                },
-            );
+                    wgpu::Extent3d {
+                        width: tile_w,
+                        height: tile_h,
+                        depth_or_array_layers: tile_d,
+                    },
+                );
+            }
+            queue.submit(std::iter::once(enc.finish()));
         }
-        queue.submit(std::iter::once(enc.finish()));
 
         // Bookkeeping + page-table updates. The page-table writes
         // stay as individual queue.write_texture calls — they're 4
