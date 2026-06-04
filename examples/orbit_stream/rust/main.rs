@@ -27,6 +27,7 @@
 //!   --contrast-min F     contrast window floor (default 0.0)
 //!   --contrast-max F     contrast window ceiling (default 1.0)
 //!   --density-mult F     multiplier on the auto-density heuristic (default 1.0)
+//!   --lod-bias F         shader LOD bias (+ = finer, − = coarser; default 0.0)
 //!
 //! Set BOVISTA_FORCE_LIBX264=1 to skip the NVENC probe and always use libx264.
 
@@ -52,7 +53,7 @@ fn main() {
     const KNOWN_FLAGS: &[&str] = &[
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles", "--max-inflight", "--prefetch",
-        "--contrast-min", "--contrast-max", "--density-mult",
+        "--contrast-min", "--contrast-max", "--density-mult", "--lod-bias",
         "--timepoint", "--bench",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
@@ -113,6 +114,7 @@ fn main() {
     let contrast_min: f32 = flag_str_opt(&args, "--contrast-min").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let contrast_max: f32 = flag_str_opt(&args, "--contrast-max").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let density_mult: f32 = flag_str_opt(&args, "--density-mult").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let lod_bias: f32 = flag_str_opt(&args, "--lod-bias").and_then(|v| v.parse().ok()).unwrap_or(0.0);
 
     println!("[orbit] {}x{} @ {} fps, serving on port {}, backend={}",
              width, height, fps, port, backend);
@@ -180,6 +182,7 @@ fn main() {
         contrast_max,
         density_mult,
         1.0,           // orbit_speed (× 1 revolution per 12s)
+        lod_bias,
     ));
     let flush_diag = Arc::new(FlushDiag::new());
 
@@ -223,8 +226,8 @@ fn main() {
         .max(1e-9);
     let base_density = 0.5 / voxel_min;
     println!(
-        "[orbit] base_density={:.2} (× {} init); contrast=[{:.3}, {:.3}] init",
-        base_density, density_mult, contrast_min, contrast_max,
+        "[orbit] base_density={:.2} (× {} init); contrast=[{:.3}, {:.3}] init; lod_bias={:+.1} init",
+        base_density, density_mult, contrast_min, contrast_max, lod_bias,
     );
 
     let volume_arc = Arc::new(Mutex::new(volume));
@@ -337,6 +340,7 @@ fn main() {
             let mut v = volume_arc.lock().unwrap();
             v.set_contrast_limits(view_state.contrast_min(), view_state.contrast_max());
             v.set_density_scale(base_density * view_state.density_mult());
+            v.set_lod_bias(view_state.lod_bias());
             let gen = view_state.t_generation();
             if gen != last_t_gen {
                 if flush_active {
@@ -984,6 +988,7 @@ struct ViewState {
     contrast_max: AtomicU32,
     density_mult: AtomicU32,
     orbit_speed:  AtomicU32,
+    lod_bias:     AtomicU32,
     /// Current OME-Zarr timepoint (or 0 for non-temporal data). The zarr
     /// loader reads this for every tile request; the render loop watches
     /// `t_generation` and flushes the atlas when it bumps.
@@ -1161,13 +1166,14 @@ impl FlushDiag {
 }
 
 impl ViewState {
-    fn new(zoom: f32, cmin: f32, cmax: f32, dens: f32, speed: f32) -> Self {
+    fn new(zoom: f32, cmin: f32, cmax: f32, dens: f32, speed: f32, lod_bias: f32) -> Self {
         Self {
             zoom:         AtomicU32::new(zoom.to_bits()),
             contrast_min: AtomicU32::new(cmin.to_bits()),
             contrast_max: AtomicU32::new(cmax.to_bits()),
             density_mult: AtomicU32::new(dens.to_bits()),
             orbit_speed:  AtomicU32::new(speed.to_bits()),
+            lod_bias:     AtomicU32::new(lod_bias.to_bits()),
             timepoint:    AtomicU32::new(0),
             t_generation: AtomicU32::new(0),
             program_start: Instant::now(),
@@ -1181,6 +1187,7 @@ impl ViewState {
     fn contrast_max(&self) -> f32 { f32::from_bits(self.contrast_max.load(Ordering::Relaxed)) }
     fn density_mult(&self) -> f32 { f32::from_bits(self.density_mult.load(Ordering::Relaxed)) }
     fn orbit_speed(&self)  -> f32 { f32::from_bits(self.orbit_speed.load(Ordering::Relaxed)) }
+    fn lod_bias(&self)     -> f32 { f32::from_bits(self.lod_bias.load(Ordering::Relaxed)) }
     fn timepoint(&self)    -> u32 { self.timepoint.load(Ordering::Relaxed) }
     fn t_generation(&self) -> u32 { self.t_generation.load(Ordering::Relaxed) }
 
@@ -1200,6 +1207,7 @@ impl ViewState {
             "contrast_max" => &self.contrast_max,
             "density_mult" => &self.density_mult,
             "orbit_speed"  => &self.orbit_speed,
+            "lod_bias"     => &self.lod_bias,
             _ => return,
         };
         cell.store(value.to_bits(), Ordering::Relaxed);
@@ -1309,6 +1317,7 @@ fn serve_html(
         .replace("{{CONTRAST_MAX}}", &format!("{}", view.contrast_max()))
         .replace("{{DENSITY_MULT}}", &format!("{}", view.density_mult()))
         .replace("{{ORBIT_SPEED}}",  &format!("{}", view.orbit_speed()))
+        .replace("{{LOD_BIAS}}",     &format!("{}", view.lod_bias()))
         .replace("{{TIMEPOINT}}",    &format!("{}", view.timepoint()))
         .replace("{{T_MAX}}",        &format!("{}", t_max))
         .replace("{{T_STYLE}}",      t_row_style);
@@ -1458,6 +1467,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   <div class="row"><label>orbit speed ×</label>
     <input type="range" id="orbit_speed" min="0" max="4" step="0.05" value="{{ORBIT_SPEED}}">
     <span class="val" id="orbit_speed_val"></span></div>
+  <div class="row"><label>LOD bias</label>
+    <input type="range" id="lod_bias" min="-3" max="3" step="0.1" value="{{LOD_BIAS}}">
+    <span class="val" id="lod_bias_val"></span></div>
   <div class="row" style="{{T_STYLE}}"><label>timepoint</label>
     <input type="range" id="timepoint" min="0" max="{{T_MAX}}" step="1" value="{{TIMEPOINT}}">
     <span class="val" id="timepoint_val"></span></div>
@@ -1575,6 +1587,7 @@ const fmt = { zoom: v=>(+v).toFixed(2)+'×',
               contrast_max: v=>(+v).toFixed(4),
               density_mult: v=>(+v).toFixed(2)+'×',
               orbit_speed:  v=>(+v).toFixed(2)+'×',
+              lod_bias:     v=>(+v >= 0 ? '+' : '') + (+v).toFixed(1),
               timepoint:    v=>String(v|0) };
 for (const id of Object.keys(fmt)) {
   const el  = document.getElementById(id);
