@@ -494,7 +494,8 @@ impl Visual for VolumeVisual {
         }
 
         self.frame_number += 1;
-        self.strategy.prepare_volume(device, queue, self.frame_number, camera_info);
+        let _ = device;
+        self.strategy.prepare_volume(queue, self.frame_number, camera_info);
 
         // Upload VT uniforms (identical logic to ImageVisual::prepare)
         let vt = &self.strategy;

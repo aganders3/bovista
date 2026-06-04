@@ -485,7 +485,8 @@ impl Visual for ImageVisual {
 
         self.frame_number += 1;
 
-        self.strategy.prepare(device, queue, &self.slice_plane, self.frame_number, camera_info);
+        let _ = device;
+        self.strategy.prepare(queue, &self.slice_plane, self.frame_number, camera_info);
 
         // Update VT uniform buffer.
         let vt = &self.strategy;

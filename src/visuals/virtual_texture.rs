@@ -299,7 +299,7 @@ impl VirtualTextureData {
         self.atlas_allocator.reset();
     }
 
-    fn process_pending_chunks(&mut self, device: &Device, queue: &Queue) {
+    fn process_pending_chunks(&mut self, queue: &Queue) {
         let started = std::time::Instant::now();
         let pending: Vec<(TileKey, TileData)> = {
             let mut guard = self.pending_chunks.lock().unwrap();
@@ -310,7 +310,16 @@ impl VirtualTextureData {
             return;
         }
 
-        // Build the eviction candidate list ONCE for this batch
+        // Cap how many tiles we install per frame. Each
+        // queue.write_texture on the GL backend is ~3 ms; 16 tiles is
+        // ~48 ms — enough headroom inside a 33 ms frame budget for
+        // render-thread work to stay responsive. Excess pending tiles
+        // get pushed back into `pending` (HashMap, no dedup needed
+        // since publish_wanted skips pending entries so workers won't
+        // re-fetch them).
+        const MAX_TILES_PER_FRAME: usize = 16;
+
+        // Build the eviction candidate list ONCE
         // (single O(N log N) sort vs O(N) scan per tile).
         let current_t = self.desired_t;
         let frame_counter = self.frame_counter;
@@ -328,144 +337,132 @@ impl VirtualTextureData {
             .collect();
         candidates.sort_by_key(|&(eff, age, _, _)| (eff, age));
 
-        // First pass: decide which tiles to install + allocate slots.
-        let mut to_install: Vec<(TileKey, TileData, u32)> = Vec::with_capacity(pending.len());
+        let mut installed = 0usize;
         let mut dropped = 0usize;
+        let mut page_table_writes = 0usize;
+        let mut deferred: Vec<(TileKey, TileData)> = Vec::new();
+
         for (key, data) in pending {
-            if self.slot_map.contains_key(&key) { dropped += 1; continue; }
+            if installed >= MAX_TILES_PER_FRAME {
+                // Frame budget spent — defer the rest. Order doesn't
+                // matter; whichever this worker decoded next frame
+                // will get processed first.
+                deferred.push((key, data));
+                continue;
+            }
+            if self.slot_map.contains_key(&key) {
+                dropped += 1;
+                continue;
+            }
             if !self.visible_tile_keys.contains(&key.spatial()) {
-                dropped += 1; continue;
+                dropped += 1;
+                continue;
             }
             let Some(slot) = self.alloc_or_evict(queue, key.t, &mut candidates) else {
-                dropped += 1; continue;
+                dropped += 1;
+                continue;
             };
-            to_install.push((key, data, slot));
-        }
-        if to_install.is_empty() {
-            self.stats.process_pending_ns = started.elapsed().as_nanos() as u64;
-            self.stats.tiles_dropped = dropped;
-            return;
-        }
 
-        // Batch upload: one staging buffer holding N full-tile-sized
-        // slots, mapped at creation so we write CPU-side directly into
-        // GPU-visible memory, then one CommandEncoder issuing N
-        // copy_buffer_to_texture commands, then one submit. This
-        // replaces N separate `queue.write_texture` calls — each of
-        // those had ~2-3 ms of per-call overhead on the wgpu GL
-        // backend (allocate driver staging + glTexSubImage3D + sync),
-        // and 50+ in a burst froze the render thread for ~150 ms.
-        // The batch path turns N small syncs into one large one.
-        let (tile_d, tile_h, tile_w) = self.tile_size;
-        let bpv = to_install[0].1.bytes_per_voxel() as usize;
-        let bytes_per_tile = tile_w as usize * tile_h as usize * tile_d as usize * bpv;
-        // The staging buffer can't exceed the device's max buffer size.
-        // L40 advertises 256 MB; at 4 MB / R16Float 128³ tile that's
-        // 64 tiles per chunk. Above that we split the batch into
-        // multiple chunks, each with its own buffer + encoder + submit
-        // — still way fewer syncs than the original 1-per-tile path.
-        let max_buf = device.limits().max_buffer_size as usize;
-        let tiles_per_chunk = (max_buf / bytes_per_tile).max(1);
+            self.write_tile_to_atlas(queue, slot, &data);
 
-        let stride_row_full = tile_w as usize * bpv;
-        let stride_slice_full = stride_row_full * tile_h as usize;
-        for chunk_start in (0..to_install.len()).step_by(tiles_per_chunk) {
-            let chunk_end = (chunk_start + tiles_per_chunk).min(to_install.len());
-            let chunk = &to_install[chunk_start..chunk_end];
-            let chunk_bytes = bytes_per_tile * chunk.len();
-
-            let staging = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("VT atlas-upload staging"),
-                size: chunk_bytes as u64,
-                usage: wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: true,
-            });
-            {
-                let mut mapped = staging.slice(..).get_mapped_range_mut();
-                for (i, (_, data, _)) in chunk.iter().enumerate() {
-                    let dst = &mut mapped[i * bytes_per_tile..(i + 1) * bytes_per_tile];
-                    let is_full = data.width == tile_w
-                               && data.height == tile_h
-                               && data.depth == tile_d;
-                    if is_full {
-                        dst.copy_from_slice(&data.data);
-                    } else {
-                        // Boundary tile — zero-pad so the shader's
-                        // per-LOD data_scale doesn't sample stale data.
-                        dst.fill(0);
-                        let stride_row_src = data.width as usize * bpv;
-                        for z in 0..data.depth as usize {
-                            for y in 0..data.height as usize {
-                                let dst_off = z * stride_slice_full + y * stride_row_full;
-                                let src_off = z * (data.height as usize) * stride_row_src
-                                            + y * stride_row_src;
-                                dst[dst_off..dst_off + stride_row_src]
-                                    .copy_from_slice(&data.data[src_off..src_off + stride_row_src]);
-                            }
-                        }
-                    }
-                }
-            }
-            staging.unmap();
-
-            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("VT atlas-upload"),
-            });
-            for (i, (_, _, slot)) in chunk.iter().enumerate() {
-                let col   = slot % self.atlas_cols;
-                let row   = (slot / self.atlas_cols) % self.atlas_rows;
-                let layer = slot / (self.atlas_cols * self.atlas_rows);
-                enc.copy_buffer_to_texture(
-                    wgpu::TexelCopyBufferInfo {
-                        buffer: &staging,
-                        layout: wgpu::TexelCopyBufferLayout {
-                            offset: (i * bytes_per_tile) as u64,
-                            bytes_per_row: Some(tile_w * bpv as u32),
-                            rows_per_image: Some(tile_h),
-                        },
-                    },
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &self.atlas_texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: col   * tile_w,
-                            y: row   * tile_h,
-                            z: layer * tile_d,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::Extent3d {
-                        width: tile_w,
-                        height: tile_h,
-                        depth_or_array_layers: tile_d,
-                    },
-                );
-            }
-            queue.submit(std::iter::once(enc.finish()));
-        }
-
-        // Bookkeeping + page-table updates. The page-table writes
-        // stay as individual queue.write_texture calls — they're 4
-        // bytes each, only fire for tiles at desired_t (so capped at
-        // visible count), and aren't the bottleneck.
-        let mut page_table_writes = 0usize;
-        for (key, _, slot) in &to_install {
-            let TileKey { lod_level, t, z, y, x } = *key;
+            let TileKey { lod_level, t, z, y, x } = key;
             if t == self.desired_t {
-                self.page_table.update(queue, lod_level, z, y, x, t, *slot);
-                self.last_written_slot.insert(key.spatial(), *slot);
+                self.page_table.update(queue, lod_level, z, y, x, t, slot);
+                self.last_written_slot.insert(key.spatial(), slot);
                 page_table_writes += 1;
             }
-            self.slot_map.insert(*key, *slot);
-            self.lru_map.insert(*key, self.frame_counter);
-        }
 
-        let installed = to_install.len();
+            self.slot_map.insert(key, slot);
+            self.lru_map.insert(key, self.frame_counter);
+            installed += 1;
+        }
+        // Re-queue deferred entries into pending for next frame.
+        if !deferred.is_empty() {
+            let mut guard = self.pending_chunks.lock().unwrap();
+            for (key, data) in deferred {
+                guard.insert(key, data);
+            }
+        }
         self.stats.process_pending_ns = started.elapsed().as_nanos() as u64;
         self.stats.tiles_installed = installed;
         self.stats.tiles_dropped = dropped;
         self.stats.atlas_writes = installed;
         self.stats.page_table_writes = page_table_writes;
+    }
+
+    fn write_tile_to_atlas(&self, queue: &Queue, slot: u32, data: &TileData) {
+        let col   = slot % self.atlas_cols;
+        let row   = (slot / self.atlas_cols) % self.atlas_rows;
+        let layer = slot / (self.atlas_cols * self.atlas_rows);
+        let (tile_d, tile_h, tile_w) = self.tile_size;
+        let origin = wgpu::Origin3d {
+            x: col   * tile_w,
+            y: row   * tile_h,
+            z: layer * tile_d,
+        };
+        let bpv = data.bytes_per_voxel() as usize;
+
+        // Boundary tiles (z/y/x edge of the volume at this LOD) have
+        // smaller extent than the slot. Without zero-padding, the
+        // remainder of the slot would still hold whatever a previous
+        // tile left there, and the shader's per-LOD data_scale would
+        // sample into that stale data.
+        let is_full =
+            data.width == tile_w && data.height == tile_h && data.depth == tile_d;
+        if is_full {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data.data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(data.width * bpv as u32),
+                    rows_per_image: Some(data.height),
+                },
+                wgpu::Extent3d {
+                    width: data.width,
+                    height: data.height,
+                    depth_or_array_layers: data.depth,
+                },
+            );
+        } else {
+            let stride_row_dst = tile_w as usize * bpv;
+            let stride_slice_dst = stride_row_dst * tile_h as usize;
+            let stride_row_src = data.width as usize * bpv;
+            let mut padded = vec![0u8; stride_slice_dst * tile_d as usize];
+            for z in 0..data.depth as usize {
+                for y in 0..data.height as usize {
+                    let dst = z * stride_slice_dst + y * stride_row_dst;
+                    let src = z * (data.height as usize) * stride_row_src
+                            + y * stride_row_src;
+                    padded[dst..dst + stride_row_src]
+                        .copy_from_slice(&data.data[src..src + stride_row_src]);
+                }
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &padded,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(tile_w * bpv as u32),
+                    rows_per_image: Some(tile_h),
+                },
+                wgpu::Extent3d {
+                    width: tile_w,
+                    height: tile_h,
+                    depth_or_array_layers: tile_d,
+                },
+            );
+        }
     }
 
     /// For every visible spatial, point the page table at the slot
@@ -488,6 +485,12 @@ impl VirtualTextureData {
     fn publish_wanted(&mut self) {
         let t0 = std::time::Instant::now();
         let lookahead = self.prefetch_lookahead as i32;
+        // Snapshot pending keys so a worker doesn't re-fetch a tile
+        // that's already decoded and waiting in line to install.
+        let pending_keys: HashSet<TileKey> = {
+            let guard = self.pending_chunks.lock().unwrap();
+            guard.keys().copied().collect()
+        };
         let mut next: HashMap<TileKey, i32> = HashMap::with_capacity(
             self.visible_tile_keys.len() * (1 + lookahead.max(0) as usize),
         );
@@ -503,6 +506,7 @@ impl VirtualTextureData {
                     z: spatial.z, y: spatial.y, x: spatial.x,
                 };
                 if self.slot_map.contains_key(&key) { continue; }
+                if pending_keys.contains(&key) { continue; }
                 next.insert(key, offset);
             }
         }
@@ -865,7 +869,6 @@ impl VirtualTextureData {
 
     pub(crate) fn prepare_volume(
         &mut self,
-        device: &Device,
         queue: &Queue,
         frame_number: u64,
         camera_info: &crate::visual::CameraInfo,
@@ -883,7 +886,7 @@ impl VirtualTextureData {
                 self.lru_map.insert(key, frame_number);
             }
         }
-        self.process_pending_chunks(device, queue);
+        self.process_pending_chunks(queue);
         self.refresh_page_table(queue);
         // Publish what we want; the loader (whoever wired one up) picks
         // it up on its next poll.
@@ -896,7 +899,6 @@ impl VirtualTextureData {
 
     pub(crate) fn prepare(
         &mut self,
-        device: &Device,
         queue: &Queue,
         slice_plane: &SlicePlane,
         frame_number: u64,
@@ -917,7 +919,7 @@ impl VirtualTextureData {
             }
         }
 
-        self.process_pending_chunks(device, queue);
+        self.process_pending_chunks(queue);
         self.refresh_page_table(queue);
         self.publish_wanted();
         self.stats.slot_map_len = self.slot_map.len();
