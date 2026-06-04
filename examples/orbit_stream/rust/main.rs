@@ -123,7 +123,7 @@ fn main() {
         .any(|a| a == "--bench-sparsity" || a.starts_with("--bench-sparsity="))
     {
         Some(flag_str_opt(&args, "--bench-sparsity")
-            .and_then(|v| v.parse().ok()).unwrap_or(4))
+            .and_then(|v| v.parse().ok()).unwrap_or(1))
     } else {
         None
     };
@@ -2066,13 +2066,18 @@ mod ome_zarr {
         use rayon::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        const MAX_SPATIAL_PER_SAMPLE: usize = 200;
-
         let n_samples = samples.min(n_timepoints as usize).max(1);
-        let t_samples: Vec<u32> = (0..n_samples)
-            .map(|i| ((i as u64) * (n_timepoints as u64 - 1)
-                      / (n_samples.saturating_sub(1).max(1) as u64)) as u32)
-            .collect();
+        let t_samples: Vec<u32> = if n_samples == 1 {
+            // Middle timepoint — likely most representative for a movie
+            // of a single subject that doesn't move much across t.
+            vec![n_timepoints / 2]
+        } else {
+            // Evenly spaced across [0, n_timepoints-1].
+            (0..n_samples)
+                .map(|i| ((i as u64) * (n_timepoints as u64 - 1)
+                          / (n_samples - 1) as u64) as u32)
+                .collect()
+        };
 
         println!();
         println!("[bench] contrast_min={:.4} → tile is 'non-empty' if any voxel > {:.4} normalized",
@@ -2100,19 +2105,12 @@ mod ome_zarr {
             let tiles_per_t = (gz as usize) * (gy as usize) * (gx as usize);
             let total = tiles_per_t * n_timepoints as usize;
 
-            // Spatial tile list: full enumeration if small, else stride sample.
-            let all_spatials: Vec<(u32, u32, u32)> = (0..gz)
+            // Full spatial enumeration — sparsity often clusters spatially
+            // (subject in the center, empty borders), so stride-sampling
+            // can badly miss or hit clusters.
+            let spatials: Vec<(u32, u32, u32)> = (0..gz)
                 .flat_map(|z| (0..gy).flat_map(move |y| (0..gx).map(move |x| (z, y, x))))
                 .collect();
-            let spatials: Vec<(u32, u32, u32)> = if all_spatials.len() <= MAX_SPATIAL_PER_SAMPLE {
-                all_spatials
-            } else {
-                // Stride-sample to MAX_SPATIAL_PER_SAMPLE.
-                let stride = all_spatials.len() as f64 / MAX_SPATIAL_PER_SAMPLE as f64;
-                (0..MAX_SPATIAL_PER_SAMPLE)
-                    .map(|i| all_spatials[(i as f64 * stride) as usize])
-                    .collect()
-            };
 
             let work: Vec<(u32, (u32, u32, u32))> = t_samples.iter()
                 .flat_map(|&t| spatials.iter().map(move |&s| (t, s)))
