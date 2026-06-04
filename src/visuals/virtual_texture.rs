@@ -101,6 +101,12 @@ pub struct VirtualTextureData {
     pub atlas_cols: u32,
     pub atlas_rows: u32,
     pub atlas_layers: u32,
+    /// Effective slot count. Bounded by the device's max_texture_dimension_3d
+    /// (single 3D atlas), so on a typical L40 with 128³ tiles this is 4096
+    /// even when the user asks for more via `max_tiles`. Used to bound
+    /// `publish_wanted` so we never publish more keys than the atlas can
+    /// physically hold — pending would otherwise grow unbounded at LOD0.
+    pub atlas_capacity: usize,
 
     // Page table (owns its own texture + view)
     pub page_table: PageTable,
@@ -196,6 +202,16 @@ impl VirtualTextureData {
 
         // cols*rows*layers may exceed effective_capacity due to grid rounding.
         let atlas_capacity = effective_capacity.min((cols * rows * layers) as usize);
+        if atlas_capacity < max_tiles {
+            log::warn!(
+                "VT atlas clamped from {} to {} slots by GPU max_texture_dimension_3d={} \
+                 (tile={}x{}x{} → max grid {}x{}x{}). \
+                 Multi-atlas would lift this cap.",
+                max_tiles, atlas_capacity, max_dim,
+                tile_w, tile_h, tile_d,
+                max_cols, max_rows, max_layers,
+            );
+        }
 
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("VT Atlas"),
@@ -224,6 +240,7 @@ impl VirtualTextureData {
             atlas_cols: cols,
             atlas_rows: rows,
             atlas_layers: layers,
+            atlas_capacity,
             page_table,
             slot_map: HashMap::new(),
             last_written_slot: HashMap::new(),
@@ -491,7 +508,11 @@ impl VirtualTextureData {
             let guard = self.pending_chunks.lock().unwrap();
             guard.keys().copied().collect()
         };
-        let mut next: HashMap<TileKey, i32> = HashMap::with_capacity(
+
+        // Collect candidates with priority = offset (0 = current t).
+        // We may build more than `atlas_capacity`; we sort + truncate
+        // below so the published set fits.
+        let mut candidates: Vec<(TileKey, i32)> = Vec::with_capacity(
             self.visible_tile_keys.len() * (1 + lookahead.max(0) as usize),
         );
         for spatial in &self.visible_tile_keys {
@@ -507,8 +528,27 @@ impl VirtualTextureData {
                 };
                 if self.slot_map.contains_key(&key) { continue; }
                 if pending_keys.contains(&key) { continue; }
-                next.insert(key, offset);
+                candidates.push((key, offset));
             }
+        }
+
+        // Bound the wanted set to what the atlas can actually hold.
+        // Anything beyond `atlas_capacity` would just churn evictions
+        // and (more importantly) blow up host RAM via pending_chunks
+        // as workers race to decode the long tail. Prefetch lookahead
+        // silently shrinks at zoomed-in LOD0 where visible tile count
+        // dominates — acceptable since those tiles couldn't fit anyway.
+        if candidates.len() > self.atlas_capacity {
+            // Sort by (priority, lod_level desc) so we keep current-t
+            // tiles first, then nearest-t prefetch; among same-priority
+            // ties, prefer coarser LOD (which blocks in faster).
+            candidates.sort_by_key(|&(k, p)| (p, -(k.lod_level as i32)));
+            candidates.truncate(self.atlas_capacity);
+        }
+
+        let mut next: HashMap<TileKey, i32> = HashMap::with_capacity(candidates.len());
+        for (key, prio) in candidates {
+            next.insert(key, prio);
         }
         *self.wanted.lock().unwrap() = next;
         self.stats.publish_wanted_ns = t0.elapsed().as_nanos() as u64;
