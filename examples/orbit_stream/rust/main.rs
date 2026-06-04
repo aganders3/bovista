@@ -28,6 +28,9 @@
 //!   --contrast-max F     contrast window ceiling (default 1.0)
 //!   --density-mult F     multiplier on the auto-density heuristic (default 1.0)
 //!   --lod-bias F         shader LOD bias (+ = finer, − = coarser; default 0.0)
+//!   --bench-sparsity[=N] estimate non-empty-tile fraction per LOD vs current
+//!                        --contrast-min, then exit; samples N timepoints
+//!                        (default 4) and prints a tier-fit summary
 //!
 //! Set BOVISTA_FORCE_LIBX264=1 to skip the NVENC probe and always use libx264.
 
@@ -54,6 +57,7 @@ fn main() {
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles", "--max-inflight", "--prefetch",
         "--contrast-min", "--contrast-max", "--density-mult", "--lod-bias",
+        "--bench-sparsity",
         "--timepoint", "--bench",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
@@ -115,6 +119,14 @@ fn main() {
     let contrast_max: f32 = flag_str_opt(&args, "--contrast-max").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let density_mult: f32 = flag_str_opt(&args, "--density-mult").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let lod_bias: f32 = flag_str_opt(&args, "--lod-bias").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let bench_sparsity: Option<usize> = if args.iter()
+        .any(|a| a == "--bench-sparsity" || a.starts_with("--bench-sparsity="))
+    {
+        Some(flag_str_opt(&args, "--bench-sparsity")
+            .and_then(|v| v.parse().ok()).unwrap_or(4))
+    } else {
+        None
+    };
 
     println!("[orbit] {}x{} @ {} fps, serving on port {}, backend={}",
              width, height, fps, port, backend);
@@ -188,7 +200,8 @@ fn main() {
 
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
-        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(), max_inflight) {
+        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(),
+                                             max_inflight, bench_sparsity, contrast_min) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -1695,6 +1708,8 @@ mod ome_zarr {
         view_state: Arc<ViewState>,
         flush_diag: Arc<FlushDiag>,
         max_inflight: usize,
+        bench_sparsity: Option<usize>,
+        contrast_min: f32,
     ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
@@ -1887,6 +1902,14 @@ mod ome_zarr {
             )
         };
 
+        // Optional one-shot sparsity bench. Reads tiles to compute per-LOD
+        // "non-empty fraction" (max normalized value > contrast_min), prints
+        // a tier-fit summary, and exits without starting the loader pool.
+        if let Some(samples) = bench_sparsity {
+            run_sparsity_bench(&levels, &lods, n_timepoints, contrast_min, samples);
+            std::process::exit(0);
+        }
+
         // Pull-based loader pool. Workers read bovista's `wanted` map
         // (priority-ordered set of tiles bovista wants right now),
         // claim the highest-priority unclaimed key, decode, and only
@@ -2013,6 +2036,183 @@ mod ome_zarr {
             },
             wanted_slot,
         })
+    }
+
+    /// Compute the max normalized value (0..=1) across a tile's f16 byte buffer.
+    /// Stops early once a voxel above the threshold is seen — useful when we
+    /// only care whether the tile is "above contrast" and not its actual max.
+    fn tile_max_normalized_above(bytes: &[u8], threshold: f32) -> bool {
+        for chunk in bytes.chunks_exact(2) {
+            let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let v = half::f16::from_bits(bits).to_f32();
+            if v > threshold { return true; }
+        }
+        false
+    }
+
+    /// Scan each LOD level for "non-empty" tile fraction (max normalized
+    /// value > contrast_min) and print a tier-fit table.
+    ///
+    /// For each LOD, we sample N timepoints evenly across the t range. For
+    /// LODs whose grid is small enough we read every spatial tile; for
+    /// LOD0 we stride-sample so the bench finishes in a sane time.
+    fn run_sparsity_bench(
+        levels: &[Level],
+        lods: &[LodLevelConfig],
+        n_timepoints: u32,
+        contrast_min: f32,
+        samples: usize,
+    ) {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const MAX_SPATIAL_PER_SAMPLE: usize = 200;
+
+        let n_samples = samples.min(n_timepoints as usize).max(1);
+        let t_samples: Vec<u32> = (0..n_samples)
+            .map(|i| ((i as u64) * (n_timepoints as u64 - 1)
+                      / (n_samples.saturating_sub(1).max(1) as u64)) as u32)
+            .collect();
+
+        println!();
+        println!("[bench] contrast_min={:.4} → tile is 'non-empty' if any voxel > {:.4} normalized",
+                 contrast_min, contrast_min);
+        println!("[bench] sampling {} timepoint(s): {:?} (of {})",
+                 n_samples, t_samples, n_timepoints);
+        println!();
+        println!("  {:>3}  {:>14}  {:>12}  {:>10}  {:>10}  {:>11}  {:>10}  {:>8}",
+                 "LOD", "grid (z×y×x)", "tiles × n_t", "sampled", "non-empty", "non-empty %",
+                 "est total", "est GB");
+        println!("  {:>3}  {:>14}  {:>12}  {:>10}  {:>10}  {:>11}  {:>10}  {:>8}",
+                 "---", "--------------", "------------", "----------", "----------",
+                 "-----------", "----------", "--------");
+
+        // Collect per-LOD results so the post-table summary can use them.
+        struct LodBench {
+            lod: usize,
+            est_non_empty: usize,
+            est_bytes: u64,
+        }
+        let mut results: Vec<LodBench> = Vec::new();
+
+        for (lod_idx, (level, lod_cfg)) in levels.iter().zip(lods.iter()).enumerate() {
+            let (gz, gy, gx) = lod_cfg.grid_size();
+            let tiles_per_t = (gz as usize) * (gy as usize) * (gx as usize);
+            let total = tiles_per_t * n_timepoints as usize;
+
+            // Spatial tile list: full enumeration if small, else stride sample.
+            let all_spatials: Vec<(u32, u32, u32)> = (0..gz)
+                .flat_map(|z| (0..gy).flat_map(move |y| (0..gx).map(move |x| (z, y, x))))
+                .collect();
+            let spatials: Vec<(u32, u32, u32)> = if all_spatials.len() <= MAX_SPATIAL_PER_SAMPLE {
+                all_spatials
+            } else {
+                // Stride-sample to MAX_SPATIAL_PER_SAMPLE.
+                let stride = all_spatials.len() as f64 / MAX_SPATIAL_PER_SAMPLE as f64;
+                (0..MAX_SPATIAL_PER_SAMPLE)
+                    .map(|i| all_spatials[(i as f64 * stride) as usize])
+                    .collect()
+            };
+
+            let work: Vec<(u32, (u32, u32, u32))> = t_samples.iter()
+                .flat_map(|&t| spatials.iter().map(move |&s| (t, s)))
+                .collect();
+            let sampled = work.len();
+
+            let started = std::time::Instant::now();
+            let non_empty = AtomicUsize::new(0);
+            let failures = AtomicUsize::new(0);
+            work.par_iter().for_each(|(t, (z, y, x))| {
+                let key = TileKey {
+                    lod_level: lod_idx,
+                    t: *t,
+                    z: *z, y: *y, x: *x,
+                };
+                match read_tile(level, lod_cfg, key, *t) {
+                    Ok(data) => {
+                        if tile_max_normalized_above(&data.data, contrast_min) {
+                            non_empty.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(_) => { failures.fetch_add(1, Ordering::Relaxed); }
+                }
+            });
+            let elapsed = started.elapsed().as_secs_f32();
+            let non_empty = non_empty.load(Ordering::Relaxed);
+            let failed = failures.load(Ordering::Relaxed);
+            let usable = sampled.saturating_sub(failed).max(1);
+            let sparsity_frac = non_empty as f64 / usable as f64;
+            let est_non_empty = (total as f64 * sparsity_frac) as usize;
+            // 128³ × 2 bytes = 4 MiB / tile, R16Float.
+            let est_bytes = est_non_empty as u64 * (4 * 1024 * 1024);
+
+            println!("  {:>3}  {:>14}  {:>12}  {:>10}  {:>10}  {:>10.1}%  {:>10}  {:>6.1} G  ({:.1}s{})",
+                     lod_idx,
+                     format!("{}×{}×{}", gz, gy, gx),
+                     format!("{}×{}", tiles_per_t, n_timepoints),
+                     sampled, non_empty,
+                     sparsity_frac * 100.0,
+                     est_non_empty,
+                     est_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                     elapsed,
+                     if failed > 0 { format!(", {} failed", failed) } else { String::new() });
+
+            results.push(LodBench {
+                lod: lod_idx,
+                est_non_empty,
+                est_bytes,
+            });
+        }
+
+        // Tier-fit summary. We use slot budgets that match what's actually
+        // achievable on the device after VRAM headroom for display +
+        // page tables + decode buffers.
+        const VRAM_2_ATLAS_SLOTS: usize = 8192;    // ~32 GB on L40
+        const VRAM_3_ATLAS_SLOTS: usize = 12288;   // ~48 GB tight
+        const RAM_SLOTS: usize = 12288;            // assume ~48 GB usable
+
+        println!();
+        println!("[bench] tier fit (assuming 4 MiB/tile R16Float):");
+        println!("  {:>3}  {:>14}  {:>14}  {:>14}",
+                 "LOD", "VRAM 2-atlas", "VRAM 3-atlas", "RAM ~48 GB");
+        println!("  {:>3}  {:>14}  {:>14}  {:>14}",
+                 "---", "--------------", "--------------", "--------------");
+        let fit_pct = |n: usize, budget: usize| -> String {
+            if n == 0 { return "—".to_string(); }
+            let pct = (budget as f64 / n as f64 * 100.0).min(100.0);
+            if pct >= 100.0 {
+                format!("100% ({}sp)", budget.saturating_sub(n))
+            } else {
+                format!("{:.1}%", pct)
+            }
+        };
+        for r in &results {
+            println!("  {:>3}  {:>14}  {:>14}  {:>14}",
+                     r.lod,
+                     fit_pct(r.est_non_empty, VRAM_2_ATLAS_SLOTS),
+                     fit_pct(r.est_non_empty, VRAM_3_ATLAS_SLOTS),
+                     fit_pct(r.est_non_empty, RAM_SLOTS));
+        }
+
+        // Pick the finest LOD that fits each tier as the recommendation.
+        let best_for = |budget: usize| -> Option<&LodBench> {
+            results.iter().filter(|r| r.est_non_empty <= budget).min_by_key(|r| r.lod)
+        };
+        println!();
+        println!("[bench] recommended preload target (finest LOD that fits):");
+        for (label, budget) in [
+            ("VRAM 2-atlas (8192)",  VRAM_2_ATLAS_SLOTS),
+            ("VRAM 3-atlas (12288)", VRAM_3_ATLAS_SLOTS),
+            ("RAM ~48 GB",           RAM_SLOTS),
+        ] {
+            match best_for(budget) {
+                Some(r) => println!("  {:<24} → LOD{} ({} non-empty tiles, {:.1} GB)",
+                                    label, r.lod, r.est_non_empty,
+                                    r.est_bytes as f64 / 1024.0 / 1024.0 / 1024.0),
+                None    => println!("  {:<24} → no LOD fits dense; need finer-grain RAM tier", label),
+            }
+        }
+        println!();
     }
 
     fn dataset_path(ds: &serde_json::Value, idx: usize) -> Result<String, Box<dyn Error>> {
