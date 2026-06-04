@@ -510,11 +510,18 @@ impl Visual for ImageVisual {
                 ],
                 _pad2: 0.0,
                 data_scale: [
-                    // (tile - 0.5) / atlas_tile: half-texel inset so the max
-                    // within-tile UV never crosses into the adjacent atlas slot.
-                    (tile_w as f32 - 0.5) / atlas_tile_w as f32,
-                    (tile_h as f32 - 0.5) / atlas_tile_h as f32,
-                    (tile_d as f32 - 0.5) / atlas_tile_d as f32,
+                    // (tile - 1.0) / atlas_tile: aim at the LEFT edge of the
+                    // last texel, not its centre. With Nearest filtering, a
+                    // half-texel inset puts the sample on pixel 127.5 — the
+                    // exact midpoint between texel 127 and texel 128 (= the
+                    // next slot's first texel) — and the tie-break is
+                    // implementation-defined, so we'd intermittently sample
+                    // the wrong slot. Full-texel inset keeps the sample
+                    // unambiguously inside the last texel. (See the matching
+                    // comment in volume.rs.)
+                    (tile_w as f32 - 1.0) / atlas_tile_w as f32,
+                    (tile_h as f32 - 1.0) / atlas_tile_h as f32,
+                    (tile_d as f32 - 1.0) / atlas_tile_d as f32,
                 ],
                 _pad3: 0.0,
             };

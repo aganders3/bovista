@@ -518,12 +518,21 @@ impl Visual for VolumeVisual {
                 ],
                 _pad2: 0.0,
                 data_scale: [
-                    // Use (tile - 0.5) / atlas_tile so the maximum within-tile UV
-                    // lands on the last texel's centre rather than the boundary
-                    // between this tile and the next slot in the atlas.
-                    (tile_w as f32 - 0.5) / atlas_tile_w as f32,
-                    (tile_h as f32 - 0.5) / atlas_tile_h as f32,
-                    (tile_d as f32 - 0.5) / atlas_tile_d as f32,
+                    // Aim for the LEFT edge of the last texel (pixel
+                    // index = tile - 1.0), not its centre. With Nearest
+                    // filtering, the midpoint between two texel centres
+                    // (pixel 127.5 for a 128-wide slot) is implementation-
+                    // defined — half the time the sampler returns the
+                    // NEXT slot's first texel and we see thin "edge"
+                    // lines at every internal tile boundary. Subtracting
+                    // 1.0 instead of 0.5 keeps the sample inside the
+                    // last texel even after FP rounding. If we ever
+                    // switch the atlas sampler to Linear, this should
+                    // go back to (tile - 0.5) so interpolation lands
+                    // exactly on the last texel's centre.
+                    (tile_w as f32 - 1.0) / atlas_tile_w as f32,
+                    (tile_h as f32 - 1.0) / atlas_tile_h as f32,
+                    (tile_d as f32 - 1.0) / atlas_tile_d as f32,
                 ],
                 _pad3: 0.0,
             };
