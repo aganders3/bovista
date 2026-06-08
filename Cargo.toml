@@ -26,6 +26,9 @@ futures = "0.3"
 lru = "0.12"
 half = "2"
 log = "0.4"
+# std::time::Instant panics on wasm32; web-time is a drop-in that delegates
+# to performance.now() in the browser and to std on native.
+web-time = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"

@@ -317,7 +317,7 @@ impl VirtualTextureData {
     }
 
     fn process_pending_chunks(&mut self, queue: &Queue) {
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let pending: Vec<(TileKey, TileData)> = {
             let mut guard = self.pending_chunks.lock().unwrap();
             guard.drain().collect()
@@ -516,7 +516,7 @@ impl VirtualTextureData {
     /// `slot_map`. Loaders read this map and decide what to fetch and
     /// in what order.
     fn publish_wanted(&mut self) {
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let lookahead = self.prefetch_lookahead as i32;
         // Snapshot pending keys so a worker doesn't re-fetch a tile
         // that's already decoded and waiting in line to install.
@@ -585,7 +585,7 @@ impl VirtualTextureData {
 
     /// O(visible) per call; cheap enough to run every prepare.
     fn refresh_page_table(&mut self, queue: &Queue) {
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let target = self.desired_t;
         let mut writes = 0usize;
         let visible: Vec<TileKey> =
