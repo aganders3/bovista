@@ -86,16 +86,6 @@ path = "examples/volume_renderer/rust/main.rs"
 required-features = []
 
 [[example]]
-name = "headless_render"
-path = "examples/headless_render/rust/main.rs"
-required-features = []
-
-[[example]]
-name = "gl_smoke"
-path = "examples/gl_smoke/rust/main.rs"
-required-features = []
-
-[[example]]
 name = "orbit_stream"
 path = "examples/orbit_stream/rust/main.rs"
 required-features = []
