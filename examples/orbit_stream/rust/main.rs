@@ -28,12 +28,6 @@
 //!   --contrast-max F     contrast window ceiling (default 1.0)
 //!   --density-mult F     multiplier on the auto-density heuristic (default 1.0)
 //!   --lod-bias F         shader LOD bias (+ = finer, − = coarser; default 0.0)
-//!   --bench-sparsity[=N] estimate non-empty-tile fraction per LOD vs current
-//!                        --contrast-min, then exit; samples N timepoints
-//!                        (default 4) and prints a tier-fit summary
-//!   --bench-decode[=N]   time parallel decode of N random tiles at
-//!                        --bench-decode-lod, report throughput and chunk
-//!                        redundancy; default N=200, default LOD=1
 //!
 //! Set BOVISTA_FORCE_LIBX264=1 to skip the NVENC probe and always use libx264.
 
@@ -60,7 +54,6 @@ fn main() {
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles", "--max-inflight", "--prefetch",
         "--contrast-min", "--contrast-max", "--density-mult", "--lod-bias",
-        "--bench-sparsity", "--bench-decode", "--bench-decode-lod",
         "--timepoint", "--bench",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
@@ -122,25 +115,6 @@ fn main() {
     let contrast_max: f32 = flag_str_opt(&args, "--contrast-max").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let density_mult: f32 = flag_str_opt(&args, "--density-mult").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let lod_bias: f32 = flag_str_opt(&args, "--lod-bias").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    let bench_sparsity: Option<usize> = if args.iter()
-        .any(|a| a == "--bench-sparsity" || a.starts_with("--bench-sparsity="))
-    {
-        Some(flag_str_opt(&args, "--bench-sparsity")
-            .and_then(|v| v.parse().ok()).unwrap_or(1))
-    } else {
-        None
-    };
-    let bench_decode: Option<usize> = if args.iter()
-        .any(|a| a == "--bench-decode" || a.starts_with("--bench-decode="))
-    {
-        Some(flag_str_opt(&args, "--bench-decode")
-            .and_then(|v| v.parse().ok()).unwrap_or(200))
-    } else {
-        None
-    };
-    let bench_decode_lod: usize = flag_str_opt(&args, "--bench-decode-lod")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
 
     println!("[orbit] {}x{} @ {} fps, serving on port {}, backend={}",
              width, height, fps, port, backend);
@@ -215,8 +189,7 @@ fn main() {
     // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
     let setup = match &zarr_arg {
         Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(),
-                                             max_inflight, bench_sparsity, contrast_min,
-                                             bench_decode, bench_decode_lod) {
+                                             max_inflight) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
@@ -1723,10 +1696,6 @@ mod ome_zarr {
         view_state: Arc<ViewState>,
         flush_diag: Arc<FlushDiag>,
         max_inflight: usize,
-        bench_sparsity: Option<usize>,
-        contrast_min: f32,
-        bench_decode: Option<usize>,
-        bench_decode_lod: usize,
     ) -> Result<SceneSetup, Box<dyn Error>> {
         let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
             || path_or_url.starts_with("https://")
@@ -1919,17 +1888,6 @@ mod ome_zarr {
             )
         };
 
-        // Optional one-shot sparsity bench. Reads tiles to compute per-LOD
-        // "non-empty fraction" (max normalized value > contrast_min), prints
-        // a tier-fit summary, and exits without starting the loader pool.
-        if let Some(samples) = bench_sparsity {
-            run_sparsity_bench(&levels, &lods, n_timepoints, contrast_min, samples);
-            std::process::exit(0);
-        }
-        if let Some(n) = bench_decode {
-            run_decode_bench(&levels, &lods, n_timepoints, bench_decode_lod, n);
-            std::process::exit(0);
-        }
 
         // Pull-based loader pool. Workers read bovista's `wanted` map
         // (priority-ordered set of tiles bovista wants right now),
@@ -2059,344 +2017,6 @@ mod ome_zarr {
         })
     }
 
-    /// Compute the max normalized value (0..=1) across a tile's f16 byte buffer.
-    /// Stops early once a voxel above the threshold is seen — useful when we
-    /// only care whether the tile is "above contrast" and not its actual max.
-    fn tile_max_normalized_above(bytes: &[u8], threshold: f32) -> bool {
-        for chunk in bytes.chunks_exact(2) {
-            let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-            let v = half::f16::from_bits(bits).to_f32();
-            if v > threshold { return true; }
-        }
-        false
-    }
-
-    /// Scan each LOD level for "non-empty" tile fraction (max normalized
-    /// value > contrast_min) and print a tier-fit table.
-    ///
-    /// For each LOD, we sample N timepoints evenly across the t range. For
-    /// LODs whose grid is small enough we read every spatial tile; for
-    /// LOD0 we stride-sample so the bench finishes in a sane time.
-    fn run_sparsity_bench(
-        levels: &[Level],
-        lods: &[LodLevelConfig],
-        n_timepoints: u32,
-        contrast_min: f32,
-        samples: usize,
-    ) {
-        use rayon::prelude::*;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let n_samples = samples.min(n_timepoints as usize).max(1);
-        let t_samples: Vec<u32> = if n_samples == 1 {
-            // Middle timepoint — likely most representative for a movie
-            // of a single subject that doesn't move much across t.
-            vec![n_timepoints / 2]
-        } else {
-            // Evenly spaced across [0, n_timepoints-1].
-            (0..n_samples)
-                .map(|i| ((i as u64) * (n_timepoints as u64 - 1)
-                          / (n_samples - 1) as u64) as u32)
-                .collect()
-        };
-
-        println!();
-        println!("[bench] contrast_min={:.4} → tile is 'non-empty' if any voxel > {:.4} normalized",
-                 contrast_min, contrast_min);
-        println!("[bench] sampling {} timepoint(s): {:?} (of {})",
-                 n_samples, t_samples, n_timepoints);
-        println!();
-        println!("  {:>3}  {:>14}  {:>12}  {:>10}  {:>10}  {:>11}  {:>10}  {:>8}",
-                 "LOD", "grid (z×y×x)", "tiles × n_t", "sampled", "non-empty", "non-empty %",
-                 "est total", "est GB");
-        println!("  {:>3}  {:>14}  {:>12}  {:>10}  {:>10}  {:>11}  {:>10}  {:>8}",
-                 "---", "--------------", "------------", "----------", "----------",
-                 "-----------", "----------", "--------");
-
-        // Collect per-LOD results so the post-table summary can use them.
-        struct LodBench {
-            lod: usize,
-            est_non_empty: usize,
-            est_bytes: u64,
-        }
-        let mut results: Vec<LodBench> = Vec::new();
-
-        for (lod_idx, (level, lod_cfg)) in levels.iter().zip(lods.iter()).enumerate() {
-            let (gz, gy, gx) = lod_cfg.grid_size();
-            let tiles_per_t = (gz as usize) * (gy as usize) * (gx as usize);
-            let total = tiles_per_t * n_timepoints as usize;
-
-            // Full spatial enumeration — sparsity often clusters spatially
-            // (subject in the center, empty borders), so stride-sampling
-            // can badly miss or hit clusters.
-            let spatials: Vec<(u32, u32, u32)> = (0..gz)
-                .flat_map(|z| (0..gy).flat_map(move |y| (0..gx).map(move |x| (z, y, x))))
-                .collect();
-
-            let work: Vec<(u32, (u32, u32, u32))> = t_samples.iter()
-                .flat_map(|&t| spatials.iter().map(move |&s| (t, s)))
-                .collect();
-            let sampled = work.len();
-
-            let started = std::time::Instant::now();
-            let non_empty = AtomicUsize::new(0);
-            let failures = AtomicUsize::new(0);
-            work.par_iter().for_each(|(t, (z, y, x))| {
-                let key = TileKey {
-                    lod_level: lod_idx,
-                    t: *t,
-                    z: *z, y: *y, x: *x,
-                };
-                match read_tile(level, lod_cfg, key, *t) {
-                    Ok(data) => {
-                        if tile_max_normalized_above(&data.data, contrast_min) {
-                            non_empty.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    Err(_) => { failures.fetch_add(1, Ordering::Relaxed); }
-                }
-            });
-            let elapsed = started.elapsed().as_secs_f32();
-            let non_empty = non_empty.load(Ordering::Relaxed);
-            let failed = failures.load(Ordering::Relaxed);
-            let usable = sampled.saturating_sub(failed).max(1);
-            let sparsity_frac = non_empty as f64 / usable as f64;
-            let est_non_empty = (total as f64 * sparsity_frac) as usize;
-            // 128³ × 2 bytes = 4 MiB / tile, R16Float.
-            let est_bytes = est_non_empty as u64 * (4 * 1024 * 1024);
-
-            println!("  {:>3}  {:>14}  {:>12}  {:>10}  {:>10}  {:>10.1}%  {:>10}  {:>6.1} G  ({:.1}s{})",
-                     lod_idx,
-                     format!("{}×{}×{}", gz, gy, gx),
-                     format!("{}×{}", tiles_per_t, n_timepoints),
-                     sampled, non_empty,
-                     sparsity_frac * 100.0,
-                     est_non_empty,
-                     est_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
-                     elapsed,
-                     if failed > 0 { format!(", {} failed", failed) } else { String::new() });
-
-            results.push(LodBench {
-                lod: lod_idx,
-                est_non_empty,
-                est_bytes,
-            });
-        }
-
-        // Tier-fit summary. We use slot budgets that match what's actually
-        // achievable on the device after VRAM headroom for display +
-        // page tables + decode buffers.
-        const VRAM_2_ATLAS_SLOTS: usize = 8192;    // ~32 GB on L40
-        const VRAM_3_ATLAS_SLOTS: usize = 12288;   // ~48 GB tight
-        const RAM_SLOTS: usize = 12288;            // assume ~48 GB usable
-
-        println!();
-        println!("[bench] tier fit (assuming 4 MiB/tile R16Float):");
-        println!("  {:>3}  {:>14}  {:>14}  {:>14}",
-                 "LOD", "VRAM 2-atlas", "VRAM 3-atlas", "RAM ~48 GB");
-        println!("  {:>3}  {:>14}  {:>14}  {:>14}",
-                 "---", "--------------", "--------------", "--------------");
-        let fit_pct = |n: usize, budget: usize| -> String {
-            if n == 0 { return "—".to_string(); }
-            let pct = (budget as f64 / n as f64 * 100.0).min(100.0);
-            if pct >= 100.0 {
-                format!("100% ({}sp)", budget.saturating_sub(n))
-            } else {
-                format!("{:.1}%", pct)
-            }
-        };
-        for r in &results {
-            println!("  {:>3}  {:>14}  {:>14}  {:>14}",
-                     r.lod,
-                     fit_pct(r.est_non_empty, VRAM_2_ATLAS_SLOTS),
-                     fit_pct(r.est_non_empty, VRAM_3_ATLAS_SLOTS),
-                     fit_pct(r.est_non_empty, RAM_SLOTS));
-        }
-
-        // Pick the finest LOD that fits each tier as the recommendation.
-        let best_for = |budget: usize| -> Option<&LodBench> {
-            results.iter().filter(|r| r.est_non_empty <= budget).min_by_key(|r| r.lod)
-        };
-        println!();
-        println!("[bench] recommended preload target (finest LOD that fits):");
-        for (label, budget) in [
-            ("VRAM 2-atlas (8192)",  VRAM_2_ATLAS_SLOTS),
-            ("VRAM 3-atlas (12288)", VRAM_3_ATLAS_SLOTS),
-            ("RAM ~48 GB",           RAM_SLOTS),
-        ] {
-            match best_for(budget) {
-                Some(r) => println!("  {:<24} → LOD{} ({} non-empty tiles, {:.1} GB)",
-                                    label, r.lod, r.est_non_empty,
-                                    r.est_bytes as f64 / 1024.0 / 1024.0 / 1024.0),
-                None    => println!("  {:<24} → no LOD fits dense; need finer-grain RAM tier", label),
-            }
-        }
-        println!();
-    }
-
-    /// Time the parallel decode-through-conversion path for a random sample
-    /// of tiles at one LOD. Reports throughput, per-tile timing, and how
-    /// many of the touched zarr chunks would be shared across multiple
-    /// tiles (= the upper bound on speedup from a chunk-cache layer).
-    fn run_decode_bench(
-        levels: &[Level],
-        lods: &[LodLevelConfig],
-        n_timepoints: u32,
-        lod_target: usize,
-        n_tiles: usize,
-    ) {
-        use rayon::prelude::*;
-        use std::collections::HashSet;
-        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
-        if lod_target >= levels.len() {
-            eprintln!("[bench-decode] LOD{} out of range (have {} LODs)",
-                      lod_target, levels.len());
-            return;
-        }
-
-        let level = &levels[lod_target];
-        let lod_cfg = &lods[lod_target];
-        let ndim = level.array.shape().len();
-
-        // Chunk shape vs tile shape — tells us whether a chunk-cache layer
-        // would help (if zarr chunks are larger than our 128³ tiles, the
-        // same chunk gets decoded once per overlapping tile).
-        let chunk_shape = match level.array.chunk_shape(&vec![0; ndim]) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[bench-decode] chunk_shape failed: {}", e);
-                return;
-            }
-        };
-        let cz = chunk_shape[level.z_idx].get();
-        let cy = chunk_shape[level.y_idx].get();
-        let cx = chunk_shape[level.x_idx].get();
-        let (tz, ty, tx) = lod_cfg.tile_size;
-
-        println!();
-        println!("[bench-decode] LOD{}: zarr chunk {}×{}×{}, tile {}×{}×{}",
-                 lod_target, cz, cy, cx, tz, ty, tx);
-        let chunk_equals_tile =
-            cz == tz as u64 && cy == ty as u64 && cx == tx as u64;
-        if chunk_equals_tile {
-            println!("  → 1:1 chunk-tile alignment (chunk cache won't help)");
-        } else if cz < tz as u64 || cy < ty as u64 || cx < tx as u64 {
-            println!("  → zarr chunks SMALLER than tile; one tile reads several chunks");
-        } else {
-            println!("  → zarr chunks LARGER than tile; chunk cache would amortize across {}× tiles",
-                     ((cz as f64 / tz as f64) * (cy as f64 / ty as f64)
-                      * (cx as f64 / tx as f64)).max(1.0));
-        }
-
-        // Deterministic "random" tile picks across all of (t, z, y, x) at
-        // this LOD. Using a hash of the index so the bench is reproducible.
-        let (gz, gy, gx) = lod_cfg.grid_size();
-        let mix = |seed: u64| -> u64 {
-            // splitmix64-like avalanche
-            let mut x = seed.wrapping_add(0x9E3779B97F4A7C15);
-            x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-            x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
-            x ^ (x >> 31)
-        };
-        let mut work: Vec<TileKey> = Vec::with_capacity(n_tiles);
-        for i in 0..n_tiles {
-            let r0 = mix(i as u64);
-            let r1 = mix(i as u64 + 0xDEADBEEF);
-            let t = (r0 & 0xFFFFFFFF) as u32 % n_timepoints.max(1);
-            let z = ((r0 >> 32) as u32) % gz;
-            let y = (r1 as u32) % gy;
-            let x = ((r1 >> 32) as u32) % gx;
-            work.push(TileKey { lod_level: lod_target, t, z, y, x });
-        }
-
-        // Chunk-set analysis: enumerate the unique zarr chunks the work-set
-        // would touch, including (t, c) axes since chunks aren't shared
-        // across timepoints for this dataset layout.
-        let ct = level.t_idx.and_then(|ti| level.array.chunk_shape(&vec![0; ndim]).ok()
-                                      .map(|cs| cs[ti].get()))
-                 .unwrap_or(1);
-        let mut touched: HashSet<(u32, u64, u64, u64)> = HashSet::with_capacity(n_tiles * 4);
-        for key in &work {
-            let z0 = (key.z as u64) * (tz as u64);
-            let z1 = (z0 + tz as u64 - 1).min(level.volume_zyx.0 - 1);
-            let y0 = (key.y as u64) * (ty as u64);
-            let y1 = (y0 + ty as u64 - 1).min(level.volume_zyx.1 - 1);
-            let x0 = (key.x as u64) * (tx as u64);
-            let x1 = (x0 + tx as u64 - 1).min(level.volume_zyx.2 - 1);
-            let t_chunk = (key.t as u64) / ct;
-            for zc in (z0 / cz)..=(z1 / cz) {
-                for yc in (y0 / cy)..=(y1 / cy) {
-                    for xc in (x0 / cx)..=(x1 / cx) {
-                        touched.insert((t_chunk as u32, zc, yc, xc));
-                    }
-                }
-            }
-        }
-        println!("[bench-decode] {} tile reads → {} unique chunks ({:.2}× redundancy)",
-                 n_tiles, touched.len(),
-                 n_tiles as f64 / touched.len() as f64);
-
-        // Per-tile timings + parallel wall time.
-        let started = std::time::Instant::now();
-        let total_bytes = AtomicUsize::new(0);
-        let max_ns = AtomicU64::new(0);
-        let total_ns = AtomicU64::new(0);
-        let failures = AtomicUsize::new(0);
-        work.par_iter().for_each(|key| {
-            let tile_start = std::time::Instant::now();
-            match read_tile(level, lod_cfg, *key, key.t) {
-                Ok(data) => {
-                    let dt = tile_start.elapsed().as_nanos() as u64;
-                    total_ns.fetch_add(dt, Ordering::Relaxed);
-                    total_bytes.fetch_add(data.data.len(), Ordering::Relaxed);
-                    let mut cur = max_ns.load(Ordering::Relaxed);
-                    while dt > cur {
-                        match max_ns.compare_exchange_weak(
-                            cur, dt, Ordering::Relaxed, Ordering::Relaxed,
-                        ) {
-                            Ok(_) => break,
-                            Err(c) => cur = c,
-                        }
-                    }
-                }
-                Err(_) => { failures.fetch_add(1, Ordering::Relaxed); }
-            }
-        });
-        let elapsed = started.elapsed();
-
-        let bytes = total_bytes.load(Ordering::Relaxed);
-        let mean_ms = total_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0
-                      / n_tiles.max(1) as f64;
-        let max_ms = max_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-        let parallel_throughput_gibs = bytes as f64 / elapsed.as_secs_f64()
-                                       / 1024.0 / 1024.0 / 1024.0;
-        let failed = failures.load(Ordering::Relaxed);
-
-        println!();
-        println!("[bench-decode] {} tiles in {:.2}s ({} failed); decoded {:.1} MiB",
-                 n_tiles, elapsed.as_secs_f64(), failed,
-                 bytes as f64 / 1024.0 / 1024.0);
-        println!("  per-tile (per-thread):  mean {:.1} ms,  max {:.1} ms",
-                 mean_ms, max_ms);
-        println!("  parallel throughput:    {:.2} GiB/s (decoded R16Float)",
-                 parallel_throughput_gibs);
-
-        // Per-frame projection: how long would N visible tiles take?
-        println!();
-        println!("[bench-decode] per-scrub-frame projection at LOD{}:", lod_target);
-        for visible in [10usize, 20, 30, 50, 100] {
-            let frame_mib = (visible * 4) as f64;
-            let frame_ms = frame_mib / parallel_throughput_gibs / 1024.0 * 1000.0;
-            let verdict = if frame_ms < 16.0 { "60 fps ✓" }
-                          else if frame_ms < 33.0 { "30 fps ✓" }
-                          else if frame_ms < 66.0 { "15 fps ✓" }
-                          else { "too slow" };
-            println!("  {:>3} visible tiles ({:>4.0} MiB): {:>5.1} ms → {}",
-                     visible, frame_mib, frame_ms, verdict);
-        }
-        println!();
-    }
 
     fn dataset_path(ds: &serde_json::Value, idx: usize) -> Result<String, Box<dyn Error>> {
         ds.get("path")
