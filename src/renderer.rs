@@ -156,6 +156,7 @@ impl Renderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(clear_color),
                         store: wgpu::StoreOp::Store,
@@ -176,11 +177,12 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // Set the camera bind group (available to all visuals at group 0)
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-
-            // Render all visuals in the scene
-            scene.render(&mut render_pass);
+            // Render all visuals. Scene re-binds the camera bind group at
+            // slot 0 between each visual so that visuals like Lines / Points
+            // — which expect the shared camera layout at slot 0 — keep
+            // working after Volume / Image override slot 0 with their own
+            // combined-UBO bind group.
+            scene.render(&mut render_pass, &self.camera_bind_group);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

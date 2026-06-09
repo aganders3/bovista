@@ -142,6 +142,10 @@ pub struct CameraInfo {
     pub projection_mode: crate::ProjectionMode,
     /// Orthographic view height (only used when projection_mode is Orthographic)
     pub ortho_height: f32,
+    /// Combined view * projection matrix. Visuals that pack camera data
+    /// into their own combined uniform buffer (VolumeVisual, ImageVisual)
+    /// read this directly instead of consuming the shared camera UBO.
+    pub view_proj: glam::Mat4,
 }
 
 /// Base trait for all visual objects that can be rendered in a scene

@@ -39,10 +39,14 @@ struct VTLodInfo {
     // tile_size / volume_size per axis (x, y, z) — used for exact sub-tile UV.
     tile_scale: vec3<f32>,
     _pad2: f32,
-    // Fraction of atlas slot filled with data at this LOD = lod_tile_size / atlas_slot_size.
-    // Coarser LODs have fewer voxels; multiply within_tile by this to stay in the valid region.
+    // Multiplier on voxel_frac. = (tile - 1) / atlas. Paired with
+    // data_offset = 0.5 / atlas to land voxel_frac in [0, 1] on the
+    // *centres* of the first and last texels of the slot.
     data_scale: vec3<f32>,
     _pad3: f32,
+    // Half-texel inset added before scaling. = 0.5 / atlas per axis.
+    data_offset: vec3<f32>,
+    _pad4: f32,
 }
 
 struct VTUniforms {
@@ -62,7 +66,10 @@ struct VTUniforms {
     // CPU-computed ideal LOD for this frame (accounts for lod_bias + camera distance).
     // The shader starts its page-table walk here rather than at LOD 0.
     target_lod: u32,
-    _pad_c: u32,
+    // Currently-displayed timepoint. Page-table entries whose embedded t
+    // doesn't match this are rejected (treated as non-resident), so the
+    // display stays strictly on this t with no cross-t blending.
+    desired_t: u32,
     // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
     lods: array<VTLodInfo, 16>,
 }
@@ -72,8 +79,9 @@ var<uniform> vt: VTUniforms;
 
 // ── Group 2: colormap LUT ────────────────────────────────────────────────────
 
+// 2D 256×1 — see volume_raymarch.wgsl for the naga GL 1D-Rgba8Unorm bug.
 @group(2) @binding(0)
-var colormap: texture_1d<f32>;
+var colormap: texture_2d<f32>;
 
 @group(2) @binding(1)
 var colormap_sampler: sampler;
@@ -123,16 +131,18 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let pt_x = i32(linear % vt.page_table_width);
     let pt_y = i32(linear / vt.page_table_width);
     let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
-
-    if (entry >> 24u) == 0u { return vec2f(0.0, -1.0); }
-
-    let slot        = entry & 0xFFFFu;
+    // bit 31 = resident; bits 16-30 = t (15 bits); bits 0-15 = slot.
+    let resident = (entry >> 31u) & 1u;
+    let slot_t   = (entry >> 16u) & 0x7FFFu;
+    if resident == 0u || slot_t != vt.desired_t { return vec2f(0.0, -1.0); }
+    let slot = entry & 0xFFFFu;
     let atlas_col   = slot % vt.atlas_cols;
     let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
     let atlas_layer = slot / (vt.atlas_cols * vt.atlas_rows);
 
     // Scale within-tile UV to the populated region of the atlas slot.
-    let within_tile = (vol_in_tiles - floor(vol_in_tiles)) * vt.lods[lod].data_scale;
+    let within_tile = vt.lods[lod].data_offset
+                    + (vol_in_tiles - floor(vol_in_tiles)) * vt.lods[lod].data_scale;
 
     let u = (f32(atlas_col)   + within_tile.x) * vt.atlas_tile_pitch_x;
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
@@ -174,7 +184,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let lod_idx = result.y;   // -1 if nothing resident
 
     let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
-    let color    = textureSample(colormap, colormap_sampler, adjusted);
+    let color    = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);
 
     var out: vec4f;
     if vt.debug_mode != 0u {

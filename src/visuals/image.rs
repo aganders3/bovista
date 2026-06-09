@@ -4,7 +4,6 @@ const _SHADER_HASH: &str = env!("SHADER_HASH");
 use crate::visual::{Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
 use crate::visuals::gpu_structs::{TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
-use crate::visuals::gpu_structs::TileLoaderFn;
 use wgpu::RenderPass;
 
 /// Slice plane defined by position and normal vector
@@ -66,7 +65,7 @@ pub enum SliceOrientation {
 
 /// Visual for rendering volume slices via the virtual-texture pipeline.
 pub struct ImageVisual {
-    strategy: VirtualTextureData,
+    vt: VirtualTextureData,
 
     // Colormap LUT (group 2) — 256-entry 1D RGBA texture
     colormap_texture: wgpu::Texture,
@@ -107,7 +106,6 @@ impl ImageVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
-        loader: TileLoaderFn,
     ) -> Self {
         let (depth, _height, _width) = if !lod_levels.is_empty() {
             lod_levels[0].volume_size
@@ -115,7 +113,7 @@ impl ImageVisual {
             (1, 1, 1)
         };
 
-        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles, loader);
+        let vt = VirtualTextureData::new(device, lod_levels, max_tiles);
 
         // Atlas sampler (linear for smooth interpolation across tile boundaries)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -138,7 +136,7 @@ impl ImageVisual {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D1,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
                     count: None,
@@ -161,20 +159,21 @@ impl ImageVisual {
             size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
-            dimension: wgpu::TextureDimension::D1,
+            // 2D (not 1D) — see volume.rs for the naga/GL 1D-Rgba8Unorm bug.
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &colormap_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &colormap_data,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
             wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
         );
         let colormap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -250,7 +249,7 @@ impl ImageVisual {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&strategy.atlas_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&vt.atlas_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -258,7 +257,7 @@ impl ImageVisual {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&strategy.page_table.texture_view),
+                    resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -327,7 +326,7 @@ impl ImageVisual {
         let slice_plane = SlicePlane::xy((depth as f32) / 2.0);
 
         Self {
-            strategy,
+            vt,
             colormap_texture,
             colormap_bind_group,
             colormap_bind_group_layout,
@@ -356,9 +355,8 @@ impl ImageVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
-        loader: TileLoaderFn,
     ) -> Self {
-        Self::new(device, queue, surface_format, camera_bind_group_layout, lod_levels, max_tiles, loader)
+        Self::new(device, queue, surface_format, camera_bind_group_layout, lod_levels, max_tiles)
     }
 
     /// Set the slice plane to a specific Z coordinate (XY plane)
@@ -427,17 +425,44 @@ impl ImageVisual {
 
     /// Set LOD bias. Positive = prefer higher resolution (finer), negative = prefer lower (coarser).
     pub fn set_lod_bias(&mut self, bias: f32) {
-        self.strategy.lod_bias = bias;
+        self.vt.lod_bias = bias;
     }
 
     /// Returns (loaded_tiles, visible_tiles).
     pub fn get_stats(&self) -> (usize, usize) {
-        (self.strategy.slot_map.len(), self.strategy.visible_tile_keys.len())
+        (self.vt.slot_map.len(), self.vt.visible_tile_keys.len())
     }
 
     /// Get the pending chunks queue so callers can push tile data from other threads.
     pub fn pending_chunks(&self) -> Option<PendingChunks> {
-        Some(self.strategy.pending_chunks.clone())
+        Some(self.vt.pending_chunks.clone())
+    }
+
+    /// Shared handle to the "tiles bovista wants" map. Loaders read
+    /// this to decide what to fetch and in what order.
+    pub fn wanted_handle(&self) -> crate::visuals::virtual_texture::Wanted {
+        self.vt.wanted.clone()
+    }
+
+    /// Snapshot of the most recent prepare's timing/counts.
+    pub fn stats(&self) -> crate::visuals::virtual_texture::PrepareStats {
+        self.vt.stats.clone()
+    }
+
+    /// Request that the image display timepoint `t`. Identical semantics
+    /// to `VolumeVisual::set_desired_timepoint` — page table flips once
+    /// the visible tiles for `t` have arrived.
+    pub fn set_desired_timepoint(&mut self, t: u32) {
+        self.vt.set_desired_timepoint(t);
+    }
+
+    pub fn desired_t(&self) -> u32 { self.vt.desired_t() }
+
+    /// Enable look-ahead prefetching of the next `lookahead` timepoints.
+    /// Look-ahead only by design — the LRU pool keeps recently-displayed
+    /// past frames resident, so explicit look-behind is redundant.
+    pub fn set_prefetch(&mut self, lookahead: u32, t_count: u32) {
+        self.vt.set_prefetch(lookahead, t_count);
     }
 }
 
@@ -446,28 +471,30 @@ impl Visual for ImageVisual {
         // Upload pending colormap if set
         if let Some(data) = self.pending_colormap.take() {
             queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &self.colormap_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 &data,
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
                 wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
             );
         }
 
         self.frame_number += 1;
 
-        self.strategy.prepare(queue, &self.slice_plane, self.frame_number, camera_info);
+        let _ = device;
+        self.vt.prepare(queue, &self.slice_plane, self.frame_number, camera_info);
 
         // Update VT uniform buffer.
-        let vt = &self.strategy;
+        let vt = &self.vt;
         let mut lods = [VTLodInfo {
             grid_dims: [1, 1, 1], _pad: 0,
             tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
             data_scale: [1.0, 1.0, 1.0], _pad3: 0.0,
+            data_offset: [0.0, 0.0, 0.0], _pad4: 0.0,
         }; VT_MAX_LODS];
         // Atlas slot size is fixed at LOD 0's tile dimensions.
         let (atlas_tile_d, atlas_tile_h, atlas_tile_w) = vt.levels[0].tile_size;
@@ -485,13 +512,21 @@ impl Visual for ImageVisual {
                 ],
                 _pad2: 0.0,
                 data_scale: [
-                    // (tile - 0.5) / atlas_tile: half-texel inset so the max
-                    // within-tile UV never crosses into the adjacent atlas slot.
-                    (tile_w as f32 - 0.5) / atlas_tile_w as f32,
-                    (tile_h as f32 - 0.5) / atlas_tile_h as f32,
-                    (tile_d as f32 - 0.5) / atlas_tile_d as f32,
+                    // See volume.rs for the math: (tile - 1) / atlas
+                    // paired with 0.5/atlas data_offset maps voxel_frac
+                    // [0, 1] to the centres of the first and last
+                    // texels in the slot, avoiding Nearest tie-breaks.
+                    (tile_w as f32 - 1.0) / atlas_tile_w as f32,
+                    (tile_h as f32 - 1.0) / atlas_tile_h as f32,
+                    (tile_d as f32 - 1.0) / atlas_tile_d as f32,
                 ],
                 _pad3: 0.0,
+                data_offset: [
+                    0.5 / atlas_tile_w as f32,
+                    0.5 / atlas_tile_h as f32,
+                    0.5 / atlas_tile_d as f32,
+                ],
+                _pad4: 0.0,
             };
         }
         let uniforms = VTUniforms {
@@ -506,7 +541,7 @@ impl Visual for ImageVisual {
             debug_mode: self.debug_mode as u32,
             page_table_width: vt.page_table.width,
             target_lod: vt.cached_ideal_lod as u32,
-            _pad_c: 0,
+            desired_t: vt.desired_t(),
             lods,
         };
         queue.write_buffer(&self.vt_uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));

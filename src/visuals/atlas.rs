@@ -19,6 +19,12 @@ impl AtlasAllocator {
         self.free_slots.pop()
     }
 
+    /// Return every slot to the free list (caller is responsible for forgetting
+    /// any TileKey → slot mappings that referenced the old occupants).
+    pub fn reset(&mut self) {
+        self.free_slots = (0..self.capacity as u32).rev().collect();
+    }
+
     pub fn free(&mut self, slot: u32) {
         debug_assert!((slot as usize) < self.capacity, "atlas slot out of range");
         self.free_slots.push(slot);

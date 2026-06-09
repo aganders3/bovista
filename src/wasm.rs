@@ -4,18 +4,6 @@
 
 use wasm_bindgen::prelude::*;
 
-/// Chunk loading status returned by the chunk loader callback
-#[wasm_bindgen]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JsChunkStatus {
-    /// The chunk request was accepted and will be loaded asynchronously
-    Accepted = 0,
-    /// The chunk is already being loaded (request is pending)
-    AlreadyPending = 1,
-    /// The chunk request was rejected (e.g., at capacity)
-    Rejected = 2,
-}
-
 /// Camera projection mode
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,14 +34,14 @@ impl From<crate::ProjectionMode> for JsProjectionMode {
 
 use std::rc::Rc;
 use std::cell::RefCell;
-use js_sys::{Uint8Array, Function, Array};
+use js_sys::Uint8Array;
 use web_sys::console;
 
 use crate::{
     bindings_common::{self, VisualRef},
     Camera, ImageVisual, LinesVisual, PointsVisual, VolumeVisual, Renderer, Scene, SlicePlane,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
-    visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus, TileData, TileKey},
+    visuals::gpu_structs::{TileData, TileKey},
     visuals::points::PointVertex,
     visuals::lines::LineVertex,
 };
@@ -106,7 +94,7 @@ impl JsViewer {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or("Failed to find adapter")?;
+            .map_err(|_| JsValue::from_str("Failed to find adapter"))?;
 
         let adapter_limits = adapter.limits();
         let (device, queue) = adapter
@@ -122,8 +110,8 @@ impl JsViewer {
                             .using_resolution(adapter_limits)
                     },
                     memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
                 },
-                None,
             )
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to request device: {:?}", e)))?;
@@ -185,6 +173,7 @@ impl JsViewer {
             frustum: self.camera.frustum_planes(),
             projection_mode: self.camera.projection_mode,
             ortho_height: self.camera.ortho_height,
+            view_proj: self.camera.view_projection_matrix(),
         };
         self.scene.prepare(self.renderer.device(), self.renderer.queue(), &camera_info);
 
@@ -393,8 +382,7 @@ impl JsLevelMetadata {
 pub struct JsImageVisual {
     inner: VisualRef,
     pending_chunks: Option<PendingChunks>,
-    #[allow(dead_code)]
-    chunk_loader: Function,
+    wanted: crate::visuals::virtual_texture::Wanted,
 }
 
 #[visual_methods(ImageVisual)]
@@ -402,49 +390,18 @@ pub struct JsImageVisual {
 impl JsImageVisual {
     /// Create an ImageVisual.
     ///
-    /// The `chunk_loader` is called with `(lod, z, y, x)` and should return a
-    /// `JsChunkStatus`.  When data is ready, call `setChunkDataU16`.
+    /// Pull-based: bovista publishes the set of tiles it wants each
+    /// frame via `wantedKeys()`. The caller (JS) polls this and pushes
+    /// data via `setChunkDataU16`. No callback flowing across the FFI
+    /// boundary on the hot path.
     #[wasm_bindgen(constructor)]
     pub fn new(
         viewer: &JsViewer,
         levels: Vec<JsLevelMetadata>,
         max_chunks: usize,
-        chunk_loader: Function,
     ) -> Self {
         let rust_levels: Vec<LodLevelConfig> =
             levels.iter().map(|l| l.to_lod_level_config()).collect();
-
-        let chunk_loader_clone = chunk_loader.clone();
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            let lod_level = request.lod_level.unwrap_or(0);
-            let this = &JsValue::NULL;
-            let args = Array::new();
-            args.push(&JsValue::from(lod_level as u32));
-            args.push(&JsValue::from(request.z));
-            args.push(&JsValue::from(request.y));
-            args.push(&JsValue::from(request.x));
-
-            match chunk_loader_clone.apply(this, &args) {
-                Ok(result) => {
-                    if let Some(v) = result.as_f64() {
-                        let n = v as u32;
-                        if n == JsChunkStatus::Accepted as u32 {
-                            ChunkStatus::Accepted
-                        } else if n == JsChunkStatus::AlreadyPending as u32 {
-                            ChunkStatus::AlreadyPending
-                        } else {
-                            ChunkStatus::Rejected
-                        }
-                    } else {
-                        ChunkStatus::Accepted
-                    }
-                }
-                Err(err) => {
-                    console::error_2(&JsValue::from_str("chunk_loader error:"), &err);
-                    ChunkStatus::Rejected
-                }
-            }
-        });
 
         let renderer = viewer.renderer();
         let visual = ImageVisual::new(
@@ -454,13 +411,25 @@ impl JsImageVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_chunks,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks();
+        let wanted = visual.wanted_handle();
         let inner = Rc::new(RefCell::new(visual));
 
-        Self { inner, pending_chunks, chunk_loader }
+        Self { inner, pending_chunks, wanted }
+    }
+
+    /// Snapshot of the tile keys bovista currently wants. Returned as
+    /// a flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+    /// sorted by priority (lower = more urgent). Poll periodically.
+    #[wasm_bindgen(js_name = wantedKeys)]
+    pub fn wanted_keys(&self) -> js_sys::Uint32Array {
+        let flat: Vec<u32> = crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
+            .into_iter()
+            .flat_map(|(lod, t, z, y, x, p)| [lod as u32, t, z, y, x, p as u32])
+            .collect();
+        js_sys::Uint32Array::from(flat.as_slice())
     }
 
     /// Set the slice plane position along Z axis
@@ -512,6 +481,7 @@ impl JsImageVisual {
     pub fn set_chunk_data_u16(
         &self,
         lod: usize,
+        t: u32,
         z: u32,
         y: u32,
         x: u32,
@@ -533,7 +503,7 @@ impl JsImageVisual {
                 depth,
                 format: wgpu::TextureFormat::R16Float,
             };
-            let key = TileKey { lod_level: lod, z, y, x };
+            let key = TileKey { lod_level: lod, t, z, y, x };
             pending_chunks.lock().unwrap().insert(key, tile_data);
         }
     }
@@ -578,8 +548,7 @@ impl JsImageVisual {
 pub struct JsVolumeVisual {
     inner: VisualRef,
     pending_chunks: Option<PendingChunks>,
-    #[allow(dead_code)]
-    chunk_loader: Function,
+    wanted: crate::visuals::virtual_texture::Wanted,
 }
 
 #[visual_methods(VolumeVisual)]
@@ -587,49 +556,16 @@ pub struct JsVolumeVisual {
 impl JsVolumeVisual {
     /// Create a VolumeVisual.
     ///
-    /// The `chunk_loader` is called with `(lod, z, y, x)` and should return a
-    /// `JsChunkStatus`. When data is ready, call `setChunkDataU16`.
+    /// Pull-based: poll `wantedKeys()` and push tile data via
+    /// `setChunkDataU16`. See `JsImageVisual::new` for rationale.
     #[wasm_bindgen(constructor)]
     pub fn new(
         viewer: &JsViewer,
         levels: Vec<JsLevelMetadata>,
         max_chunks: usize,
-        chunk_loader: Function,
     ) -> Self {
         let rust_levels: Vec<LodLevelConfig> =
             levels.iter().map(|l| l.to_lod_level_config()).collect();
-
-        let chunk_loader_clone = chunk_loader.clone();
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            let lod_level = request.lod_level.unwrap_or(0);
-            let this = &JsValue::NULL;
-            let args = Array::new();
-            args.push(&JsValue::from(lod_level as u32));
-            args.push(&JsValue::from(request.z));
-            args.push(&JsValue::from(request.y));
-            args.push(&JsValue::from(request.x));
-
-            match chunk_loader_clone.apply(this, &args) {
-                Ok(result) => {
-                    if let Some(v) = result.as_f64() {
-                        let n = v as u32;
-                        if n == JsChunkStatus::Accepted as u32 {
-                            ChunkStatus::Accepted
-                        } else if n == JsChunkStatus::AlreadyPending as u32 {
-                            ChunkStatus::AlreadyPending
-                        } else {
-                            ChunkStatus::Rejected
-                        }
-                    } else {
-                        ChunkStatus::Accepted
-                    }
-                }
-                Err(err) => {
-                    console::error_2(&JsValue::from_str("chunk_loader error:"), &err);
-                    ChunkStatus::Rejected
-                }
-            }
-        });
 
         let renderer = viewer.renderer();
         let visual = VolumeVisual::new(
@@ -639,13 +575,29 @@ impl JsVolumeVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_chunks,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks();
+        let wanted = visual.wanted_handle();
         let inner = Rc::new(RefCell::new(visual));
 
-        Self { inner, pending_chunks, chunk_loader }
+        Self { inner, pending_chunks, wanted }
+    }
+
+    /// Snapshot of the tile keys bovista currently wants. Returned as a
+    /// flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+    /// sorted by priority. See `JsImageVisual::wanted_keys`.
+    #[wasm_bindgen(js_name = wantedKeys)]
+    pub fn wanted_keys(&self) -> js_sys::Uint32Array {
+        let w = self.wanted.lock().unwrap();
+        let mut v: Vec<(usize, u32, u32, u32, u32, i32)> = w.iter()
+            .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
+            .collect();
+        v.sort_by_key(|e| e.5);
+        let flat: Vec<u32> = v.into_iter()
+            .flat_map(|(lod, t, z, y, x, p)| [lod as u32, t, z, y, x, p as u32])
+            .collect();
+        js_sys::Uint32Array::from(flat.as_slice())
     }
 
     /// Set contrast limits (0.0 to 1.0)
@@ -700,6 +652,7 @@ impl JsVolumeVisual {
     pub fn set_chunk_data_u16(
         &self,
         lod: usize,
+        t: u32,
         z: u32,
         y: u32,
         x: u32,
@@ -721,7 +674,7 @@ impl JsVolumeVisual {
                 depth,
                 format: wgpu::TextureFormat::R16Float,
             };
-            let key = TileKey { lod_level: lod, z, y, x };
+            let key = TileKey { lod_level: lod, t, z, y, x };
             pending_chunks.lock().unwrap().insert(key, tile_data);
         }
     }

@@ -14,6 +14,13 @@ Current capabilities:
 - **Remote OME-Zarr**: streams tiles from S3/HTTP, loads asynchronously via callback
 - **Points and lines**: for annotations, axis helpers, point clouds
 
+| Native (PyQt6) | Browser (WebAssembly) |
+| :---: | :---: |
+| ![PyQt6 volume renderer](screenshots/pyqt-volume.png) | ![Web volume renderer](screenshots/web-volume.png) |
+| `examples/volume_renderer/python/` | `examples/volume_renderer/web/` |
+
+*Same renderer, same dataset, different host — both views are produced by the same Rust core.*
+
 ---
 
 ## Prerequisites
@@ -85,7 +92,7 @@ src/
     virtual_texture.rs      — VirtualTextureData: atlas, page table, LOD
     atlas.rs                — AtlasAllocator: 3D texture atlas
     page_table.rs           — PageTable: 2D-array indirection texture
-    tile.rs                 — TileKey, TileData, TileLoaderFn, uniforms
+    gpu_structs.rs          — TileKey, TileData, TileLoaderFn, vertex/uniform structs
     points.rs               — PointsVisual
     lines.rs                — LinesVisual
     custom.rs               — CustomVisual (user-defined shaders)
@@ -168,3 +175,12 @@ cargo clippy
 # Build Python extension in dev mode
 uv run maturin develop --features python
 ```
+
+---
+
+## Related work
+
+Bovista sits in the same neighborhood as a few other projects worth knowing about:
+
+- **[pygfx](https://github.com/pygfx/pygfx)** — Python visualization library built on wgpu-py. Broad scene-graph API, multiple light types, materials, animation. Bovista is narrower (large multiscale image/volume data + virtual-texture streaming), but the wgpu-as-portable-GPU thesis is the same.
+- **[kiln](https://github.com/MPanknin/kiln-render)** — Standalone TypeScript/WebGPU browser volume renderer. A checkout lives alongside this repo in `kiln-render/` as a cross-reference for the rendering approach.

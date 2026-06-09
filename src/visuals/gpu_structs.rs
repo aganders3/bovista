@@ -8,62 +8,6 @@ use glam::Vec3;
 use std::sync::Arc;
 use wgpu::{BindGroup, Buffer, Texture, TextureView};
 
-/// Unified request for a chunk/tile of image data
-///
-/// This structure supports both simple chunked loading (via voxel coordinates)
-/// and multi-resolution tiled loading (via LOD level and chunk grid coordinates).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TileRequest {
-    /// LOD level (0 = highest resolution, None = no LOD hierarchy)
-    pub lod_level: Option<usize>,
-
-    /// X coordinate in chunk grid (for tiled) or voxel space (for simple chunks)
-    pub x: u32,
-
-    /// Y coordinate in chunk grid (for tiled) or voxel space (for simple chunks)
-    pub y: u32,
-
-    /// Z coordinate in chunk grid (for tiled) or voxel space (for simple chunks)
-    pub z: u32,
-
-    /// Width in voxels (optional, for simple chunks that specify size)
-    pub width: Option<u32>,
-
-    /// Height in voxels (optional, for simple chunks that specify size)
-    pub height: Option<u32>,
-
-    /// Depth in voxels (optional, for simple chunks that specify size)
-    pub depth: Option<u32>,
-}
-
-impl TileRequest {
-    /// Create a tile request for multiscale tiled loading
-    pub fn from_grid(lod_level: usize, chunk_x: u32, chunk_y: u32, chunk_z: u32) -> Self {
-        Self {
-            lod_level: Some(lod_level),
-            x: chunk_x,
-            y: chunk_y,
-            z: chunk_z,
-            width: None,
-            height: None,
-            depth: None,
-        }
-    }
-
-    /// Create a tile request for simple chunked loading with voxel coordinates
-    pub fn from_voxels(x: u32, y: u32, z: u32, width: u32, height: u32, depth: u32) -> Self {
-        Self {
-            lod_level: None,
-            x,
-            y,
-            z,
-            width: Some(width),
-            height: Some(height),
-            depth: Some(depth),
-        }
-    }
-}
-
 /// Response containing tile/chunk data
 #[derive(Debug, Clone)]
 pub struct TileData {
@@ -202,11 +146,15 @@ impl Tile {
     }
 }
 
-/// Unique identifier for a tile
+/// Unique identifier for a tile. `t` discriminates timepoints for temporal
+/// datasets (OME-Zarr's time axis); non-temporal callers always pass 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TileKey {
     /// LOD level (0 = highest resolution)
     pub lod_level: usize,
+
+    /// Timepoint index. 0 for non-temporal data.
+    pub t: u32,
 
     /// Z coordinate in chunk grid
     pub z: u32,
@@ -219,8 +167,13 @@ pub struct TileKey {
 }
 
 impl TileKey {
-    pub fn new(lod_level: usize, z: u32, y: u32, x: u32) -> Self {
-        Self { lod_level, z, y, x }
+    pub fn new(lod_level: usize, t: u32, z: u32, y: u32, x: u32) -> Self {
+        Self { lod_level, t, z, y, x }
+    }
+
+    /// The spatial-only key for visibility comparisons (t forced to 0).
+    pub fn spatial(self) -> TileKey {
+        TileKey { lod_level: self.lod_level, t: 0, z: self.z, y: self.y, x: self.x }
     }
 }
 
@@ -261,12 +214,19 @@ pub struct VTLodInfo {
     /// Used for exact sub-tile UV computation independent of grid rounding.
     pub tile_scale: [f32; 3],
     pub _pad2: f32,
-    /// Fraction of the atlas slot actually filled with data for this LOD.
-    /// = lod_tile_size / atlas_slot_size (element-wise).
-    /// Coarser LODs have fewer voxels per chunk; multiplying within_tile by
-    /// data_scale restricts sampling to the populated region of the slot.
+    /// Multiplier on `voxel_frac` (= vol_in_tiles - floor(vol_in_tiles)).
+    /// = (tile_size - 1) / atlas_slot_size per axis. Together with
+    /// `data_offset`, maps `voxel_frac` in [0, 1] to the closed atlas-UV
+    /// range [0.5/atlas_slot, (atlas_slot - 0.5)/atlas_slot] — i.e.
+    /// onto the *centres* of the first and last texels of the slot. With
+    /// Nearest filtering this avoids the tie-break at half-texel
+    /// boundaries that produces visible lines at tile edges.
     pub data_scale: [f32; 3],
     pub _pad3: f32,
+    /// Half-texel inset added BEFORE scaling within_tile. = 0.5 /
+    /// atlas_slot_size per axis. See `data_scale`.
+    pub data_offset: [f32; 3],
+    pub _pad4: f32,
 }
 
 /// Uniform block for the VT pipeline.
@@ -295,7 +255,12 @@ pub struct VTUniforms {
     /// CPU-computed ideal LOD for this frame (accounts for lod_bias and camera distance).
     /// The shader starts its page-table walk here rather than at LOD 0.
     pub target_lod: u32,
-    pub _pad_c: u32,
+    /// Currently-displayed timepoint. The shader compares this against the
+    /// `t` embedded in each page-table texel; a mismatch is treated as
+    /// non-resident, which keeps the display strictly on this t (no
+    /// blending across timepoints) while letting stale entries from a
+    /// previous t persist harmlessly in the page table.
+    pub desired_t: u32,
     // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
     pub lods: [VTLodInfo; VT_MAX_LODS],
 }
@@ -314,8 +279,13 @@ impl Default for VTUniforms {
             debug_mode: 0,
             page_table_width: 1,
             target_lod: 0,
-            _pad_c: 0,
-            lods: [VTLodInfo { grid_dims: [1, 1, 1], _pad: 0, tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0, data_scale: [1.0, 1.0, 1.0], _pad3: 0.0 }; VT_MAX_LODS],
+            desired_t: 0,
+            lods: [VTLodInfo {
+                grid_dims: [1, 1, 1], _pad: 0,
+                tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
+                data_scale: [1.0, 1.0, 1.0], _pad3: 0.0,
+                data_offset: [0.0, 0.0, 0.0], _pad4: 0.0,
+            }; VT_MAX_LODS],
         }
     }
 }
@@ -419,31 +389,6 @@ impl Default for TileUniforms {
         }
     }
 }
-
-/// Status returned by tile loader callback
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChunkStatus {
-    /// The chunk request was accepted and will be loaded asynchronously
-    Accepted,
-    /// The chunk is already being loaded (request is pending)
-    AlreadyPending,
-    /// The chunk request was rejected (e.g., at capacity)
-    Rejected,
-}
-
-/// Type alias for tile loader callback
-///
-/// The callback receives a TileRequest and should return ChunkStatus indicating
-/// whether the request was accepted, is already pending, or was rejected.
-/// When the chunk is ready, the loader should call set_chunk_data() on the strategy.
-///
-/// IMPORTANT: The loader is responsible for implementing backpressure control
-/// by returning ChunkStatus::Rejected when it cannot accept more requests.
-#[cfg(not(target_arch = "wasm32"))]
-pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus + Send + Sync>;
-
-#[cfg(target_arch = "wasm32")]
-pub type TileLoaderFn = Box<dyn Fn(TileRequest) -> ChunkStatus>;
 
 // ============================================================================
 // Geometry Utilities

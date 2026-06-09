@@ -13,18 +13,6 @@ use crate::{
 };
 use bovista_codegen::{camera_methods, visual_methods};
 
-/// Python wrapper for ChunkStatus enum
-#[pyclass(name = "ChunkStatus", eq, eq_int)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PyChunkStatus {
-    /// The chunk request was accepted and will be loaded asynchronously
-    Accepted = 0,
-    /// The chunk is already being loaded (request is pending)
-    AlreadyPending = 1,
-    /// The chunk request was rejected (e.g., at capacity)
-    Rejected = 2,
-}
-
 /// Python wrapper for ProjectionMode enum
 #[pyclass(name = "ProjectionMode", eq, eq_int)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +77,7 @@ impl PyViewer {
     /// Initialize the renderer (must be called before adding visuals)
     fn initialize(&mut self) -> PyResult<()> {
         // Create WGPU instance and request adapter/device
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
@@ -103,7 +91,7 @@ impl PyViewer {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
+        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -111,8 +99,8 @@ impl PyViewer {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
             },
-            None,
         ))
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create device: {}", e)))?;
 
@@ -136,7 +124,7 @@ impl PyViewer {
         };
 
         // Create instance first
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
@@ -219,7 +207,7 @@ impl PyViewer {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
-        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
+        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
 
         // Get surface capabilities and pick format
         let surface_caps = surface.get_capabilities(&adapter);
@@ -235,8 +223,8 @@ impl PyViewer {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
             },
-            None,
         ))
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create device: {}", e)))?;
 
@@ -357,6 +345,7 @@ impl PyViewer {
             frustum: self.camera.frustum_planes(),
             projection_mode: self.camera.projection_mode,
             ortho_height: self.camera.ortho_height,
+            view_proj: self.camera.view_projection_matrix(),
         };
 
         self.scene.prepare(renderer.device(), renderer.queue(), &camera_info);
@@ -458,7 +447,7 @@ impl PyViewer {
                     let size = window.inner_size();
 
                     // Create new wgpu instance for this window
-                    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
                         backends: wgpu::Backends::PRIMARY,
                         ..Default::default()
                     });
@@ -480,8 +469,8 @@ impl PyViewer {
                             required_features: wgpu::Features::empty(),
                             required_limits: wgpu::Limits::default(),
                             memory_hints: Default::default(),
+                            trace: wgpu::Trace::Off,
                         },
-                        None,
                     )).unwrap();
 
                     let surface_caps = surface.get_capabilities(&adapter);
@@ -549,6 +538,7 @@ impl PyViewer {
                                 frustum: self.camera.frustum_planes(),
                                 projection_mode: self.camera.projection_mode,
                                 ortho_height: self.camera.ortho_height,
+                                view_proj: self.camera.view_projection_matrix(),
                             };
 
                             self.scene.prepare(renderer.device(), renderer.queue(), &camera_info);
@@ -785,6 +775,7 @@ impl PyLinesVisual {
 pub struct PyImageVisual {
     inner: VisualRef,
     pending_chunks: crate::visuals::virtual_texture::PendingChunks,
+    wanted: crate::visuals::virtual_texture::Wanted,
 }
 
 impl PyVisualWrapper for PyImageVisual {
@@ -797,12 +788,11 @@ impl PyVisualWrapper for PyImageVisual {
 #[pymethods]
 impl PyImageVisual {
     #[new]
-    #[pyo3(signature = (viewer, levels, max_tiles, loader))]
+    #[pyo3(signature = (viewer, levels, max_tiles))]
     fn new(
         viewer: &PyViewer,
         levels: Vec<PyLevelMetadata>,
         max_tiles: usize,
-        loader: PyObject,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
@@ -825,33 +815,9 @@ impl PyImageVisual {
             })
             .collect();
 
-        use crate::visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus};
-        let loader_arc = Arc::new(loader);
-        let loader_clone = loader_arc.clone();
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            Python::with_gil(|py| {
-                let lod_level = request.lod_level.unwrap_or(0);
-                let result = loader_clone.bind(py).call1((lod_level, request.z, request.y, request.x));
-                match result {
-                    Ok(obj) => {
-                        if let Ok(status) = obj.extract::<PyChunkStatus>() {
-                            match status {
-                                PyChunkStatus::Accepted => ChunkStatus::Accepted,
-                                PyChunkStatus::AlreadyPending => ChunkStatus::AlreadyPending,
-                                PyChunkStatus::Rejected => ChunkStatus::Rejected,
-                            }
-                        } else {
-                            ChunkStatus::Rejected
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[Image] Error calling loader: {}", e);
-                        ChunkStatus::Rejected
-                    }
-                }
-            })
-        });
-
+        // Pull-based: bovista publishes `wanted` each prepare; Python
+        // polls it via `wanted_keys()` and pushes data via
+        // `set_chunk_data_u16(...)`. No callback.
         let visual = ImageVisual::new(
             renderer.device(),
             renderer.queue(),
@@ -859,12 +825,20 @@ impl PyImageVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_tiles,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks().unwrap();
+        let wanted = visual.wanted_handle();
         let inner = Arc::new(Mutex::new(visual));
-        Ok(Self { inner, pending_chunks })
+        Ok(Self { inner, pending_chunks, wanted })
+    }
+
+    /// Snapshot of the tile keys bovista currently wants in the atlas.
+    /// Returned as `[(lod_level, t, z, y, x, priority), ...]` sorted by
+    /// priority (lower = more urgent; 0 = "user is looking at this t now",
+    /// positive = prefetch offset). Poll periodically to drive the loader.
+    fn wanted_keys(&self) -> Vec<(usize, u32, u32, u32, u32, i32)> {
+        crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
     }
 
     /// Set the slice plane position along Z axis
@@ -920,6 +894,7 @@ impl PyImageVisual {
     fn set_chunk_data_u16(
         &self,
         lod_level: usize,
+        t: u32,
         z: u32,
         y: u32,
         x: u32,
@@ -936,7 +911,8 @@ impl PyImageVisual {
             depth: a.shape()[0] as u32,
             format: wgpu::TextureFormat::R16Float,
         };
-        self.pending_chunks.lock().unwrap().insert(TileKey { lod_level, z, y, x }, tile_data);
+        self.pending_chunks.lock().unwrap()
+            .insert(TileKey { lod_level, t, z, y, x }, tile_data);
         Ok(())
     }
 
@@ -1144,6 +1120,7 @@ impl PyVertexBufferLayout {
 pub struct PyVolumeVisual {
     inner: VisualRef,
     pending_chunks: crate::visuals::virtual_texture::PendingChunks,
+    wanted: crate::visuals::virtual_texture::Wanted,
 }
 
 impl PyVisualWrapper for PyVolumeVisual {
@@ -1156,12 +1133,11 @@ impl PyVisualWrapper for PyVolumeVisual {
 #[pymethods]
 impl PyVolumeVisual {
     #[new]
-    #[pyo3(signature = (viewer, levels, max_tiles, loader))]
+    #[pyo3(signature = (viewer, levels, max_tiles))]
     fn new(
         viewer: &PyViewer,
         levels: Vec<PyLevelMetadata>,
         max_tiles: usize,
-        loader: PyObject,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
@@ -1184,33 +1160,7 @@ impl PyVolumeVisual {
             })
             .collect();
 
-        use crate::visuals::gpu_structs::{TileRequest, TileLoaderFn, ChunkStatus};
-        let loader_arc = Arc::new(loader);
-        let loader_clone = loader_arc.clone();
-        let loader_fn: TileLoaderFn = Box::new(move |request: TileRequest| -> ChunkStatus {
-            Python::with_gil(|py| {
-                let lod_level = request.lod_level.unwrap_or(0);
-                let result = loader_clone.bind(py).call1((lod_level, request.z, request.y, request.x));
-                match result {
-                    Ok(obj) => {
-                        if let Ok(status) = obj.extract::<PyChunkStatus>() {
-                            match status {
-                                PyChunkStatus::Accepted => ChunkStatus::Accepted,
-                                PyChunkStatus::AlreadyPending => ChunkStatus::AlreadyPending,
-                                PyChunkStatus::Rejected => ChunkStatus::Rejected,
-                            }
-                        } else {
-                            ChunkStatus::Rejected
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[Volume] Error calling loader: {}", e);
-                        ChunkStatus::Rejected
-                    }
-                }
-            })
-        });
-
+        // Pull-based: see PyImageVisual::new for the rationale.
         use crate::visuals::VolumeVisual;
         let visual = VolumeVisual::new(
             renderer.device(),
@@ -1219,12 +1169,18 @@ impl PyVolumeVisual {
             renderer.camera_bind_group_layout(),
             rust_levels,
             max_tiles,
-            loader_fn,
         );
 
         let pending_chunks = visual.pending_chunks().unwrap();
+        let wanted = visual.wanted_handle();
         let inner = Arc::new(Mutex::new(visual));
-        Ok(Self { inner, pending_chunks })
+        Ok(Self { inner, pending_chunks, wanted })
+    }
+
+    /// Snapshot of the tile keys bovista currently wants. See
+    /// `PyImageVisual::wanted_keys`.
+    fn wanted_keys(&self) -> Vec<(usize, u32, u32, u32, u32, i32)> {
+        crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
     }
 
     /// Set contrast limits
@@ -1305,6 +1261,7 @@ impl PyVolumeVisual {
     fn set_chunk_data_u16(
         &self,
         lod_level: usize,
+        t: u32,
         z: u32,
         y: u32,
         x: u32,
@@ -1321,7 +1278,8 @@ impl PyVolumeVisual {
             depth: a.shape()[0] as u32,
             format: wgpu::TextureFormat::R16Float,
         };
-        self.pending_chunks.lock().unwrap().insert(TileKey { lod_level, z, y, x }, tile_data);
+        self.pending_chunks.lock().unwrap()
+            .insert(TileKey { lod_level, t, z, y, x }, tile_data);
         Ok(())
     }
 
@@ -1351,7 +1309,6 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLevelMetadata>()?;
     m.add_class::<PyCustomVisual>()?;
     m.add_class::<PyVertexBufferLayout>()?;
-    m.add_class::<PyChunkStatus>()?;
     m.add_class::<PyProjectionMode>()?;
     Ok(())
 }

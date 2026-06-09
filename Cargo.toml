@@ -10,7 +10,7 @@ license = "Apache-2.0"
 
 [dependencies]
 bovista-codegen = { path = "bovista-codegen" }
-wgpu = "23"
+wgpu = "26"
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = "0.29"
 winit = "0.30"
@@ -25,10 +25,34 @@ futures = "0.3"
 # LRU cache for chunks
 lru = "0.12"
 half = "2"
+log = "0.4"
+# std::time::Instant panics on wasm32; web-time is a drop-in that delegates
+# to performance.now() in the browser and to std on native.
+web-time = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+png = "0.17"
+# OME-Zarr loading for the orbit_stream example. zarrs default features cover
+# filesystem + common codecs (blosc, gzip, zstd, sharding, crc32c); zarrs_http
+# adds a synchronous HTTP store so we can stream remote datasets directly.
+#
+# Note: zarrs_http → reqwest → openssl-sys. On hosts that don't ship
+# libssl-dev, point the build at a prebuilt OpenSSL via env vars, e.g.:
+#
+#   export OPENSSL_DIR=$HOME/.pixi/envs/openssl
+#
+# or set features = ["vendored"] on openssl-sys to build OpenSSL from source.
+zarrs = "0.23"
+zarrs_http = "0.3"
+serde_json = "1"
+# zarrs uses the global rayon pool internally for chunked reads. We init
+# it explicitly at startup so we can cap the pool size (default 8) and
+# compute MAX_INFLIGHT against a known budget.
+rayon = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
@@ -63,3 +87,19 @@ required-features = []
 name = "volume_renderer"
 path = "examples/volume_renderer/rust/main.rs"
 required-features = []
+
+[[example]]
+name = "orbit_stream"
+path = "examples/orbit_stream/rust/main.rs"
+required-features = []
+
+# Pin wgpu-hal to a forked branch that adds EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR
+# to the existing GL 3.3 context-creation request. On NVIDIA Linux this
+# kicks the driver into the modern GLSL frontend (vs. the legacy "Cg
+# compiler" path triggered when the profile mask is absent), which is
+# required for our shaders to render correctly on HPC.
+#
+# Branch: https://github.com/aganders3/wgpu/tree/add-gl-profile-mask
+# (Two-line minimal fix — the upstream PR candidate.)
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/aganders3/wgpu", branch = "add-gl-profile-mask" }
