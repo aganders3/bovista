@@ -142,10 +142,9 @@ pub struct CameraInfo {
     pub projection_mode: crate::ProjectionMode,
     /// Orthographic view height (only used when projection_mode is Orthographic)
     pub ortho_height: f32,
-    /// Combined view * projection matrix. Visuals that need to embed
-    /// camera data into their own uniform buffer (workaround for
-    /// wgpu-hal-gles UBO aliasing on NVIDIA 3.30 compat — see
-    /// memory/wgpu-gles-multi-ubo-bug.md) read this directly.
+    /// Combined view * projection matrix. Visuals that pack camera data
+    /// into their own combined uniform buffer (VolumeVisual, ImageVisual)
+    /// read this directly instead of consuming the shared camera UBO.
     pub view_proj: glam::Mat4,
 }
 

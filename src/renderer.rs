@@ -181,7 +181,7 @@ impl Renderer {
             // slot 0 between each visual so that visuals like Lines / Points
             // — which expect the shared camera layout at slot 0 — keep
             // working after Volume / Image override slot 0 with their own
-            // combined-UBO bind group (NVIDIA GLES UBO-aliasing workaround).
+            // combined-UBO bind group.
             scene.render(&mut render_pass, &self.camera_bind_group);
         }
 

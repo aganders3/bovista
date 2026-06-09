@@ -7,14 +7,8 @@ use crate::visuals::gpu_structs::{VolumeVertex, VolumeUniforms, VTUniforms, VTLo
 use bytemuck::{Pod, Zeroable};
 use wgpu::RenderPass;
 
-/// Combined uniform struct for the volume shader.
-///
-/// Workaround for a wgpu-hal-gles bug on NVIDIA's GL 3.30 compat profile
-/// where multiple uniform-buffer bindings in a single shader are silently
-/// aliased to the same GL UBO slot — every block ends up reading the
-/// first-bound buffer's bytes (see memory/wgpu-gles-multi-ubo-bug.md and
-/// `examples/gl_smoke --one-bg-three`). Collapsing camera + vt + vol into
-/// a single uniform buffer sidesteps the bug.
+/// Combined uniform struct for the volume shader: camera + vt + vol packed
+/// into one UBO at @group(0) @binding(0).
 ///
 /// Layout (WGSL std140 / WGSL packing rules — verified equivalent here):
 ///   offset 0:   view_proj           (mat4x4<f32>, 64 B)
@@ -124,9 +118,7 @@ impl VolumeVisual {
             ..Default::default()
         });
 
-        // ── Single combined bind group (workaround for wgpu-hal-gles
-        //    multi-UBO aliasing on NVIDIA 3.30 compat — see
-        //    memory/wgpu-gles-multi-ubo-bug.md) ────────────────────────────────
+        // ── Single combined bind group (one UBO, one set_bind_group call) ──
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Volume Combined Uniform Buffer"),
             size: std::mem::size_of::<VolumeAllUniforms>() as u64,

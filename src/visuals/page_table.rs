@@ -17,12 +17,9 @@
 //   texel_x = linear_index % width
 //   texel_y = linear_index / width
 //
-// NOTE: NVIDIA's GL 3.30 compat compiler (CoreWeave L40 nodes via headless
-// EGL) silently produces no fragments when a fragment shader mixes
-// `textureSampleLevel` and `textureLoad`. To avoid that, the volume and
-// image shaders read BOTH the atlas (R16Float 3D) and this page table via
-// `textureLoad`. Means the atlas loses linear filtering; bovista was
-// already using Nearest atlas filtering so no quality change.
+// The page table is sampled via `textureLoad` (exact-index, no filtering)
+// while the atlas is read via `textureSampleLevel` (Nearest filter for
+// data fidelity, but with linear blending available if we ever want it).
 
 use crate::visuals::virtual_texture::LodLevelConfig;
 
@@ -59,11 +56,11 @@ impl PageTable {
                 width: pt_width,
                 height: pt_height,
                 // Pad to >= 2 layers so wgpu-hal-GL creates a real
-                // GL_TEXTURE_2D_ARRAY object (its heuristic maps
-                // depth_or_array_layers==1 to plain GL_TEXTURE_2D, which
-                // can't be sampled through a D2Array binding on GLES).
-                // The shader's lod_count uniform still bounds reads to
-                // the real LOD count, so the extra layer is never read.
+                // GL_TEXTURE_2D_ARRAY object — its heuristic maps a
+                // single-layer descriptor to plain GL_TEXTURE_2D, which
+                // can't be sampled through a D2Array binding. The
+                // shader's lod_count uniform bounds reads to the real
+                // LOD count, so the padding layer is never read.
                 depth_or_array_layers: num_lods.max(2),
             },
             mip_level_count: 1,

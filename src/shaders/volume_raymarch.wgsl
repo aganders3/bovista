@@ -18,12 +18,10 @@
 //   1 — LOD tinting + shader-based tile wireframes (green=fine, red=coarse, white=boundary)
 //   2 — atlas direct: bypass page-table indirection, sample the raw atlas texture
 
-// ── Single bind group (workaround for wgpu-hal-gles multi-UBO aliasing
-//    on NVIDIA 3.30 compat profile — see memory/wgpu-gles-multi-ubo-bug.md).
-//    All formerly-separate uniform buffers are now nested inside one struct
-//    and live at binding 0. Textures and samplers continue to use their own
-//    GL state (texture units, sampler units) and are unaffected by the bug,
-//    so they sit alongside at bindings 1–5. ─────────────────────────────────
+// ── Single bind group. Camera + per-LOD VT info + per-volume state all
+//    nest inside one combined uniform struct at binding 0; textures and
+//    samplers sit alongside at bindings 1–5. One UBO, one set_bind_group
+//    call per draw — keeps the per-frame state minimal. ──────────────────
 
 struct VTLodInfo {
     grid_dims: vec3<u32>,
