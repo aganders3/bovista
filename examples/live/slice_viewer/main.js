@@ -104,36 +104,36 @@ function resizeCanvas() {
     }
 }
 
-// Chunk Loading
-/**
- * Chunk loader callback - called by Rust when chunks are needed
- * Returns JsChunkStatus: Accepted (0), AlreadyPending (1), or Rejected (2)
- *
- * Note: Rust TiledStrategy manages the actual tile cache. We only track pending loads.
- */
-function chunkLoader(lod, z, y, x) {
-    const key = `${lod}:${z}:${y}:${x}`;
-
-    if (pendingLoads.has(key)) {
-        return wasmModule.JsChunkStatus.AlreadyPending;
-    }
-
-    if (pendingLoads.size >= MAX_PENDING_CHUNKS) {
-        return wasmModule.JsChunkStatus.Rejected;
-    }
-
-    pendingLoads.add(key);
-    pendingLoadsEl.textContent = pendingLoads.size;
-
-    loadChunkAsync(lod, z, y, x, key);
-
-    return wasmModule.JsChunkStatus.Accepted;
+// Chunk Loading — pull-based.
+//
+// Bovista publishes the set of tiles it wants each frame via
+// `image.wantedKeys()` (a flat Uint32Array of [lod, t, z, y, x,
+// priority, ...] sorted by priority). A polling loop reads that,
+// dispatches fetches for new keys, and pushes results back via
+// `setChunkDataU16`. Cancellation is implicit — keys that leave the
+// wanted set never get re-submitted.
+let loaderPollHandle = null;
+function startLoaderPoll() {
+    if (loaderPollHandle !== null) return;
+    loaderPollHandle = setInterval(() => {
+        if (!tiledImage) return;
+        const w = tiledImage.wantedKeys();
+        for (let i = 0; i < w.length; i += 6) {
+            const lod = w[i], t = w[i+1], z = w[i+2], y = w[i+3], x = w[i+4];
+            const key = `${lod}:${t}:${z}:${y}:${x}`;
+            if (pendingLoads.has(key)) continue;
+            if (pendingLoads.size >= MAX_PENDING_CHUNKS) break;
+            pendingLoads.add(key);
+            pendingLoadsEl.textContent = pendingLoads.size;
+            loadChunkAsync(lod, t, z, y, x, key);
+        }
+    }, 25);
 }
 
 /**
  * Async chunk loading from Zarr
  */
-async function loadChunkAsync(lod, z, y, x, key) {
+async function loadChunkAsync(lod, t, z, y, x, key) {
     try {
         const zarrArray = zarrArrays[lod];
         if (!zarrArray) {
@@ -165,7 +165,7 @@ async function loadChunkAsync(lod, z, y, x, key) {
         if (ndim === 5) {
             // TCZYX - index into time and channel, slice spatial dims
             selection = [
-                0,  // T - index (not slice!)
+                t,  // T - index from bovista's wanted set
                 currentChannel,  // C - index (not slice!)
                 zarr.slice(zStart, zEnd),
                 zarr.slice(yStart, yEnd),
@@ -220,7 +220,7 @@ async function loadChunkAsync(lod, z, y, x, key) {
                 u16data = new Uint16Array(src.length);
                 for (let i = 0; i < src.length; i++) u16data[i] = src[i] * 257;
             }
-            tiledImage.setChunkDataU16(lod, z, y, x, u16data, actualWidth, actualHeight, actualDepth);
+            tiledImage.setChunkDataU16(lod, t, z, y, x, u16data, actualWidth, actualHeight, actualDepth);
             loadedChunkCount++;
         }
 
@@ -355,10 +355,10 @@ function createVisual() {
         viewer,     // Pass the viewer instance
         jsLevels,   // Array of JsLevelMetadata
         512,        // max_chunks
-        chunkLoader // JavaScript callback function
     );
 
     viewer.addImage(tiledImage);
+    startLoaderPoll();
 
     // Reapply slice plane if volumeCenter is set
     if (volumeCenter) {

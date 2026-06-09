@@ -81,20 +81,30 @@ function resizeCanvas() {
     if (viewer) viewer.resize(canvas.width, canvas.height);
 }
 
-// Chunk loader callback — called by Rust when tiles are needed.
-function chunkLoader(lod, z, y, x) {
-    const key = `${lod}:${z}:${y}:${x}`;
-
-    if (pendingLoads.has(key)) return wasmModule.JsChunkStatus.AlreadyPending;
-    if (pendingLoads.size >= MAX_PENDING_CHUNKS) return wasmModule.JsChunkStatus.Rejected;
-
-    pendingLoads.add(key);
-    pendingLoadsEl.textContent = pendingLoads.size;
-    loadChunkAsync(lod, z, y, x, key);
-    return wasmModule.JsChunkStatus.Accepted;
+// Pull-based loader. A polling loop reads `volumeVisual.wantedKeys()`
+// (flat Uint32Array of [lod, t, z, y, x, priority, ...] sorted by
+// priority) and dispatches async fetches. Bovista drops keys from
+// `wanted` as soon as they're no longer needed, so cancellation is
+// implicit — keys that disappear just don't get re-submitted.
+let loaderPollHandle = null;
+function startLoaderPoll() {
+    if (loaderPollHandle !== null) return;
+    loaderPollHandle = setInterval(() => {
+        if (!volumeVisual) return;
+        const w = volumeVisual.wantedKeys();
+        for (let i = 0; i < w.length; i += 6) {
+            const lod = w[i], t = w[i+1], z = w[i+2], y = w[i+3], x = w[i+4];
+            const key = `${lod}:${t}:${z}:${y}:${x}`;
+            if (pendingLoads.has(key)) continue;
+            if (pendingLoads.size >= MAX_PENDING_CHUNKS) break;
+            pendingLoads.add(key);
+            pendingLoadsEl.textContent = pendingLoads.size;
+            loadChunkAsync(lod, t, z, y, x, key);
+        }
+    }, 25);
 }
 
-async function loadChunkAsync(lod, z, y, x, key) {
+async function loadChunkAsync(lod, t, z, y, x, key) {
     try {
         const zarrArray = zarrArrays[lod];
         if (!zarrArray) throw new Error(`No array for LOD ${lod}`);
@@ -113,7 +123,7 @@ async function loadChunkAsync(lod, z, y, x, key) {
 
         let selection;
         if (ndim === 5) {
-            selection = [0, currentChannel, zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
+            selection = [t, currentChannel, zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
         } else if (ndim === 4) {
             selection = [currentChannel, zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
         } else {
@@ -141,7 +151,7 @@ async function loadChunkAsync(lod, z, y, x, key) {
                 for (let i = 0; i < src.length; i++) u16data[i] = src[i] * 257;
             }
             volumeVisual.setChunkDataU16(
-                lod, z, y, x, u16data,
+                lod, t, z, y, x, u16data,
                 xEnd - xStart, yEnd - yStart, zEnd - zStart
             );
         }
@@ -203,8 +213,9 @@ function createVisual() {
     ));
 
     const maxChunks = computeMaxChunks();
-    volumeVisual = new wasmModule.JsVolumeVisual(viewer, jsLevels, maxChunks, chunkLoader);
+    volumeVisual = new wasmModule.JsVolumeVisual(viewer, jsLevels, maxChunks);
     viewer.addVolume(volumeVisual);
+    startLoaderPoll();
 
     // Apply initial controls
     applyStepSize();
