@@ -127,20 +127,14 @@ impl Scene {
         }
     }
 
-    /// Render all visible visuals in the scene.
-    ///
-    /// `camera_bind_group` is re-bound to slot 0 before EACH visual. Some
-    /// visuals (VolumeVisual, ImageVisual) override slot 0 with their own
-    /// combined-UBO bind group so the shader can read view_proj + per-visual
-    /// state from a single uniform buffer. Without this re-bind, subsequent
-    /// visuals like Lines / Points draw with the wrong layout at slot 0 and
-    /// wgpu's validator rejects them ("BindGroupLayout not compatible").
+    /// Render all visible visuals in the scene. The renderer is expected to
+    /// have already bound the camera bind group at slot 0; every visual
+    /// reads it via @group(0) and none of them overrides slot 0 themselves.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn render(&self, render_pass: &mut wgpu::RenderPass, camera_bind_group: &wgpu::BindGroup) {
+    pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
         for visual in &self.visuals {
             if let Ok(v) = visual.lock() {
                 if v.is_visible() {
-                    render_pass.set_bind_group(0, camera_bind_group, &[]);
                     v.render(render_pass);
                 }
             }
@@ -149,7 +143,7 @@ impl Scene {
 
     /// Render all visible visuals in the scene (WASM version)
     #[cfg(target_arch = "wasm32")]
-    pub fn render(&self, render_pass: &mut wgpu::RenderPass, camera_bind_group: &wgpu::BindGroup) {
+    pub fn render(&self, render_pass: &mut wgpu::RenderPass) {
         use web_sys::console;
         use wasm_bindgen::JsValue;
 
@@ -180,7 +174,6 @@ impl Scene {
         for visual in &self.visuals {
             if let Ok(v) = visual.try_borrow() {
                 if v.is_visible() {
-                    render_pass.set_bind_group(0, camera_bind_group, &[]);
                     v.render(render_pass);
                 }
             }
