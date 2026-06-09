@@ -65,7 +65,7 @@ pub enum SliceOrientation {
 
 /// Visual for rendering volume slices via the virtual-texture pipeline.
 pub struct ImageVisual {
-    strategy: VirtualTextureData,
+    vt: VirtualTextureData,
 
     // Colormap LUT (group 2) — 256-entry 1D RGBA texture
     colormap_texture: wgpu::Texture,
@@ -113,7 +113,7 @@ impl ImageVisual {
             (1, 1, 1)
         };
 
-        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles);
+        let vt = VirtualTextureData::new(device, lod_levels, max_tiles);
 
         // Atlas sampler (linear for smooth interpolation across tile boundaries)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -249,7 +249,7 @@ impl ImageVisual {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&strategy.atlas_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&vt.atlas_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -257,7 +257,7 @@ impl ImageVisual {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&strategy.page_table.texture_view),
+                    resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -326,7 +326,7 @@ impl ImageVisual {
         let slice_plane = SlicePlane::xy((depth as f32) / 2.0);
 
         Self {
-            strategy,
+            vt,
             colormap_texture,
             colormap_bind_group,
             colormap_bind_group_layout,
@@ -425,44 +425,44 @@ impl ImageVisual {
 
     /// Set LOD bias. Positive = prefer higher resolution (finer), negative = prefer lower (coarser).
     pub fn set_lod_bias(&mut self, bias: f32) {
-        self.strategy.lod_bias = bias;
+        self.vt.lod_bias = bias;
     }
 
     /// Returns (loaded_tiles, visible_tiles).
     pub fn get_stats(&self) -> (usize, usize) {
-        (self.strategy.slot_map.len(), self.strategy.visible_tile_keys.len())
+        (self.vt.slot_map.len(), self.vt.visible_tile_keys.len())
     }
 
     /// Get the pending chunks queue so callers can push tile data from other threads.
     pub fn pending_chunks(&self) -> Option<PendingChunks> {
-        Some(self.strategy.pending_chunks.clone())
+        Some(self.vt.pending_chunks.clone())
     }
 
     /// Shared handle to the "tiles bovista wants" map. Loaders read
     /// this to decide what to fetch and in what order.
     pub fn wanted_handle(&self) -> crate::visuals::virtual_texture::Wanted {
-        self.strategy.wanted.clone()
+        self.vt.wanted.clone()
     }
 
     /// Snapshot of the most recent prepare's timing/counts.
     pub fn stats(&self) -> crate::visuals::virtual_texture::PrepareStats {
-        self.strategy.stats.clone()
+        self.vt.stats.clone()
     }
 
     /// Request that the image display timepoint `t`. Identical semantics
     /// to `VolumeVisual::set_desired_timepoint` — page table flips once
     /// the visible tiles for `t` have arrived.
     pub fn set_desired_timepoint(&mut self, t: u32) {
-        self.strategy.set_desired_timepoint(t);
+        self.vt.set_desired_timepoint(t);
     }
 
-    pub fn desired_t(&self) -> u32 { self.strategy.desired_t() }
+    pub fn desired_t(&self) -> u32 { self.vt.desired_t() }
 
     /// Enable look-ahead prefetching of the next `lookahead` timepoints.
     /// Look-ahead only by design — the LRU pool keeps recently-displayed
     /// past frames resident, so explicit look-behind is redundant.
     pub fn set_prefetch(&mut self, lookahead: u32, t_count: u32) {
-        self.strategy.set_prefetch(lookahead, t_count);
+        self.vt.set_prefetch(lookahead, t_count);
     }
 }
 
@@ -486,10 +486,10 @@ impl Visual for ImageVisual {
         self.frame_number += 1;
 
         let _ = device;
-        self.strategy.prepare(queue, &self.slice_plane, self.frame_number, camera_info);
+        self.vt.prepare(queue, &self.slice_plane, self.frame_number, camera_info);
 
         // Update VT uniform buffer.
-        let vt = &self.strategy;
+        let vt = &self.vt;
         let mut lods = [VTLodInfo {
             grid_dims: [1, 1, 1], _pad: 0,
             tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,

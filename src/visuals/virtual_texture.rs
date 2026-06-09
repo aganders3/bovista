@@ -18,6 +18,19 @@ pub type PendingChunks = Arc<Mutex<HashMap<TileKey, TileData>>>;
 /// what to fetch.
 pub type Wanted = Arc<Mutex<HashMap<TileKey, i32>>>;
 
+/// Snapshot of the wanted set as `(lod_level, t, z, y, x, priority)`
+/// tuples, sorted by priority (lower = more urgent; 0 = "user is looking
+/// at this t now", positive = prefetch offset). Shared by every language
+/// binding so the sort + projection lives in one place.
+pub fn wanted_sorted(wanted: &Wanted) -> Vec<(usize, u32, u32, u32, u32, i32)> {
+    let w = wanted.lock().unwrap();
+    let mut v: Vec<_> = w.iter()
+        .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
+        .collect();
+    v.sort_by_key(|e| e.5);
+    v
+}
+
 /// Per-prepare timing + counts. Refreshed by every `prepare` /
 /// `prepare_volume` call, exposed via `VolumeVisual::stats()` /
 /// `ImageVisual::stats()` for performance diagnostics. Read it from
@@ -806,7 +819,7 @@ impl VirtualTextureData {
         // go into visible_tile_keys — adding every intermediate LOD was inflating the
         // visible count far above max_tiles and causing constant eviction/reload churn.
         for &(lod, tz, ty, tx) in &active_regions {
-            self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
+            self.visible_tile_keys.insert(TileKey::new(lod, 0, tz, ty, tx));
         }
 
         for current_lod in (ideal_lod..start_lod).rev() {
@@ -848,7 +861,7 @@ impl VirtualTextureData {
 
         // Add the ideal_lod tiles — these are the ones we actually want to display.
         for &(lod, tz, ty, tx) in &active_regions {
-            self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
+            self.visible_tile_keys.insert(TileKey::new(lod, 0, tz, ty, tx));
         }
     }
 
@@ -902,7 +915,7 @@ impl VirtualTextureData {
 
             if lod == 0 {
                 // Already at finest LOD — just mark it.
-                self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
+                self.visible_tile_keys.insert(TileKey::new(lod, 0, tz, ty, tx));
                 continue;
             }
 
@@ -913,7 +926,7 @@ impl VirtualTextureData {
 
             if lod <= ideal_for_tile {
                 // Current LOD is fine enough (camera is far away enough) — use this tile.
-                self.visible_tile_keys.insert(TileKey::new(lod, tz, ty, tx));
+                self.visible_tile_keys.insert(TileKey::new(lod, 0, tz, ty, tx));
             } else {
                 // Need finer data — push children of the next finer LOD.
                 let child_lod    = lod - 1;

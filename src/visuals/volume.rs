@@ -29,7 +29,7 @@ struct VolumeAllUniforms {
 /// as `ImageVisual`. The fragment shader fires a ray per pixel and composites voxel
 /// contributions front-to-back using the same colormap/contrast as the slice visual.
 pub struct VolumeVisual {
-    strategy: VirtualTextureData,
+    vt: VirtualTextureData,
 
     // 256-entry 1D RGBA colormap LUT
     colormap_texture: wgpu::Texture,
@@ -104,7 +104,7 @@ impl VolumeVisual {
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
     ) -> Self {
-        let strategy = VirtualTextureData::new(device, lod_levels, max_tiles);
+        let vt = VirtualTextureData::new(device, lod_levels, max_tiles);
 
         // Atlas sampler
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -233,9 +233,9 @@ impl VolumeVisual {
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&strategy.atlas_texture_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&vt.atlas_texture_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&strategy.page_table.texture_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&colormap_view) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&colormap_sampler) },
             ],
@@ -316,7 +316,7 @@ impl VolumeVisual {
         });
 
         Self {
-            strategy,
+            vt,
             colormap_texture,
             pending_colormap: None,
             bind_group,
@@ -395,30 +395,30 @@ impl VolumeVisual {
 
     /// LOD bias. Positive = finer (higher resolution), negative = coarser.
     pub fn set_lod_bias(&mut self, bias: f32) {
-        self.strategy.lod_bias = bias;
+        self.vt.lod_bias = bias;
     }
 
     /// Returns `(loaded_tiles, visible_tiles)`.
     pub fn get_stats(&self) -> (usize, usize) {
-        (self.strategy.slot_map.len(), self.strategy.visible_tile_keys.len())
+        (self.vt.slot_map.len(), self.vt.visible_tile_keys.len())
     }
 
     /// Access the pending chunks queue for pushing tile data from other threads.
     pub fn pending_chunks(&self) -> Option<PendingChunks> {
-        Some(self.strategy.pending_chunks.clone())
+        Some(self.vt.pending_chunks.clone())
     }
 
     /// Shared handle to the "tiles bovista wants" map. Loaders read
     /// this to decide what to fetch and in what order; written by
     /// bovista at the end of each `prepare`.
     pub fn wanted_handle(&self) -> crate::visuals::virtual_texture::Wanted {
-        self.strategy.wanted.clone()
+        self.vt.wanted.clone()
     }
 
     /// Snapshot of the most recent prepare's timing/counts. Refreshed
     /// every `prepare()` call.
     pub fn stats(&self) -> crate::visuals::virtual_texture::PrepareStats {
-        self.strategy.stats.clone()
+        self.vt.stats.clone()
     }
 
     /// Drop every loaded tile so the next frame re-requests visible tiles.
@@ -426,7 +426,7 @@ impl VolumeVisual {
     /// `set_desired_timepoint(t)` which keeps adjacent timepoints resident
     /// in the atlas and swaps presentation atomically once t is ready.
     pub fn clear_atlas(&mut self, queue: &wgpu::Queue) {
-        self.strategy.clear_atlas(queue);
+        self.vt.clear_atlas(queue);
     }
 
     /// Request that the volume display timepoint `t`. The visible tiles
@@ -435,7 +435,7 @@ impl VolumeVisual {
     /// arrived. Until then, the previously-displayed timepoint stays on
     /// screen — no flicker. Non-temporal datasets can ignore this.
     pub fn set_desired_timepoint(&mut self, t: u32) {
-        self.strategy.set_desired_timepoint(t);
+        self.vt.set_desired_timepoint(t);
     }
 
     /// Enable look-ahead prefetching of the next `lookahead` timepoints
@@ -445,15 +445,15 @@ impl VolumeVisual {
     /// request path, so already-resident tiles skip via slot_map and
     /// never re-decode.
     pub fn set_prefetch(&mut self, lookahead: u32, t_count: u32) {
-        self.strategy.set_prefetch(lookahead, t_count);
+        self.vt.set_prefetch(lookahead, t_count);
     }
 
-    pub fn desired_t(&self) -> u32 { self.strategy.desired_t() }
+    pub fn desired_t(&self) -> u32 { self.vt.desired_t() }
 
     /// (resident, visible) at `desired_t` — see
     /// `VirtualTextureData::current_t_load_status`.
     pub fn current_t_load_status(&self) -> (usize, usize) {
-        self.strategy.current_t_load_status()
+        self.vt.current_t_load_status()
     }
 
     /// Snapshot of the spatial tile keys bovista currently considers
@@ -462,7 +462,7 @@ impl VolumeVisual {
     /// timepoints. Cheaper than maintaining our own shadow of this set,
     /// and always up to date with the camera.
     pub fn visible_spatial_keys(&self) -> Vec<crate::visuals::gpu_structs::TileKey> {
-        self.strategy.visible_tile_keys.iter().copied().collect()
+        self.vt.visible_tile_keys.iter().copied().collect()
     }
 }
 
@@ -487,10 +487,10 @@ impl Visual for VolumeVisual {
 
         self.frame_number += 1;
         let _ = device;
-        self.strategy.prepare_volume(queue, self.frame_number, camera_info);
+        self.vt.prepare_volume(queue, self.frame_number, camera_info);
 
         // Upload VT uniforms (identical logic to ImageVisual::prepare)
-        let vt = &self.strategy;
+        let vt = &self.vt;
         let mut lods = [VTLodInfo {
             grid_dims: [1, 1, 1], _pad: 0,
             tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,

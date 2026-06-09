@@ -39,12 +39,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use bovista::visual::CameraInfo;
-use bovista::visuals::gpu_structs::{TileData, TileKey};
 use bovista::visuals::virtual_texture::PendingChunks;
 use bovista::visuals::{LodLevelConfig, VolumeVisual};
 use bovista::{Camera, ProjectionMode, Renderer, Scene};
 
-const VOLUME_DIM: u32 = 128;
 
 fn main() {
     env_logger::init();
@@ -54,7 +52,7 @@ fn main() {
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles", "--max-inflight", "--prefetch",
         "--contrast-min", "--contrast-max", "--density-mult", "--lod-bias",
-        "--timepoint", "--bench",
+        "--timepoint",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
 
@@ -101,16 +99,6 @@ fn main() {
         rayon_threads, max_inflight, prefetch_lookahead, cpus,
     );
 
-    // Standalone benchmark mode: no rendering, no streaming. Just open the
-    // zarr and time per-tile reads at each LOD across a few timepoints.
-    if args.iter().any(|a| a == "--bench") {
-        let path = zarr_arg.expect("--bench requires --zarr <path>");
-        if let Err(e) = bench_zarr(&path) {
-            eprintln!("[bench] error: {}", e);
-            std::process::exit(1);
-        }
-        return;
-    }
     let contrast_min: f32 = flag_str_opt(&args, "--contrast-min").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let contrast_max: f32 = flag_str_opt(&args, "--contrast-max").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let density_mult: f32 = flag_str_opt(&args, "--density-mult").and_then(|v| v.parse().ok()).unwrap_or(1.0);
@@ -118,11 +106,11 @@ fn main() {
 
     println!("[orbit] {}x{} @ {} fps, serving on port {}, backend={}",
              width, height, fps, port, backend);
-    if let Some(z) = &zarr_arg {
-        println!("[orbit] OME-Zarr source: {}", z);
-    } else {
-        println!("[orbit] no --zarr given; rendering synthetic 128³ cube");
-    }
+    let zarr_arg = zarr_arg.unwrap_or_else(|| {
+        eprintln!("[orbit] --zarr <path|url> is required");
+        std::process::exit(1);
+    });
+    println!("[orbit] OME-Zarr source: {}", zarr_arg);
 
     // ── wgpu init ───────────────────────────────────────────────────────────
     let backends = match backend.as_str() {
@@ -186,17 +174,13 @@ fn main() {
     ));
     let flush_diag = Arc::new(FlushDiag::new());
 
-    // ── Scene setup: synthetic cube or OME-Zarr pyramid ─────────────────────
-    let setup = match &zarr_arg {
-        Some(path) => match ome_zarr::open(path, view_state.clone(), flush_diag.clone(),
-                                             max_inflight) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[orbit] failed to open OME-Zarr at {}: {}", path, e);
-                std::process::exit(1);
-            }
-        },
-        None => synthetic_setup(),
+    let setup = match ome_zarr::open(&zarr_arg, view_state.clone(), flush_diag.clone(),
+                                       max_inflight) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[orbit] failed to open OME-Zarr at {}: {}", zarr_arg, e);
+            std::process::exit(1);
+        }
     };
     let cache_capacity = cache_override.unwrap_or(setup.cache_capacity);
     let n_timepoints = setup.n_timepoints;
@@ -637,255 +621,6 @@ struct SceneSetup {
     wanted_slot: Arc<Mutex<Option<bovista::visuals::virtual_texture::Wanted>>>,
 }
 
-fn synthetic_setup() -> SceneSetup {
-    let tile_bytes = Arc::new(generate_cube_volume_r16f(VOLUME_DIM));
-    let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
-    // Background thread: poll the wanted map, push synthetic tiles
-    // into pending for any key that shows up.
-    let wanted_slot: Arc<Mutex<Option<bovista::visuals::virtual_texture::Wanted>>> =
-        Arc::new(Mutex::new(None));
-    {
-        let pending_slot = pending_slot.clone();
-        let wanted_slot = wanted_slot.clone();
-        let tile_bytes = tile_bytes.clone();
-        std::thread::spawn(move || loop {
-            let wanted = wanted_slot.lock().unwrap().clone();
-            if let (Some(w), Some(p)) = (wanted, pending_slot.lock().unwrap().clone()) {
-                let keys: Vec<TileKey> = w.lock().unwrap().keys().copied().collect();
-                for k in keys {
-                    p.lock().unwrap().insert(k, TileData {
-                        data: (*tile_bytes).clone(),
-                        width: VOLUME_DIM, height: VOLUME_DIM, depth: VOLUME_DIM,
-                        format: wgpu::TextureFormat::R16Float,
-                    });
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        });
-    }
-    let half = VOLUME_DIM as f32 / 2.0;
-    let lod = LodLevelConfig {
-        volume_size: (VOLUME_DIM, VOLUME_DIM, VOLUME_DIM),
-        tile_size:   (VOLUME_DIM, VOLUME_DIM, VOLUME_DIM),
-        voxel_size:  (1.0, 1.0, 1.0),
-        scale_factor: 1.0,
-        translation: (-half, -half, -half),
-    };
-    SceneSetup {
-        lods: vec![lod],
-        pending_slot,
-        world_extents: (VOLUME_DIM as f32, VOLUME_DIM as f32, VOLUME_DIM as f32),
-        cache_capacity: 1,
-        n_timepoints: 1,
-        queue_count_at: Arc::new(|_| 0),
-        wanted_slot,
-    }
-}
-
-fn generate_cube_volume_r16f(dim: u32) -> Vec<u8> {
-    let n = dim as usize;
-    let d = dim as f32;
-    let lo = (d * 0.20) as usize;
-    let hi = (d * 0.80) as usize;
-    let notch_lo = (d * 0.55) as usize;
-    let one = half::f16::from_f32(1.0).to_bits();
-    let zero = half::f16::from_f32(0.0).to_bits();
-    let mut out = Vec::with_capacity(n * n * n * 2);
-    for z in 0..n {
-        for y in 0..n {
-            for x in 0..n {
-                let in_cube  = x >= lo && x < hi && y >= lo && y < hi && z >= lo && z < hi;
-                let in_notch = x >= notch_lo && x < hi && y >= notch_lo && y < hi && z >= notch_lo && z < hi;
-                let bits = if in_cube && !in_notch { one } else { zero };
-                out.push((bits & 0xff) as u8);
-                out.push((bits >> 8) as u8);
-            }
-        }
-    }
-    out
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// OME-Zarr decode benchmark. Reads 128³ sub-regions at each LOD (sequential
-// and 8-way parallel) and prints per-tile / per-frame timings so we can
-// estimate the maximum sustainable playback fps for the dataset.
-
-fn bench_zarr(path_or_url: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use std::sync::Arc as Arc2;
-    use std::time::Instant;
-    use zarrs::array::{Array, ArraySubset};
-    use zarrs::group::Group;
-    use zarrs::storage::ReadableStorageTraits;
-
-    const TILE: u64 = 128;
-    const N_TILES: u64 = 16;        // tiles per pass (sequential and parallel)
-    const PARALLEL: usize = 8;       // worker count for parallel pass
-
-    let store: Arc2<dyn ReadableStorageTraits> =
-        if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
-            Arc2::new(zarrs_http::HTTPStore::new(path_or_url)?)
-        } else {
-            Arc2::new(zarrs::filesystem::FilesystemStore::new(path_or_url)?)
-        };
-    let group = Group::open(store.clone(), "/")?;
-    let attrs = group.attributes();
-    let multiscales = attrs
-        .get("ome").and_then(|o| o.get("multiscales"))
-        .or_else(|| attrs.get("multiscales"))
-        .and_then(|m| m.as_array())
-        .and_then(|a| a.first())
-        .ok_or("no multiscales metadata")?;
-    let axes: Vec<String> = multiscales.get("axes").and_then(|a| a.as_array())
-        .map(|a| a.iter().map(|x| x.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string()).collect())
-        .unwrap_or_default();
-    let datasets = multiscales.get("datasets").and_then(|d| d.as_array())
-        .ok_or("multiscales.datasets missing")?;
-
-    println!("[bench] axes = {:?}", axes);
-    for (lod_idx, ds) in datasets.iter().enumerate() {
-        let path = ds.get("path").and_then(|p| p.as_str()).unwrap_or("0");
-        let abs = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };
-        let array = Array::open(store.clone(), &abs)?;
-        let arr = Arc2::new(array);
-        let shape = arr.shape().to_vec();
-        let ndim = shape.len();
-        let (z_idx, y_idx, x_idx) = match (
-            axes.iter().position(|a| a == "z"),
-            axes.iter().position(|a| a == "y"),
-            axes.iter().position(|a| a == "x"),
-        ) {
-            (Some(z), Some(y), Some(x)) => (z, y, x),
-            _ => (ndim - 3, ndim - 2, ndim - 1),
-        };
-        let t_idx = axes.iter().position(|a| a == "t");
-
-        let extents = (shape[z_idx], shape[y_idx], shape[x_idx]);
-        let dtype = arr.data_type().name(zarrs::plugin::ZarrVersion::V3)
-            .map(|n| n.to_string()).unwrap_or_default();
-        let chunk_shape: Vec<u64> = arr.chunk_shape(&vec![0u64; ndim])?.iter().map(|d| d.get()).collect();
-        println!("\n[bench] LOD {}: dtype={} shape(zyx)={:?} chunk_shape={:?}",
-                 lod_idx, dtype, extents, chunk_shape);
-
-        // Pick N_TILES non-overlapping 128³ regions tiled along z at the
-        // volume's centre in (y, x). If the volume is smaller than 128 along
-        // an axis, clamp.
-        let tz = TILE.min(extents.0);
-        let ty = TILE.min(extents.1);
-        let tx = TILE.min(extents.2);
-        let cy = extents.1.saturating_sub(ty) / 2;
-        let cx = extents.2.saturating_sub(tx) / 2;
-        let n = N_TILES.min(extents.0 / tz.max(1));
-        if n == 0 {
-            println!("  (volume too small for 128³ benchmark; skipping)");
-            continue;
-        }
-
-        let make_subset = |tile_z: u64, t: u64| -> ArraySubset {
-            let mut ranges: Vec<std::ops::Range<u64>> = (0..ndim).map(|_| 0..1).collect();
-            ranges[z_idx] = (tile_z * tz)..((tile_z + 1) * tz);
-            ranges[y_idx] = cy..(cy + ty);
-            ranges[x_idx] = cx..(cx + tx);
-            if let Some(ti) = t_idx { ranges[ti] = t..(t + 1); }
-            ArraySubset::new_with_ranges(&ranges)
-        };
-
-        // Sequential pass: read N_TILES tiles back-to-back at t=0.
-        let bytes_per_tile = (tz * ty * tx) as usize * dtype_bytes(&dtype);
-        let t0 = Instant::now();
-        for i in 0..n {
-            let subset = make_subset(i, 0);
-            read_subset_any(&arr, &dtype, &subset)?;
-        }
-        let seq = t0.elapsed();
-        println!(
-            "  sequential {} × 128³: {:.0} ms total, {:.1} ms/tile, {:.1} MB/s decoded",
-            n,
-            seq.as_secs_f64() * 1e3,
-            seq.as_secs_f64() * 1e3 / n as f64,
-            (bytes_per_tile * n as usize) as f64 / seq.as_secs_f64() / 1e6,
-        );
-
-        // Parallel pass: same N_TILES across PARALLEL worker threads.
-        let t0 = Instant::now();
-        std::thread::scope(|scope| {
-            for w in 0..PARALLEL {
-                let arr = arr.clone();
-                let dtype = dtype.clone();
-                scope.spawn(move || {
-                    let mut i = w as u64;
-                    while i < n {
-                        let subset = make_subset(i, 0);
-                        let _ = read_subset_any(&arr, &dtype, &subset);
-                        i += PARALLEL as u64;
-                    }
-                });
-            }
-        });
-        let par = t0.elapsed();
-        println!(
-            "  parallel({}×) {} × 128³: {:.0} ms total, {:.1} ms/tile, {:.1} MB/s decoded → speedup {:.2}×",
-            PARALLEL, n,
-            par.as_secs_f64() * 1e3,
-            par.as_secs_f64() * 1e3 / n as f64,
-            (bytes_per_tile * n as usize) as f64 / par.as_secs_f64() / 1e6,
-            seq.as_secs_f64() / par.as_secs_f64(),
-        );
-
-        // Playback simulation: same spatial region at the first N timepoints.
-        if let Some(_) = t_idx {
-            let n_t = N_TILES.min(shape[t_idx.unwrap()]);
-            if n_t > 1 {
-                let t0 = Instant::now();
-                std::thread::scope(|scope| {
-                    for w in 0..PARALLEL {
-                        let arr = arr.clone();
-                        let dtype = dtype.clone();
-                        scope.spawn(move || {
-                            let mut t = w as u64;
-                            while t < n_t {
-                                let subset = make_subset(0, t);
-                                let _ = read_subset_any(&arr, &dtype, &subset);
-                                t += PARALLEL as u64;
-                            }
-                        });
-                    }
-                });
-                let dt = t0.elapsed();
-                println!(
-                    "  playback sim (1 tile × {} timepoints, {}× parallel): {:.0} ms, {:.2} fps",
-                    n_t, PARALLEL, dt.as_secs_f64() * 1e3, n_t as f64 / dt.as_secs_f64(),
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn dtype_bytes(name: &str) -> usize {
-    match name {
-        "uint8" | "int8" => 1,
-        "uint16" | "int16" | "float16" => 2,
-        "float32" | "int32" | "uint32" => 4,
-        _ => 1,
-    }
-}
-
-fn read_subset_any(
-    arr: &zarrs::array::Array<dyn zarrs::storage::ReadableStorageTraits>,
-    dtype: &str,
-    subset: &zarrs::array::ArraySubset,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match dtype {
-        "uint8"   => { let _: Vec<u8>  = arr.retrieve_array_subset(subset)?; }
-        "uint16"  => { let _: Vec<u16> = arr.retrieve_array_subset(subset)?; }
-        "int8"    => { let _: Vec<i8>  = arr.retrieve_array_subset(subset)?; }
-        "int16"   => { let _: Vec<i16> = arr.retrieve_array_subset(subset)?; }
-        "float32" => { let _: Vec<f32> = arr.retrieve_array_subset(subset)?; }
-        "float16" => { let _: Vec<half::f16> = arr.retrieve_array_subset(subset)?; }
-        _ => return Err(format!("unsupported dtype {}", dtype).into()),
-    }
-    Ok(())
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ffmpeg

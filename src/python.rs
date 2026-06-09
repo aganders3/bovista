@@ -838,12 +838,7 @@ impl PyImageVisual {
     /// priority (lower = more urgent; 0 = "user is looking at this t now",
     /// positive = prefetch offset). Poll periodically to drive the loader.
     fn wanted_keys(&self) -> Vec<(usize, u32, u32, u32, u32, i32)> {
-        let w = self.wanted.lock().unwrap();
-        let mut v: Vec<_> = w.iter()
-            .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
-            .collect();
-        v.sort_by_key(|e| e.5);
-        v
+        crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
     }
 
     /// Set the slice plane position along Z axis
@@ -1185,12 +1180,7 @@ impl PyVolumeVisual {
     /// Snapshot of the tile keys bovista currently wants. See
     /// `PyImageVisual::wanted_keys`.
     fn wanted_keys(&self) -> Vec<(usize, u32, u32, u32, u32, i32)> {
-        let w = self.wanted.lock().unwrap();
-        let mut v: Vec<_> = w.iter()
-            .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
-            .collect();
-        v.sort_by_key(|e| e.5);
-        v
+        crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
     }
 
     /// Set contrast limits

@@ -167,14 +167,7 @@ pub struct TileKey {
 }
 
 impl TileKey {
-    /// Construct a non-temporal tile key (t=0). Preserved as the default
-    /// constructor so existing non-temporal call sites compile unchanged.
-    pub fn new(lod_level: usize, z: u32, y: u32, x: u32) -> Self {
-        Self { lod_level, t: 0, z, y, x }
-    }
-
-    /// Construct a temporal tile key.
-    pub fn new_t(lod_level: usize, t: u32, z: u32, y: u32, x: u32) -> Self {
+    pub fn new(lod_level: usize, t: u32, z: u32, y: u32, x: u32) -> Self {
         Self { lod_level, t, z, y, x }
     }
 

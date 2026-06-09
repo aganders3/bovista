@@ -425,15 +425,9 @@ impl JsImageVisual {
     /// sorted by priority (lower = more urgent). Poll periodically.
     #[wasm_bindgen(js_name = wantedKeys)]
     pub fn wanted_keys(&self) -> js_sys::Uint32Array {
-        let w = self.wanted.lock().unwrap();
-        let mut v: Vec<(usize, u32, u32, u32, u32, i32)> = w.iter()
-            .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
-            .collect();
-        v.sort_by_key(|e| e.5);
-        let flat: Vec<u32> = v.into_iter()
-            .flat_map(|(lod, t, z, y, x, p)| {
-                [lod as u32, t, z, y, x, p as u32]
-            })
+        let flat: Vec<u32> = crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
+            .into_iter()
+            .flat_map(|(lod, t, z, y, x, p)| [lod as u32, t, z, y, x, p as u32])
             .collect();
         js_sys::Uint32Array::from(flat.as_slice())
     }
