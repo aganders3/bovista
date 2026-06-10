@@ -522,9 +522,7 @@ fn fs_average(in: VertexOutput) -> @location(0) vec4<f32> {
 // ── Mode: isosurface ─────────────────────────────────────────────────────────
 // Coarse Nearest ray-march to first sample above threshold, then a short
 // bisection to refine where in the last step the surface lies, then estimate
-// normals from central differences with a stencil sized to the resident LOD's
-// voxel. All samples are Nearest — the smoothness sacrifice is invisible at
-// orbit distance and avoids the 8× cost of manual trilinear per probe.
+// the normal via a 3³ Sobel-Feldman kernel.
 
 fn sample_adjusted(vol_uv: vec3f) -> f32 {
     let r = sample_vvt(vol_uv);
@@ -536,6 +534,39 @@ fn sample_adjusted(vol_uv: vec3f) -> f32 {
 fn lod_voxel_size_uv(lod_i: i32) -> vec3f {
     let ratio = vt.lods[lod_i].tile_scale / vt.lods[0].tile_scale;
     return ratio / vec3f(vol.lod0_dims);
+}
+
+/// 3D Sobel-Feldman gradient. 26 weighted neighbours (center skipped because
+/// all three of its directional weights are zero). Per-axis Sobel weights:
+///   on-axis      (j == 0 && k == 0): 4
+///   face-adjacent (j == 0 || k == 0): 2
+///   corner       (otherwise):         1
+/// multiplied by -i / -j / -k for the directional sign. Much smoother normal
+/// than a 6-tap central-difference stencil — at the cost of ~4× page-table
+/// walks per hit pixel, but still ~3× cheaper than the previous manual-
+/// trilinear approach. Ported from napari's `calculateGradient` GLSL.
+fn sobel_gradient(loc: vec3f, step: vec3f) -> vec3f {
+    var G = vec3f(0.0);
+    for (var i = -1; i <= 1; i++) {
+        for (var j = -1; j <= 1; j++) {
+            for (var k = -1; k <= 1; k++) {
+                if (i == 0 && j == 0 && k == 0) { continue; }
+                let sample_loc = loc + vec3f(f32(i), f32(j), f32(k)) * step;
+                let val = sample_adjusted(sample_loc);
+                let on_axis_x = f32(j == 0 && k == 0);
+                let face_x    = f32(j == 0 || k == 0);
+                let wx = f32(-i) * (1.0 + face_x + 2.0 * on_axis_x);
+                let on_axis_y = f32(i == 0 && k == 0);
+                let face_y    = f32(i == 0 || k == 0);
+                let wy = f32(-j) * (1.0 + face_y + 2.0 * on_axis_y);
+                let on_axis_z = f32(i == 0 && j == 0);
+                let face_z    = f32(i == 0 || j == 0);
+                let wz = f32(-k) * (1.0 + face_z + 2.0 * on_axis_z);
+                G += val * vec3f(wx, wy, wz);
+            }
+        }
+    }
+    return G;
 }
 
 @fragment
@@ -589,21 +620,15 @@ fn fs_iso(in: VertexOutput) -> @location(0) vec4<f32> {
     let surface_p  = s.ray_origin + s.ray_dir * surface_t;
     let surface_uv = clamp((surface_p - vol.vol_min) / s.vol_extent, vec3f(0.0), vec3f(1.0));
 
-    // Gradient stencil scaled to the resident LOD's voxel size, sampled with
-    // Nearest (one page-table walk per axis instead of eight). The stencil
-    // straddles one full voxel so +h and -h always land in different voxels
-    // — gradient is well-defined; only the smoothness of the lighting
-    // suffers, which is fine for first-hit Phong on a textured volume.
+    // Sobel-3³ gradient sampled at one voxel of the resident LOD per step.
+    // The 3³ stencil smooths over a 3-voxel neighbourhood — much cleaner
+    // normal than a 6-tap central difference at Nearest sampling, with a
+    // 4× walk-count increase that we can afford after dropping manual
+    // trilinear.
     let surface_center = sample_vvt(surface_uv);
     let lod_i = max(i32(surface_center.y), 0);
-    let h = 0.5 * lod_voxel_size_uv(lod_i);
-    let gx = sample_adjusted(surface_uv + vec3f(h.x, 0.0, 0.0))
-           - sample_adjusted(surface_uv - vec3f(h.x, 0.0, 0.0));
-    let gy = sample_adjusted(surface_uv + vec3f(0.0, h.y, 0.0))
-           - sample_adjusted(surface_uv - vec3f(0.0, h.y, 0.0));
-    let gz = sample_adjusted(surface_uv + vec3f(0.0, 0.0, h.z))
-           - sample_adjusted(surface_uv - vec3f(0.0, 0.0, h.z));
-    let grad = vec3f(gx, gy, gz);
+    let voxel = lod_voxel_size_uv(lod_i);
+    let grad = sobel_gradient(surface_uv, voxel);
     let glen = length(grad);
     let normal = select(vec3f(0.0, 0.0, 1.0), -grad / glen, glen > 1e-6);
 
