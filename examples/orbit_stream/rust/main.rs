@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use bovista::visual::CameraInfo;
 use bovista::visuals::virtual_texture::PendingChunks;
-use bovista::visuals::{LodLevelConfig, VolumeVisual};
+use bovista::visuals::{DirectVolume, LodLevelConfig};
 use bovista::{Camera, ProjectionMode, Renderer, Scene};
 
 
@@ -189,7 +189,7 @@ fn main() {
     let n_timepoints = setup.n_timepoints;
     let queue_count_at = setup.queue_count_at.clone();
 
-    let mut volume = VolumeVisual::new(
+    let mut volume = DirectVolume::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
         renderer.camera_bind_group_layout(),
         setup.lods.clone(), cache_capacity as usize, atlas_count,

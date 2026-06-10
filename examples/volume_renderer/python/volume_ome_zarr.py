@@ -3,7 +3,19 @@
 OME-Zarr Volume Renderer
 
 Demonstrates direct volume rendering (DVR) of multi-resolution OME-Zarr
-datasets with bovista.Volume.
+datasets with bovista.DirectVolume.
+
+bovista also exposes the other render modes as separate classes — swap
+`bv.DirectVolume(...)` below for any of:
+
+    bv.DirectVolume      — front-to-back alpha compositing (default).
+    bv.AdditiveVolume    — additive accumulation, no occlusion.
+    bv.MipVolume         — Maximum Intensity Projection (set_attenuation>0
+                           for napari-style attenuated MIP).
+    bv.MinipVolume       — Minimum Intensity Projection.
+    bv.AverageVolume     — mean intensity along the ray.
+    bv.IsosurfaceVolume  — first-hit isosurface with Phong shading
+                           (set_iso_threshold).
 """
 
 import sys
@@ -376,7 +388,7 @@ class MainWindow(QMainWindow):
                 threading.Thread(target=poll, daemon=True).start()
 
             def setup_scene(viewer):
-                volume = bv.Volume(viewer, lod_levels, 2000)
+                volume = bv.DirectVolume(viewer, lod_levels, 2000)
                 start_loader_thread(volume)
 
                 lod0 = lod_levels[0]

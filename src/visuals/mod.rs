@@ -13,4 +13,6 @@ pub use image::{ImageVisual, SliceOrientation, SlicePlane};
 pub use lines::LinesVisual;
 pub use points::PointsVisual;
 pub use virtual_texture::LodLevelConfig;
-pub use volume::VolumeVisual;
+pub use volume::{
+    AdditiveVolume, AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
+};

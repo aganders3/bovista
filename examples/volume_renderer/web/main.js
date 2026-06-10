@@ -213,8 +213,12 @@ function createVisual() {
     ));
 
     const maxChunks = computeMaxChunks();
-    volumeVisual = new wasmModule.JsVolumeVisual(viewer, jsLevels, maxChunks);
-    viewer.addVolume(volumeVisual);
+    // bovista exposes one class per render mode (JsDirectVolume / JsAdditiveVolume
+    // / JsMipVolume / JsMinipVolume / JsAverageVolume / JsIsosurfaceVolume) with
+    // a matching addX_Volume() on the viewer. The Direct path is the default
+    // DVR mode; swap for any of the others to compare algorithms.
+    volumeVisual = new wasmModule.JsDirectVolume(viewer, jsLevels, maxChunks);
+    viewer.addDirectVolume(volumeVisual);
     startLoaderPoll();
 
     // Apply initial controls
