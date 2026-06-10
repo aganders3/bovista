@@ -177,6 +177,22 @@ class MainWindow(QMainWindow):
         self.step_label.setFixedWidth(28)
         ctrl1.addWidget(self.step_label)
 
+        ctrl1.addWidget(QLabel("  Mode:"))
+        self.mode_combo = QComboBox()
+        # (label, key, ctor) — key matches the bv.XVolume class names.
+        self._modes = [
+            ("Direct (DVR)", "direct",   bv.DirectVolume),
+            ("Additive",     "additive", bv.AdditiveVolume),
+            ("MIP",          "mip",      bv.MipVolume),
+            ("minIP",        "minip",    bv.MinipVolume),
+            ("Average",      "average",  bv.AverageVolume),
+            ("Isosurface",   "iso",      bv.IsosurfaceVolume),
+        ]
+        for label, _, _ in self._modes:
+            self.mode_combo.addItem(label)
+        self.mode_combo.currentIndexChanged.connect(self._switch_mode)
+        ctrl1.addWidget(self.mode_combo)
+
         ctrl1.addStretch()
 
         self.debug_combo = QComboBox()
@@ -185,6 +201,36 @@ class MainWindow(QMainWindow):
         ctrl1.addWidget(self.debug_combo)
 
         layout.addLayout(ctrl1)
+
+        # Row 1b: mode-specific sliders (shown only when the active mode uses them).
+        ctrl1b = QHBoxLayout()
+        self.atten_label = QLabel("Attenuation:")
+        ctrl1b.addWidget(self.atten_label)
+        self.atten_slider = QSlider(Qt.Orientation.Horizontal)
+        self.atten_slider.setRange(0, 100)    # 0.0 – 10.0
+        self.atten_slider.setValue(0)
+        self.atten_slider.setFixedWidth(100)
+        self.atten_slider.valueChanged.connect(self._update_attenuation)
+        ctrl1b.addWidget(self.atten_slider)
+        self.atten_value = QLabel("0.0")
+        self.atten_value.setFixedWidth(32)
+        ctrl1b.addWidget(self.atten_value)
+
+        self.iso_label = QLabel("  Iso Threshold:")
+        ctrl1b.addWidget(self.iso_label)
+        self.iso_slider = QSlider(Qt.Orientation.Horizontal)
+        self.iso_slider.setRange(1, 999)      # 0.001 – 0.999
+        self.iso_slider.setValue(500)
+        self.iso_slider.setFixedWidth(100)
+        self.iso_slider.valueChanged.connect(self._update_iso_threshold)
+        ctrl1b.addWidget(self.iso_slider)
+        self.iso_value = QLabel("0.500")
+        self.iso_value.setFixedWidth(40)
+        ctrl1b.addWidget(self.iso_value)
+
+        ctrl1b.addStretch()
+        layout.addLayout(ctrl1b)
+        self._apply_mode_caps()
 
         # Row 2: contrast floor / ceiling / auto
         ctrl2 = QHBoxLayout()
@@ -388,7 +434,9 @@ class MainWindow(QMainWindow):
                 threading.Thread(target=poll, daemon=True).start()
 
             def setup_scene(viewer):
-                volume = bv.DirectVolume(viewer, lod_levels, 2000)
+                # Build the visual for the active mode (set via the Mode dropdown).
+                ctor = self._modes[self.mode_combo.currentIndex()][2]
+                volume = ctor(viewer, lod_levels, 2000)
                 start_loader_thread(volume)
 
                 lod0 = lod_levels[0]
@@ -405,7 +453,10 @@ class MainWindow(QMainWindow):
                 self._base_density = base_density
                 self._density_exp = 0
                 self.density_slider.setValue(0)
-                volume.set_density_scale(base_density)
+                # Density only applies to Direct / Additive; MIP / minIP / Avg /
+                # Iso don't expose set_density_scale on their wrapper class.
+                if hasattr(volume, "set_density_scale"):
+                    volume.set_density_scale(base_density)
 
                 viewer.add(volume)
                 self.viewer_widget._volume = volume
@@ -422,8 +473,10 @@ class MainWindow(QMainWindow):
                 viewer.add(bv.Lines.axis_helper(viewer, max(lod0.volume_size) * 0.3))
 
                 for w in [self.lod_slider, self.density_slider, self.step_slider, self.debug_combo,
-                          self.floor_slider, self.ceiling_slider, self.auto_button]:
+                          self.floor_slider, self.ceiling_slider, self.auto_button,
+                          self.mode_combo, self.atten_slider, self.iso_slider]:
                     w.setEnabled(True)
+                self._apply_mode_caps()
                 self.lod_slider.setValue(0)
                 self.step_slider.setValue(10)
                 self.debug_combo.setCurrentIndex(0)
@@ -448,7 +501,7 @@ class MainWindow(QMainWindow):
             self.volume.set_lod_bias(bias)
 
     def _update_density(self):
-        if not self.volume:
+        if not self.volume or not hasattr(self.volume, "set_density_scale"):
             return
         self._density_exp = self.density_slider.value()
         multiplier = math.pow(10, self._density_exp / 10)
@@ -489,12 +542,64 @@ class MainWindow(QMainWindow):
         self._update_contrast()
 
     def _update_debug(self):
-        if not self.volume:
+        if not self.volume or not hasattr(self.volume, "set_debug_mode"):
             return
         mode = self.debug_combo.currentIndex()
         self.volume.set_debug_mode(mode == 1)
         self.volume.set_atlas_debug_mode(mode == 2)
         self.volume.set_step_debug_mode(mode == 3)
+
+    def _apply_mode_caps(self):
+        """Show/hide mode-specific sliders + enable the debug combo only when applicable."""
+        idx = self.mode_combo.currentIndex()
+        key = self._modes[idx][1]
+        has_density = key in ("direct", "additive")
+        has_atten   = key == "mip"
+        has_iso     = key == "iso"
+        has_debug   = key == "direct"
+
+        self.density_slider.setVisible(has_density)
+        self.density_label.setVisible(has_density)
+
+        self.atten_label.setVisible(has_atten)
+        self.atten_slider.setVisible(has_atten)
+        self.atten_value.setVisible(has_atten)
+
+        self.iso_label.setVisible(has_iso)
+        self.iso_slider.setVisible(has_iso)
+        self.iso_value.setVisible(has_iso)
+
+        self.debug_combo.setEnabled(has_debug)
+        if not has_debug:
+            self.debug_combo.blockSignals(True)
+            self.debug_combo.setCurrentIndex(0)
+            self.debug_combo.blockSignals(False)
+
+    def _switch_mode(self):
+        """Tear down the current volume and rebuild in the selected mode.
+        Preserves the camera, contrast, step size, and LOD bias; density,
+        attenuation, iso-threshold are re-applied by setup_scene + the
+        mode-specific sliders if applicable."""
+        self._apply_mode_caps()
+        if not self.volume:
+            return
+        # Trigger a reload via the existing load_zarr path so setup_scene runs
+        # with the new mode. The dataset's already cached at the network layer.
+        self.load_zarr()
+
+    def _update_attenuation(self):
+        if not self.volume or not hasattr(self.volume, "set_attenuation"):
+            return
+        v = self.atten_slider.value() / 10.0
+        self.atten_value.setText(f"{v:.1f}")
+        self.volume.set_attenuation(v)
+
+    def _update_iso_threshold(self):
+        if not self.volume or not hasattr(self.volume, "set_iso_threshold"):
+            return
+        v = self.iso_slider.value() / 1000.0
+        self.iso_value.setText(f"{v:.3f}")
+        self.volume.set_iso_threshold(v)
 
     def _update_stats(self):
         if self.volume:

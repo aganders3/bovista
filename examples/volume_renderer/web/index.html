@@ -45,6 +45,20 @@
             <div class="divider"></div>
 
             <div class="header-section">
+                <label>Mode:</label>
+                <select id="render-mode" disabled>
+                    <option value="direct" selected>Direct (DVR)</option>
+                    <option value="additive">Additive</option>
+                    <option value="mip">MIP</option>
+                    <option value="minip">minIP</option>
+                    <option value="average">Average</option>
+                    <option value="iso">Isosurface</option>
+                </select>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="header-section">
                 <label>VRAM Budget:</label>
                 <select id="vram-budget">
                     <option value="1">1 GB</option>
@@ -97,13 +111,30 @@
                     <input type="range" id="step-size" min="10" max="800" value="100" disabled>
                 </div>
 
-                <div class="control-group">
+                <div class="control-group" id="density-scale-group">
                     <label>
                         Density Scale
                         <span class="value-display" id="density-scale-value">1.00×</span>
                     </label>
                     <!-- -20 to +20 → 10^(-2) to 10^(+2) = 0.01× to 100× multiplier on auto base -->
                     <input type="range" id="density-scale" min="-20" max="20" value="0" disabled>
+                </div>
+
+                <div class="control-group" id="attenuation-group" style="display:none;">
+                    <label>
+                        MIP Attenuation
+                        <span class="value-display" id="attenuation-value">0.00</span>
+                    </label>
+                    <!-- 0 → plain MIP. Higher = more near-camera emphasis. -->
+                    <input type="range" id="attenuation" min="0" max="100" value="0">
+                </div>
+
+                <div class="control-group" id="iso-threshold-group" style="display:none;">
+                    <label>
+                        Iso Threshold
+                        <span class="value-display" id="iso-threshold-value">0.50</span>
+                    </label>
+                    <input type="range" id="iso-threshold" min="1" max="999" value="500">
                 </div>
 
                 <div class="control-group">
