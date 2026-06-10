@@ -6,7 +6,9 @@
 //   - Height = ceil(max_linear / width).
 //   - Each texel encodes a single tile:
 //       bit 31     : resident
-//       bits 16-30 : timepoint `t` (15 bits, 0..=32767)
+//       bits 29-30 : atlas_id (2 bits, 0..=3) — which of up to MAX_ATLAS_COUNT
+//                    physical atlas textures holds this tile's voxel data
+//       bits 16-28 : timepoint `t` (13 bits, 0..=8191)
 //       bits  0-15 : atlas slot index (16 bits, 0..=65535)
 //     The shader compares the texel's t against a `desired_t` uniform; a
 //     mismatch is treated identically to non-resident, so the LOD fallback
@@ -85,10 +87,14 @@ impl PageTable {
     /// treated as non-resident, so stale-t entries left behind after a
     /// scrub gracefully fall through to coarser LODs without needing
     /// explicit clearing on every desired_t change.
-    pub fn update(&self, queue: &wgpu::Queue, lod: usize, tz: u32, ty: u32, tx: u32, t: u32, slot: u32) {
+    pub fn update(&self, queue: &wgpu::Queue, lod: usize, tz: u32, ty: u32, tx: u32,
+                  atlas_id: u32, t: u32, slot: u32) {
         let (gx, gy, _gz) = self.lod_grids[lod];
         let linear = tz * gy * gx + ty * gx + tx;
-        let value: u32 = (1u32 << 31) | ((t & 0x7FFF) << 16) | (slot & 0xFFFF);
+        let value: u32 = (1u32 << 31)
+                       | ((atlas_id & 0x3) << 29)
+                       | ((t & 0x1FFF) << 16)
+                       | (slot & 0xFFFF);
         self.write_texel(queue, lod as u32, linear, value);
     }
 

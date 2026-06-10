@@ -81,7 +81,10 @@ impl VolumeVisual {
     ///
     /// # Arguments
     /// * `lod_levels` - Configuration for each LOD level (finest to coarsest)
-    /// * `max_tiles`  - Atlas capacity (number of simultaneously resident tiles)
+    /// * `max_tiles`  - Total atlas capacity across all atlases
+    /// * `atlas_count` - Number of physical atlas textures (1..=MAX_ATLAS_COUNT).
+    ///                   Increases the visual's VRAM budget linearly without
+    ///                   needing a single texture above the per-resource cap.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -89,8 +92,9 @@ impl VolumeVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
+        atlas_count: usize,
     ) -> Self {
-        let vt = VirtualTextureData::new(device, lod_levels, max_tiles);
+        let vt = VirtualTextureData::new(device, lod_levels, max_tiles, atlas_count);
 
         // Atlas sampler
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -155,28 +159,36 @@ impl VolumeVisual {
         });
         let colormap_view = colormap_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Group 1: atlas, atlas_sampler, page_table, vt_uniforms, vol_uniforms.
+        // Group 1: atlas[0..=3], atlas_sampler, page_table, vt_uniforms, vol_uniforms.
+        // All 4 atlas textures are always bound; unused ones are 1×1×1 dummies
+        // (created inside VirtualTextureData). The shader's switch on atlas_id
+        // never indexes them at runtime.
+        use crate::visuals::virtual_texture::MAX_ATLAS_COUNT;
+        let atlas_3d_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            },
+            count: None,
+        };
         let vt_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Volume VT Bind Group Layout"),
             entries: &[
+                atlas_3d_entry(0),
+                atlas_3d_entry(1),
+                atlas_3d_entry(2),
+                atlas_3d_entry(3),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D3,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
@@ -186,7 +198,7 @@ impl VolumeVisual {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 6,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -196,7 +208,7 @@ impl VolumeVisual {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 4,
+                    binding: 7,
                     // vs reads vol_min/vol_max for the box-vertex world transform.
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
@@ -208,15 +220,19 @@ impl VolumeVisual {
                 },
             ],
         });
+        assert_eq!(vt.atlas_views.len(), MAX_ATLAS_COUNT);
         let vt_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Volume VT Bind Group"),
             layout: &vt_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&vt.atlas_texture_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: vt_uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: vol_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[0]) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[1]) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[2]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[3]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view) },
+                wgpu::BindGroupEntry { binding: 6, resource: vt_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: vol_uniform_buffer.as_entire_binding() },
             ],
         });
 

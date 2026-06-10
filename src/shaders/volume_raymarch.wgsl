@@ -75,12 +75,30 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 // ── Group 1: virtual texture resources + volume state ────────────────────────
+//
+// 4 atlas textures are always bound (MAX_ATLAS_COUNT). Unused entries are
+// 1×1×1 dummies on the CPU side; the shader's switch on atlas_id never
+// indexes them at runtime. This lets a single visual hold up to
+// MAX_ATLAS_COUNT × per-resource-cap of voxel data — Chrome's ~2 GiB cap
+// otherwise limits one atlas regardless of how much VRAM the GPU has.
 
-@group(1) @binding(0) var atlas: texture_3d<f32>;
-@group(1) @binding(1) var atlas_sampler: sampler;
-@group(1) @binding(2) var page_table: texture_2d_array<u32>;
-@group(1) @binding(3) var<uniform> vt: VTUniforms;
-@group(1) @binding(4) var<uniform> vol: VolumeUniforms;
+@group(1) @binding(0) var atlas0: texture_3d<f32>;
+@group(1) @binding(1) var atlas1: texture_3d<f32>;
+@group(1) @binding(2) var atlas2: texture_3d<f32>;
+@group(1) @binding(3) var atlas3: texture_3d<f32>;
+@group(1) @binding(4) var atlas_sampler: sampler;
+@group(1) @binding(5) var page_table: texture_2d_array<u32>;
+@group(1) @binding(6) var<uniform> vt: VTUniforms;
+@group(1) @binding(7) var<uniform> vol: VolumeUniforms;
+
+fn sample_atlas(atlas_id: u32, uv: vec3f) -> f32 {
+    switch atlas_id {
+        case 1u: { return textureSampleLevel(atlas1, atlas_sampler, uv, 0.0).r; }
+        case 2u: { return textureSampleLevel(atlas2, atlas_sampler, uv, 0.0).r; }
+        case 3u: { return textureSampleLevel(atlas3, atlas_sampler, uv, 0.0).r; }
+        default: { return textureSampleLevel(atlas0, atlas_sampler, uv, 0.0).r; }
+    }
+}
 
 // ── Group 2: colormap LUT ────────────────────────────────────────────────────
 
@@ -137,10 +155,11 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let pt_x = i32(linear % vt.page_table_width);
     let pt_y = i32(linear / vt.page_table_width);
     let entry = textureLoad(page_table, vec2i(pt_x, pt_y), lod, 0).r;
-    // bit 31 = resident; bits 16-30 = t (15 bits); bits 0-15 = slot.
+    // bit 31 = resident; 29-30 = atlas_id (2 bits); 16-28 = t (13 bits); 0-15 = slot.
     // Not-resident OR wrong-t → tell caller to walk to coarser LOD.
     let resident = (entry >> 31u) & 1u;
-    let slot_t   = (entry >> 16u) & 0x7FFFu;
+    let atlas_id = (entry >> 29u) & 0x3u;
+    let slot_t   = (entry >> 16u) & 0x1FFFu;
     if resident == 0u || slot_t != vt.desired_t { return vec2f(0.0, -1.0); }
     let slot = entry & 0xFFFFu;
     let atlas_col   = slot % vt.atlas_cols;
@@ -158,8 +177,7 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
 
-    return vec2f(textureSampleLevel(atlas, atlas_sampler, vec3f(u, v, w), 0.0).r,
-                 f32(lod));
+    return vec2f(sample_atlas(atlas_id, vec3f(u, v, w)), f32(lod));
 }
 
 fn sample_vvt(vol_uv: vec3f) -> vec2f {
@@ -222,10 +240,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let vol_uv  = clamp((world_p - vol.vol_min) / vol_extent, vec3f(0.0), vec3f(1.0));
 
         // ── Mode 2: atlas direct ────────────────────────────────────────────
-        // Bypass the page table entirely — sample the raw packed atlas texture.
+        // Bypass the page table entirely — sample atlas 0 directly.
         // Useful for verifying atlas allocation and what data is actually loaded.
         if vol.debug_mode == 2u {
-            let raw      = textureSampleLevel(atlas, atlas_sampler, vol_uv, 0.0).r;
+            let raw      = sample_atlas(0u, vol_uv);
             let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
             if adjusted > 0.01 {
                 let cs         = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);

@@ -50,7 +50,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     const KNOWN_FLAGS: &[&str] = &[
         "--width", "--height", "--fps", "--port", "--backend",
-        "--zarr", "--cache-tiles", "--max-inflight", "--prefetch",
+        "--zarr", "--cache-tiles", "--atlas-count", "--max-inflight", "--prefetch",
         "--contrast-min", "--contrast-max", "--density-mult", "--lod-bias",
         "--timepoint",
     ];
@@ -83,6 +83,9 @@ fn main() {
     let backend = flag_str(&args, "--backend", "auto");
     let zarr_arg: Option<String> = flag_str_opt(&args, "--zarr");
     let cache_override: Option<u32> = flag_str_opt(&args, "--cache-tiles").and_then(|v| v.parse().ok());
+    // 1..=MAX_ATLAS_COUNT; default 1 (single atlas, identical to pre-multi-atlas behaviour).
+    let atlas_count: usize = flag_str_opt(&args, "--atlas-count")
+        .and_then(|v| v.parse().ok()).unwrap_or(1);
     let max_inflight: usize = flag_str_opt(&args, "--max-inflight")
         .and_then(|v| v.parse().ok())
         .unwrap_or(auto_inflight);
@@ -189,7 +192,7 @@ fn main() {
     let mut volume = VolumeVisual::new(
         renderer.device(), renderer.queue(), renderer.surface_format(),
         renderer.camera_bind_group_layout(),
-        setup.lods.clone(), cache_capacity as usize,
+        setup.lods.clone(), cache_capacity as usize, atlas_count,
     );
     *setup.pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
     *setup.wanted_slot.lock().unwrap() = Some(volume.wanted_handle());
