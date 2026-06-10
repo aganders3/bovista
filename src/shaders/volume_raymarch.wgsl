@@ -520,14 +520,11 @@ fn fs_average(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // ── Mode: isosurface ─────────────────────────────────────────────────────────
-// Coarse Nearest ray-march to first sample above threshold, then bisect against
-// the smooth (manual trilinear) field for sub-voxel precision, then estimate
-// normals from central differences of the same trilinear field with a stencil
-// sized to the resident LOD's voxel.
-//
-// Manual trilinear (8 page-table walks per sample) is needed because the atlas
-// sampler stays Nearest — there are no border guards yet, so hardware linear
-// filtering would leak between tile slots.
+// Coarse Nearest ray-march to first sample above threshold, then a short
+// bisection to refine where in the last step the surface lies, then estimate
+// normals from central differences with a stencil sized to the resident LOD's
+// voxel. All samples are Nearest — the smoothness sacrifice is invisible at
+// orbit distance and avoids the 8× cost of manual trilinear per probe.
 
 fn sample_adjusted(vol_uv: vec3f) -> f32 {
     let r = sample_vvt(vol_uv);
@@ -539,39 +536,6 @@ fn sample_adjusted(vol_uv: vec3f) -> f32 {
 fn lod_voxel_size_uv(lod_i: i32) -> vec3f {
     let ratio = vt.lods[lod_i].tile_scale / vt.lods[0].tile_scale;
     return ratio / vec3f(vol.lod0_dims);
-}
-
-fn sample_trilinear_adjusted(vol_uv: vec3f) -> f32 {
-    let center = sample_vvt(vol_uv);
-    if center.y < 0.0 { return 0.0; }
-    let lod_i = i32(center.y);
-
-    let h = lod_voxel_size_uv(lod_i);
-    let inv_h = vec3f(1.0) / h;
-    // Shift by 0.5 so floor() lands on the lower-left voxel *centre*.
-    let scaled = vol_uv * inv_h - vec3f(0.5);
-    let i = floor(scaled);
-    let f = scaled - i;
-    let base = (i + vec3f(0.5)) * h;
-
-    let v000 = sample_adjusted(base);
-    let v100 = sample_adjusted(base + vec3f(h.x, 0.0, 0.0));
-    let v010 = sample_adjusted(base + vec3f(0.0, h.y, 0.0));
-    let v110 = sample_adjusted(base + vec3f(h.x, h.y, 0.0));
-    let v001 = sample_adjusted(base + vec3f(0.0, 0.0, h.z));
-    let v101 = sample_adjusted(base + vec3f(h.x, 0.0, h.z));
-    let v011 = sample_adjusted(base + vec3f(0.0, h.y, h.z));
-    let v111 = sample_adjusted(base + vec3f(h.x, h.y, h.z));
-
-    let v00 = mix(v000, v100, f.x);
-    let v10 = mix(v010, v110, f.x);
-    let v01 = mix(v001, v101, f.x);
-    let v11 = mix(v011, v111, f.x);
-
-    let v0 = mix(v00, v10, f.y);
-    let v1 = mix(v01, v11, f.y);
-
-    return mix(v0, v1, f.z);
 }
 
 @fragment
@@ -606,30 +570,39 @@ fn fs_iso(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if hit_t < 0.0 { discard; }
 
-    // Sub-voxel bisection against the smooth trilinear field.
+    // Bisection refining the surface t-position. Nearest sampling means we
+    // converge to the voxel boundary where the value crosses the threshold,
+    // not the smooth iso-crossing — at orbit distance the stair-stepping is
+    // invisible and we avoid 8 page-table walks per probe. 3 halvings = 1/8
+    // of the coarse step, which at step_size = 1 LOD-0 voxel is well below
+    // the visible pixel.
     var lo = t_prev;
     var hi = hit_t;
-    for (var i = 0; i < 5; i++) {
+    for (var i = 0; i < 3; i++) {
         let mid = 0.5 * (lo + hi);
         let p   = s.ray_origin + s.ray_dir * mid;
         let uv  = clamp((p - vol.vol_min) / s.vol_extent, vec3f(0.0), vec3f(1.0));
-        let a   = sample_trilinear_adjusted(uv);
+        let a   = sample_adjusted(uv);
         if a >= vol.iso_threshold { hi = mid; } else { lo = mid; }
     }
     let surface_t  = hi;
     let surface_p  = s.ray_origin + s.ray_dir * surface_t;
     let surface_uv = clamp((surface_p - vol.vol_min) / s.vol_extent, vec3f(0.0), vec3f(1.0));
 
-    // Gradient stencil scaled to the resident LOD's voxel size.
+    // Gradient stencil scaled to the resident LOD's voxel size, sampled with
+    // Nearest (one page-table walk per axis instead of eight). The stencil
+    // straddles one full voxel so +h and -h always land in different voxels
+    // — gradient is well-defined; only the smoothness of the lighting
+    // suffers, which is fine for first-hit Phong on a textured volume.
     let surface_center = sample_vvt(surface_uv);
     let lod_i = max(i32(surface_center.y), 0);
     let h = 0.5 * lod_voxel_size_uv(lod_i);
-    let gx = sample_trilinear_adjusted(surface_uv + vec3f(h.x, 0.0, 0.0))
-           - sample_trilinear_adjusted(surface_uv - vec3f(h.x, 0.0, 0.0));
-    let gy = sample_trilinear_adjusted(surface_uv + vec3f(0.0, h.y, 0.0))
-           - sample_trilinear_adjusted(surface_uv - vec3f(0.0, h.y, 0.0));
-    let gz = sample_trilinear_adjusted(surface_uv + vec3f(0.0, 0.0, h.z))
-           - sample_trilinear_adjusted(surface_uv - vec3f(0.0, 0.0, h.z));
+    let gx = sample_adjusted(surface_uv + vec3f(h.x, 0.0, 0.0))
+           - sample_adjusted(surface_uv - vec3f(h.x, 0.0, 0.0));
+    let gy = sample_adjusted(surface_uv + vec3f(0.0, h.y, 0.0))
+           - sample_adjusted(surface_uv - vec3f(0.0, h.y, 0.0));
+    let gz = sample_adjusted(surface_uv + vec3f(0.0, 0.0, h.z))
+           - sample_adjusted(surface_uv - vec3f(0.0, 0.0, h.z));
     let grad = vec3f(gx, gy, gz);
     let glen = length(grad);
     let normal = select(vec3f(0.0, 0.0, 1.0), -grad / glen, glen > 1e-6);
