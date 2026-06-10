@@ -643,9 +643,11 @@ fn fs_iso(in: VertexOutput) -> @location(0) vec4<f32> {
     let refl  = reflect(-light, normal);
     let spec  = pow(max(dot(refl, view), 0.0), 32.0);
 
-    let cs = sample_colormap(vol.iso_threshold);
-    let ambient  = 0.2 * cs.rgb;
-    let diffuse  = 0.7 * ndotl * cs.rgb;
+    // Iso surface colour is fixed white — the colormap drives the DVR modes
+    // but doesn't make sense as a "surface tint" indexed by threshold value.
+    let base = vec3f(1.0);
+    let ambient  = 0.2 * base;
+    let diffuse  = 0.7 * ndotl * base;
     let specular = 0.3 * spec * vec3f(1.0);
     return encode_srgb(vec4f(ambient + diffuse + specular, 1.0));
 }
