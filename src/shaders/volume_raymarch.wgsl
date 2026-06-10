@@ -625,12 +625,16 @@ fn fs_iso(in: VertexOutput) -> @location(0) vec4<f32> {
     // normal than a 6-tap central difference at Nearest sampling, with a
     // 4× walk-count increase that we can afford after dropping manual
     // trilinear.
+    //
+    // sobel_gradient uses napari's `-i` formulation, so the result IS the
+    // outward-pointing normal (= −∇f, pointing from high-density interior
+    // toward low-density exterior) — used directly without another flip.
     let surface_center = sample_vvt(surface_uv);
     let lod_i = max(i32(surface_center.y), 0);
     let voxel = lod_voxel_size_uv(lod_i);
     let grad = sobel_gradient(surface_uv, voxel);
     let glen = length(grad);
-    let normal = select(vec3f(0.0, 0.0, 1.0), -grad / glen, glen > 1e-6);
+    let normal = select(vec3f(0.0, 0.0, 1.0), grad / glen, glen > 1e-6);
 
     // Phong: headlight + ambient.
     let view = -s.ray_dir;
