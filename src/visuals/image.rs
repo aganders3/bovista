@@ -97,8 +97,8 @@ impl ImageVisual {
     ///
     /// # Arguments
     /// * `lod_levels` - Configuration for each LOD level (high-res to low-res)
-    /// * `max_tiles`  - Atlas capacity (number of simultaneously resident tiles)
-    /// * `loader`     - Callback invoked when a tile is needed
+    /// * `max_tiles`  - Total atlas capacity across all atlases
+    /// * `atlas_count` - Number of physical atlas textures (1..=MAX_ATLAS_COUNT)
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -106,6 +106,7 @@ impl ImageVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
+        atlas_count: usize,
     ) -> Self {
         let (depth, _height, _width) = if !lod_levels.is_empty() {
             lod_levels[0].volume_size
@@ -113,7 +114,7 @@ impl ImageVisual {
             (1, 1, 1)
         };
 
-        let vt = VirtualTextureData::new(device, lod_levels, max_tiles);
+        let vt = VirtualTextureData::new(device, lod_levels, max_tiles, atlas_count);
 
         // Atlas sampler (linear for smooth interpolation across tile boundaries)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -193,28 +194,35 @@ impl ImageVisual {
             ],
         });
 
-        // VT bind group layout (group 1): atlas, atlas_sampler, page_table, vt_uniforms
+        // VT bind group layout (group 1): atlas[0..=3], atlas_sampler, page_table, vt_uniforms.
+        // All 4 atlas textures are always bound; entries past atlas_count are
+        // 1×1×1 dummies created inside VirtualTextureData.
+        use crate::visuals::virtual_texture::MAX_ATLAS_COUNT;
+        let atlas_3d_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            },
+            count: None,
+        };
         let vt_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("VT Bind Group Layout"),
             entries: &[
+                atlas_3d_entry(0),
+                atlas_3d_entry(1),
+                atlas_3d_entry(2),
+                atlas_3d_entry(3),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D3,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
@@ -224,7 +232,7 @@ impl ImageVisual {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 6,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -243,26 +251,18 @@ impl ImageVisual {
             mapped_at_creation: false,
         });
 
+        assert_eq!(vt.atlas_views.len(), MAX_ATLAS_COUNT);
         let vt_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("VT Bind Group"),
             layout: &vt_bgl,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&vt.atlas_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: vt_uniform_buffer.as_entire_binding(),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[0]) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[1]) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[2]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&vt.atlas_views[3]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view) },
+                wgpu::BindGroupEntry { binding: 6, resource: vt_uniform_buffer.as_entire_binding() },
             ],
         });
 
@@ -355,8 +355,9 @@ impl ImageVisual {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         lod_levels: Vec<LodLevelConfig>,
         max_tiles: usize,
+        atlas_count: usize,
     ) -> Self {
-        Self::new(device, queue, surface_format, camera_bind_group_layout, lod_levels, max_tiles)
+        Self::new(device, queue, surface_format, camera_bind_group_layout, lod_levels, max_tiles, atlas_count)
     }
 
     /// Set the slice plane to a specific Z coordinate (XY plane)
