@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use bovista::visual::CameraInfo;
 use bovista::visuals::virtual_texture::PendingChunks;
 use bovista::visuals::{
-    AdditiveVolume, AverageVolume, DirectVolume, IsosurfaceVolume,
+    AverageVolume, DirectVolume, IsosurfaceVolume,
     LodLevelConfig, MinipVolume, MipVolume,
 };
 use bovista::visuals::virtual_texture::{PrepareStats, Wanted};
@@ -55,13 +55,12 @@ use bovista::{Camera, ProjectionMode, Renderer, Scene};
 // VolumeBackend split discussed in PR #6's notes).
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum VolumeMode { Direct, Additive, Mip, Minip, Average, Iso }
+enum VolumeMode { Direct, Mip, Minip, Average, Iso }
 
 impl VolumeMode {
     fn parse(s: &str) -> Option<Self> {
         match s {
             "direct"     => Some(Self::Direct),
-            "additive"   => Some(Self::Additive),
             "mip"        => Some(Self::Mip),
             "minip"      => Some(Self::Minip),
             "average"    => Some(Self::Average),
@@ -74,11 +73,10 @@ impl VolumeMode {
 /// Wraps any of the six volume visual types behind a single Visual impl. The
 /// common bovista methods (contrast, lod_bias, prefetch, t-controls, stats, …)
 /// all match-dispatch through `volume_dispatch!`; the few mode-specific ones
-/// (density on Direct/Additive, attenuation on MIP, iso_threshold on Iso) are
+/// (density on Direct, attenuation on MIP, iso_threshold on Iso) are
 /// no-ops on the variants that don't carry that parameter.
 enum Volume {
     Direct(DirectVolume),
-    Additive(AdditiveVolume),
     Mip(MipVolume),
     Minip(MinipVolume),
     Average(AverageVolume),
@@ -89,7 +87,6 @@ macro_rules! volume_dispatch {
     ($self:ident, $v:ident => $body:expr) => {
         match $self {
             Volume::Direct($v)   => $body,
-            Volume::Additive($v) => $body,
             Volume::Mip($v)      => $body,
             Volume::Minip($v)    => $body,
             Volume::Average($v)  => $body,
@@ -111,7 +108,6 @@ impl Volume {
     ) -> Self {
         match mode {
             VolumeMode::Direct   => Volume::Direct(DirectVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
-            VolumeMode::Additive => Volume::Additive(AdditiveVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
             VolumeMode::Mip      => Volume::Mip(MipVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
             VolumeMode::Minip    => Volume::Minip(MinipVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
             VolumeMode::Average  => Volume::Average(AverageVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
@@ -150,11 +146,7 @@ impl Volume {
 
     // Mode-specific: only applicable variants do anything.
     fn try_set_density_scale(&mut self, scale: f32) {
-        match self {
-            Volume::Direct(v)   => v.set_density_scale(scale),
-            Volume::Additive(v) => v.set_density_scale(scale),
-            _ => {}
-        }
+        if let Volume::Direct(v) = self { v.set_density_scale(scale); }
     }
     fn try_set_attenuation(&mut self, attenuation: f32) {
         if let Volume::Mip(v) = self { v.set_attenuation(attenuation); }

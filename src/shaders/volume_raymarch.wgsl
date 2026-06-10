@@ -15,7 +15,6 @@
 // Multiple fragment entry points, one render pipeline per mode:
 //   fs_translucent    — front-to-back alpha compositing (Beer-Lambert, default).
 //                       Also hosts debug modes 1/2/3 via vol.debug_mode.
-//   fs_additive       — additive accumulation of colormapped contributions.
 //   fs_mip            — Maximum Intensity Projection (attenuation = 0 degenerates
 //                       to plain MIP; vol.attenuation > 0 weights near-camera).
 //   fs_minip          — Minimum Intensity Projection.
@@ -366,40 +365,6 @@ fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     return encode_srgb(vec4f(accum_color, accum_alpha));
-}
-
-// ── Mode: additive ───────────────────────────────────────────────────────────
-// Each step adds (alpha_step * cs.rgb) to the accumulator with no occlusion.
-// Useful for multi-channel composition (stack N AdditiveVolumes).
-
-@fragment
-fn fs_additive(in: VertexOutput) -> @location(0) vec4<f32> {
-    let s = setup_ray(in.world_pos);
-    if !s.hit { discard; }
-
-    var accum = vec3f(0.0);
-    var t = s.t_start;
-
-    loop {
-        if t >= s.t_exit { break; }
-        let world_p = s.ray_origin + s.ray_dir * t;
-        let vol_uv  = clamp((world_p - vol.vol_min) / s.vol_extent, vec3f(0.0), vec3f(1.0));
-        let result  = sample_vvt(vol_uv);
-        let raw     = result.x;
-        let lod_f   = result.y;
-        let advance = compute_advance(lod_f, s.step_size, vol_uv, s.ray_dir,
-                                       s.vol_extent, s.inv_tile0_scale_x);
-
-        let adjusted = contrast_normalise(raw);
-        if adjusted > 0.01 {
-            let cs = sample_colormap(adjusted);
-            accum += cs.a * vol.density_scale * advance * cs.rgb;
-        }
-        t += advance;
-    }
-
-    let alpha = clamp(max(accum.r, max(accum.g, accum.b)), 0.0, 1.0);
-    return encode_srgb(vec4f(clamp(accum, vec3f(0.0), vec3f(1.0)), alpha));
 }
 
 // ── Mode: attenuated MIP ─────────────────────────────────────────────────────

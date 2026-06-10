@@ -40,7 +40,7 @@ use web_sys::console;
 use crate::{
     bindings_common::{self, VisualRef},
     Camera, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
-    AdditiveVolume, AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
+    AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::gpu_structs::{TileData, TileKey},
     visuals::points::PointVertex,
@@ -224,11 +224,6 @@ impl JsViewer {
 
     #[wasm_bindgen(js_name = addDirectVolume)]
     pub fn add_direct_volume(&mut self, visual: &JsDirectVolume) -> usize {
-        self.scene.add(visual.get_inner())
-    }
-
-    #[wasm_bindgen(js_name = addAdditiveVolume)]
-    pub fn add_additive_volume(&mut self, visual: &JsAdditiveVolume) -> usize {
         self.scene.add(visual.get_inner())
     }
 
@@ -734,15 +729,6 @@ js_volume_class!(JsDirectVolume, DirectVolume, extra: {
     pub fn set_step_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
         bindings_common::with_visual_mut::<DirectVolume, _, _>(
             &self.inner, |v| v.set_step_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-});
-
-js_volume_class!(JsAdditiveVolume, AdditiveVolume, extra: {
-    #[wasm_bindgen(js_name = setDensityScale)]
-    pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<AdditiveVolume, _, _>(
-            &self.inner, |v| v.set_density_scale(scale)
         ).map_err(|e| JsValue::from_str(&e))
     }
 });

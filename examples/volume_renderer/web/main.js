@@ -68,7 +68,6 @@ let stepDebugMode = false;
 // flags for which mode-specific sliders/toggles apply).
 const VOLUME_MODES = {
     direct:   { ctor: 'JsDirectVolume',     add: 'addDirectVolume',     density: true,  debug: true  },
-    additive: { ctor: 'JsAdditiveVolume',   add: 'addAdditiveVolume',   density: true                },
     mip:      { ctor: 'JsMipVolume',        add: 'addMipVolume',        attenuation: true            },
     minip:    { ctor: 'JsMinipVolume',      add: 'addMinipVolume'                                    },
     average:  { ctor: 'JsAverageVolume',    add: 'addAverageVolume'                                  },

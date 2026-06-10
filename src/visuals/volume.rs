@@ -13,7 +13,6 @@ use wgpu::RenderPass;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum VolumeRenderMode {
     Translucent,
-    Additive,
     /// `MipVolume` always uses this. With attenuation = 0 the shader degenerates
     /// to plain MIP; the `exp()` per step is cheap enough to amortise over a
     /// single pipeline rather than maintaining two.
@@ -27,7 +26,6 @@ impl VolumeRenderMode {
     fn fragment_entry(self) -> &'static str {
         match self {
             Self::Translucent   => "fs_translucent",
-            Self::Additive      => "fs_additive",
             Self::AttenuatedMip => "fs_mip",
             Self::Minip         => "fs_minip",
             Self::Average       => "fs_average",
@@ -366,7 +364,6 @@ impl VolumeCore {
 
         let default_name = match mode {
             VolumeRenderMode::Translucent   => "DirectVolume",
-            VolumeRenderMode::Additive      => "AdditiveVolume",
             VolumeRenderMode::AttenuatedMip => "MipVolume",
             VolumeRenderMode::Minip         => "MinipVolume",
             VolumeRenderMode::Average       => "AverageVolume",
@@ -655,42 +652,6 @@ impl_volume_visual!(DirectVolume, |me| VolumeUniformExtras {
     density_scale: me.density_scale,
     early_exit_alpha: me.early_exit_alpha,
     debug_mode: me.debug_mode,
-    ..VolumeUniformExtras::default()
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-
-/// Additive accumulation along the ray. No occlusion — every voxel contributes
-/// regardless of what's in front of it. Useful for multi-channel composition
-/// (stack N AdditiveVolumes with different colormaps).
-pub struct AdditiveVolume {
-    core: VolumeCore,
-    density_scale: f32,
-}
-
-impl AdditiveVolume {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        surface_format: wgpu::TextureFormat,
-        camera_bind_group_layout: &wgpu::BindGroupLayout,
-        lod_levels: Vec<LodLevelConfig>,
-        max_tiles: usize,
-        atlas_count: usize,
-    ) -> Self {
-        let core = VolumeCore::new(
-            device, queue, surface_format, camera_bind_group_layout,
-            lod_levels, max_tiles, atlas_count, VolumeRenderMode::Additive,
-        );
-        Self { core, density_scale: 0.01 }
-    }
-
-    pub fn set_density_scale(&mut self, scale: f32) { self.density_scale = scale; }
-}
-
-impl_common_volume_methods!(AdditiveVolume);
-impl_volume_visual!(AdditiveVolume, |me| VolumeUniformExtras {
-    density_scale: me.density_scale,
     ..VolumeUniformExtras::default()
 });
 

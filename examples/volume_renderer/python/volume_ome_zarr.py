@@ -9,7 +9,6 @@ bovista also exposes the other render modes as separate classes — swap
 `bv.DirectVolume(...)` below for any of:
 
     bv.DirectVolume      — front-to-back alpha compositing (default).
-    bv.AdditiveVolume    — additive accumulation, no occlusion.
     bv.MipVolume         — Maximum Intensity Projection (set_attenuation>0
                            for napari-style attenuated MIP).
     bv.MinipVolume       — Minimum Intensity Projection.
@@ -182,7 +181,6 @@ class MainWindow(QMainWindow):
         # (label, key, ctor) — key matches the bv.XVolume class names.
         self._modes = [
             ("Direct (DVR)", "direct",   bv.DirectVolume),
-            ("Additive",     "additive", bv.AdditiveVolume),
             ("MIP",          "mip",      bv.MipVolume),
             ("minIP",        "minip",    bv.MinipVolume),
             ("Average",      "average",  bv.AverageVolume),
@@ -453,8 +451,8 @@ class MainWindow(QMainWindow):
                 self._base_density = base_density
                 self._density_exp = 0
                 self.density_slider.setValue(0)
-                # Density only applies to Direct / Additive; MIP / minIP / Avg /
-                # Iso don't expose set_density_scale on their wrapper class.
+                # Density only applies to Direct; MIP / minIP / Avg / Iso
+                # don't expose set_density_scale on their wrapper class.
                 if hasattr(volume, "set_density_scale"):
                     volume.set_density_scale(base_density)
 
@@ -553,7 +551,7 @@ class MainWindow(QMainWindow):
         """Show/hide mode-specific sliders + enable the debug combo only when applicable."""
         idx = self.mode_combo.currentIndex()
         key = self._modes[idx][1]
-        has_density = key in ("direct", "additive")
+        has_density = key == "direct"
         has_atten   = key == "mip"
         has_iso     = key == "iso"
         has_debug   = key == "direct"

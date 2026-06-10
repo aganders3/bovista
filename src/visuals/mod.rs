@@ -14,5 +14,5 @@ pub use lines::LinesVisual;
 pub use points::PointsVisual;
 pub use virtual_texture::LodLevelConfig;
 pub use volume::{
-    AdditiveVolume, AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
+    AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
 };

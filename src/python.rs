@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     bindings_common::{self, VisualRef},
     Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
-    AdditiveVolume, AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
+    AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     VertexBufferLayout,
 };
 use bovista_codegen::{camera_methods, visual_methods};
@@ -295,7 +295,6 @@ impl PyViewer {
             return Ok(self.scene.add(image.inner.clone()));
         }
         if let Ok(v) = visual.extract::<PyRef<PyDirectVolume>>()    { return Ok(self.scene.add(v.inner.clone())); }
-        if let Ok(v) = visual.extract::<PyRef<PyAdditiveVolume>>()  { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyMipVolume>>()       { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyMinipVolume>>()     { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyAverageVolume>>()   { return Ok(self.scene.add(v.inner.clone())); }
@@ -1303,14 +1302,6 @@ py_volume_class!(PyDirectVolume, "DirectVolume", DirectVolume, extra: {
     }
 });
 
-py_volume_class!(PyAdditiveVolume, "AdditiveVolume", AdditiveVolume, extra: {
-    fn set_density_scale(&self, scale: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<AdditiveVolume, _, _>(
-            &self.inner, |v| v.set_density_scale(scale)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
-});
-
 py_volume_class!(PyMipVolume, "MipVolume", MipVolume, extra: {
     /// Attenuated-MIP falloff per accumulated normalised density.
     /// 0.0 = plain MIP; larger = stronger near-camera emphasis.
@@ -1341,7 +1332,6 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLinesVisual>()?;
     m.add_class::<PyImageVisual>()?;
     m.add_class::<PyDirectVolume>()?;
-    m.add_class::<PyAdditiveVolume>()?;
     m.add_class::<PyMipVolume>()?;
     m.add_class::<PyMinipVolume>()?;
     m.add_class::<PyAverageVolume>()?;
