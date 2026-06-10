@@ -177,12 +177,9 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // Render all visuals. Scene re-binds the camera bind group at
-            // slot 0 between each visual so that visuals like Lines / Points
-            // — which expect the shared camera layout at slot 0 — keep
-            // working after Volume / Image override slot 0 with their own
-            // combined-UBO bind group.
-            scene.render(&mut render_pass, &self.camera_bind_group);
+            // Set the camera bind group once. No visual overrides slot 0.
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            scene.render(&mut render_pass);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
