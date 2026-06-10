@@ -34,12 +34,13 @@ export class JsImageVisual {
      * @param {JsViewer} viewer
      * @param {JsLevelMetadata[]} levels
      * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
      */
-    constructor(viewer, levels, max_chunks) {
+    constructor(viewer, levels, max_chunks, atlas_count) {
         _assertClass(viewer, JsViewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.jsimagevisual_new(viewer.__wbg_ptr, ptr0, len0, max_chunks);
+        const ret = wasm.jsimagevisual_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
         JsImageVisualFinalization.register(this, this.__wbg_ptr, this);
         return this;
@@ -595,12 +596,13 @@ export class JsVolumeVisual {
      * @param {JsViewer} viewer
      * @param {JsLevelMetadata[]} levels
      * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
      */
-    constructor(viewer, levels, max_chunks) {
+    constructor(viewer, levels, max_chunks, atlas_count) {
         _assertClass(viewer, JsViewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.jsvolumevisual_new(viewer.__wbg_ptr, ptr0, len0, max_chunks);
+        const ret = wasm.jsvolumevisual_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
         JsVolumeVisualFinalization.register(this, this.__wbg_ptr, this);
         return this;
@@ -1736,7 +1738,7 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 113, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 115, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e013bd767eefc9f);
             return ret;
         },
