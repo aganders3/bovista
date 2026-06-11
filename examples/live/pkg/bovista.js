@@ -1,3 +1,254 @@
+export class JsAverageVolume {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        JsAverageVolumeFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_jsaveragevolume_free(ptr, 0);
+    }
+    /**
+     * Returns [loaded, visible] tile counts.
+     * @returns {Uint32Array}
+     */
+    getStats() {
+        const ret = wasm.jsaveragevolume_getStats(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {JsViewer} viewer
+     * @param {JsLevelMetadata[]} levels
+     * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
+     */
+    constructor(viewer, levels, max_chunks, atlas_count) {
+        _assertClass(viewer, JsViewer);
+        const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.jsaveragevolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
+        this.__wbg_ptr = ret;
+        JsAverageVolumeFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Provide uint16 tile data (stored as R16Float).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint16Array} data
+     * @param {number} width
+     * @param {number} height
+     * @param {number} depth
+     */
+    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
+        wasm.jsaveragevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    }
+    /**
+     * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+     * Pass a zero-length array to reset to grayscale.
+     * @param {Uint8Array} rgba
+     */
+    setColormap(rgba) {
+        const ret = wasm.jsaveragevolume_setColormap(this.__wbg_ptr, rgba);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} min
+     * @param {number} max
+     */
+    setContrast(min, max) {
+        const ret = wasm.jsaveragevolume_setContrast(this.__wbg_ptr, min, max);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} bias
+     */
+    setLodBias(bias) {
+        const ret = wasm.jsaveragevolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} step
+     */
+    setRelativeStepSize(step) {
+        const ret = wasm.jsaveragevolume_setRelativeStepSize(this.__wbg_ptr, step);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Snapshot of the tile keys bovista currently wants. Returned as a
+     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+     * sorted by priority.
+     * @returns {Uint32Array}
+     */
+    wantedKeys() {
+        const ret = wasm.jsaveragevolume_wantedKeys(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) JsAverageVolume.prototype[Symbol.dispose] = JsAverageVolume.prototype.free;
+
+export class JsDirectVolume {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        JsDirectVolumeFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_jsdirectvolume_free(ptr, 0);
+    }
+    /**
+     * Returns [loaded, visible] tile counts.
+     * @returns {Uint32Array}
+     */
+    getStats() {
+        const ret = wasm.jsdirectvolume_getStats(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {JsViewer} viewer
+     * @param {JsLevelMetadata[]} levels
+     * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
+     */
+    constructor(viewer, levels, max_chunks, atlas_count) {
+        _assertClass(viewer, JsViewer);
+        const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.jsdirectvolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
+        this.__wbg_ptr = ret;
+        JsDirectVolumeFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * @param {boolean} enabled
+     */
+    setAtlasDebugMode(enabled) {
+        const ret = wasm.jsdirectvolume_setAtlasDebugMode(this.__wbg_ptr, enabled);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Provide uint16 tile data (stored as R16Float).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint16Array} data
+     * @param {number} width
+     * @param {number} height
+     * @param {number} depth
+     */
+    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
+        wasm.jsdirectvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    }
+    /**
+     * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+     * Pass a zero-length array to reset to grayscale.
+     * @param {Uint8Array} rgba
+     */
+    setColormap(rgba) {
+        const ret = wasm.jsdirectvolume_setColormap(this.__wbg_ptr, rgba);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} min
+     * @param {number} max
+     */
+    setContrast(min, max) {
+        const ret = wasm.jsdirectvolume_setContrast(this.__wbg_ptr, min, max);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {boolean} enabled
+     */
+    setDebugMode(enabled) {
+        const ret = wasm.jsdirectvolume_setDebugMode(this.__wbg_ptr, enabled);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} scale
+     */
+    setDensityScale(scale) {
+        const ret = wasm.jsdirectvolume_setDensityScale(this.__wbg_ptr, scale);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} alpha
+     */
+    setEarlyExitAlpha(alpha) {
+        const ret = wasm.jsdirectvolume_setEarlyExitAlpha(this.__wbg_ptr, alpha);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} bias
+     */
+    setLodBias(bias) {
+        const ret = wasm.jsdirectvolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} step
+     */
+    setRelativeStepSize(step) {
+        const ret = wasm.jsdirectvolume_setRelativeStepSize(this.__wbg_ptr, step);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {boolean} enabled
+     */
+    setStepDebugMode(enabled) {
+        const ret = wasm.jsdirectvolume_setStepDebugMode(this.__wbg_ptr, enabled);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Snapshot of the tile keys bovista currently wants. Returned as a
+     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+     * sorted by priority.
+     * @returns {Uint32Array}
+     */
+    wantedKeys() {
+        const ret = wasm.jsdirectvolume_wantedKeys(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) JsDirectVolume.prototype[Symbol.dispose] = JsDirectVolume.prototype.free;
+
 /**
  * JavaScript wrapper for ImageVisual — single-draw-call multiscale rendering.
  *
@@ -160,6 +411,118 @@ export class JsImageVisual {
 }
 if (Symbol.dispose) JsImageVisual.prototype[Symbol.dispose] = JsImageVisual.prototype.free;
 
+export class JsIsosurfaceVolume {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        JsIsosurfaceVolumeFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_jsisosurfacevolume_free(ptr, 0);
+    }
+    /**
+     * Returns [loaded, visible] tile counts.
+     * @returns {Uint32Array}
+     */
+    getStats() {
+        const ret = wasm.jsisosurfacevolume_getStats(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {JsViewer} viewer
+     * @param {JsLevelMetadata[]} levels
+     * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
+     */
+    constructor(viewer, levels, max_chunks, atlas_count) {
+        _assertClass(viewer, JsViewer);
+        const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.jsisosurfacevolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
+        this.__wbg_ptr = ret;
+        JsIsosurfaceVolumeFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Provide uint16 tile data (stored as R16Float).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint16Array} data
+     * @param {number} width
+     * @param {number} height
+     * @param {number} depth
+     */
+    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
+        wasm.jsisosurfacevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    }
+    /**
+     * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+     * Pass a zero-length array to reset to grayscale.
+     * @param {Uint8Array} rgba
+     */
+    setColormap(rgba) {
+        const ret = wasm.jsisosurfacevolume_setColormap(this.__wbg_ptr, rgba);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} min
+     * @param {number} max
+     */
+    setContrast(min, max) {
+        const ret = wasm.jsisosurfacevolume_setContrast(this.__wbg_ptr, min, max);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} threshold
+     */
+    setIsoThreshold(threshold) {
+        const ret = wasm.jsisosurfacevolume_setIsoThreshold(this.__wbg_ptr, threshold);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} bias
+     */
+    setLodBias(bias) {
+        const ret = wasm.jsisosurfacevolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} step
+     */
+    setRelativeStepSize(step) {
+        const ret = wasm.jsisosurfacevolume_setRelativeStepSize(this.__wbg_ptr, step);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Snapshot of the tile keys bovista currently wants. Returned as a
+     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+     * sorted by priority.
+     * @returns {Uint32Array}
+     */
+    wantedKeys() {
+        const ret = wasm.jsisosurfacevolume_wantedKeys(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) JsIsosurfaceVolume.prototype[Symbol.dispose] = JsIsosurfaceVolume.prototype.free;
+
 /**
  * Level metadata for multi-resolution LOD images
  *
@@ -307,6 +670,221 @@ export class JsLinesVisual {
 }
 if (Symbol.dispose) JsLinesVisual.prototype[Symbol.dispose] = JsLinesVisual.prototype.free;
 
+export class JsMinipVolume {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        JsMinipVolumeFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_jsminipvolume_free(ptr, 0);
+    }
+    /**
+     * Returns [loaded, visible] tile counts.
+     * @returns {Uint32Array}
+     */
+    getStats() {
+        const ret = wasm.jsminipvolume_getStats(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {JsViewer} viewer
+     * @param {JsLevelMetadata[]} levels
+     * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
+     */
+    constructor(viewer, levels, max_chunks, atlas_count) {
+        _assertClass(viewer, JsViewer);
+        const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.jsminipvolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
+        this.__wbg_ptr = ret;
+        JsMinipVolumeFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Provide uint16 tile data (stored as R16Float).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint16Array} data
+     * @param {number} width
+     * @param {number} height
+     * @param {number} depth
+     */
+    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
+        wasm.jsminipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    }
+    /**
+     * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+     * Pass a zero-length array to reset to grayscale.
+     * @param {Uint8Array} rgba
+     */
+    setColormap(rgba) {
+        const ret = wasm.jsminipvolume_setColormap(this.__wbg_ptr, rgba);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} min
+     * @param {number} max
+     */
+    setContrast(min, max) {
+        const ret = wasm.jsminipvolume_setContrast(this.__wbg_ptr, min, max);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} bias
+     */
+    setLodBias(bias) {
+        const ret = wasm.jsminipvolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} step
+     */
+    setRelativeStepSize(step) {
+        const ret = wasm.jsminipvolume_setRelativeStepSize(this.__wbg_ptr, step);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Snapshot of the tile keys bovista currently wants. Returned as a
+     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+     * sorted by priority.
+     * @returns {Uint32Array}
+     */
+    wantedKeys() {
+        const ret = wasm.jsminipvolume_wantedKeys(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) JsMinipVolume.prototype[Symbol.dispose] = JsMinipVolume.prototype.free;
+
+export class JsMipVolume {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        JsMipVolumeFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_jsmipvolume_free(ptr, 0);
+    }
+    /**
+     * Returns [loaded, visible] tile counts.
+     * @returns {Uint32Array}
+     */
+    getStats() {
+        const ret = wasm.jsmipvolume_getStats(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {JsViewer} viewer
+     * @param {JsLevelMetadata[]} levels
+     * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
+     */
+    constructor(viewer, levels, max_chunks, atlas_count) {
+        _assertClass(viewer, JsViewer);
+        const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.jsmipvolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
+        this.__wbg_ptr = ret;
+        JsMipVolumeFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * @param {number} attenuation
+     */
+    setAttenuation(attenuation) {
+        const ret = wasm.jsmipvolume_setAttenuation(this.__wbg_ptr, attenuation);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Provide uint16 tile data (stored as R16Float).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint16Array} data
+     * @param {number} width
+     * @param {number} height
+     * @param {number} depth
+     */
+    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
+        wasm.jsmipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    }
+    /**
+     * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+     * Pass a zero-length array to reset to grayscale.
+     * @param {Uint8Array} rgba
+     */
+    setColormap(rgba) {
+        const ret = wasm.jsmipvolume_setColormap(this.__wbg_ptr, rgba);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} min
+     * @param {number} max
+     */
+    setContrast(min, max) {
+        const ret = wasm.jsmipvolume_setContrast(this.__wbg_ptr, min, max);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} bias
+     */
+    setLodBias(bias) {
+        const ret = wasm.jsmipvolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} step
+     */
+    setRelativeStepSize(step) {
+        const ret = wasm.jsmipvolume_setRelativeStepSize(this.__wbg_ptr, step);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Snapshot of the tile keys bovista currently wants. Returned as a
+     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+     * sorted by priority.
+     * @returns {Uint32Array}
+     */
+    wantedKeys() {
+        const ret = wasm.jsmipvolume_wantedKeys(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) JsMipVolume.prototype[Symbol.dispose] = JsMipVolume.prototype.free;
+
 /**
  * JavaScript wrapper for PointsVisual — colored point cloud.
  */
@@ -396,6 +974,24 @@ export class JsViewer {
         wasm.__wbg_jsviewer_free(ptr, 0);
     }
     /**
+     * @param {JsAverageVolume} visual
+     * @returns {number}
+     */
+    addAverageVolume(visual) {
+        _assertClass(visual, JsAverageVolume);
+        const ret = wasm.jsviewer_addAverageVolume(this.__wbg_ptr, visual.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {JsDirectVolume} visual
+     * @returns {number}
+     */
+    addDirectVolume(visual) {
+        _assertClass(visual, JsDirectVolume);
+        const ret = wasm.jsviewer_addDirectVolume(this.__wbg_ptr, visual.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * Add an image visual to the scene
      * @param {JsImageVisual} visual
      * @returns {number}
@@ -403,6 +999,15 @@ export class JsViewer {
     addImage(visual) {
         _assertClass(visual, JsImageVisual);
         const ret = wasm.jsviewer_addImage(this.__wbg_ptr, visual.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {JsIsosurfaceVolume} visual
+     * @returns {number}
+     */
+    addIsosurfaceVolume(visual) {
+        _assertClass(visual, JsIsosurfaceVolume);
+        const ret = wasm.jsviewer_addIsosurfaceVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
@@ -416,6 +1021,24 @@ export class JsViewer {
         return ret >>> 0;
     }
     /**
+     * @param {JsMinipVolume} visual
+     * @returns {number}
+     */
+    addMinipVolume(visual) {
+        _assertClass(visual, JsMinipVolume);
+        const ret = wasm.jsviewer_addMinipVolume(this.__wbg_ptr, visual.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {JsMipVolume} visual
+     * @returns {number}
+     */
+    addMipVolume(visual) {
+        _assertClass(visual, JsMipVolume);
+        const ret = wasm.jsviewer_addMipVolume(this.__wbg_ptr, visual.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * Add a points visual to the scene
      * @param {JsPointsVisual} visual
      * @returns {number}
@@ -423,16 +1046,6 @@ export class JsViewer {
     addPoints(visual) {
         _assertClass(visual, JsPointsVisual);
         const ret = wasm.jsviewer_addPoints(this.__wbg_ptr, visual.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * Add a volume visual to the scene
-     * @param {JsVolumeVisual} visual
-     * @returns {number}
-     */
-    addVolume(visual) {
-        _assertClass(visual, JsVolumeVisual);
-        const ret = wasm.jsviewer_addVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     clearScene() {
@@ -561,173 +1174,6 @@ export class JsViewer {
     }
 }
 if (Symbol.dispose) JsViewer.prototype[Symbol.dispose] = JsViewer.prototype.free;
-
-/**
- * JavaScript wrapper for VolumeVisual — direct volume rendering via ray marching.
- *
- * Tile data must be provided as uint16 via `setChunkDataU16`.
- */
-export class JsVolumeVisual {
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        JsVolumeVisualFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsvolumevisual_free(ptr, 0);
-    }
-    /**
-     * Returns [loaded, visible] tile counts.
-     * @returns {Uint32Array}
-     */
-    getStats() {
-        const ret = wasm.jsvolumevisual_getStats(this.__wbg_ptr);
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Create a VolumeVisual.
-     *
-     * Pull-based: poll `wantedKeys()` and push tile data via
-     * `setChunkDataU16`. See `JsImageVisual::new` for rationale.
-     * @param {JsViewer} viewer
-     * @param {JsLevelMetadata[]} levels
-     * @param {number} max_chunks
-     * @param {number | null} [atlas_count]
-     */
-    constructor(viewer, levels, max_chunks, atlas_count) {
-        _assertClass(viewer, JsViewer);
-        const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.jsvolumevisual_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
-        this.__wbg_ptr = ret;
-        JsVolumeVisualFinalization.register(this, this.__wbg_ptr, this);
-        return this;
-    }
-    /**
-     * Enable or disable atlas-direct debug mode (mode 2): bypasses page-table indirection,
-     * samples the raw packed atlas texture directly at vol_uv.
-     * @param {boolean} enabled
-     */
-    setAtlasDebugMode(enabled) {
-        const ret = wasm.jsvolumevisual_setAtlasDebugMode(this.__wbg_ptr, enabled);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Provide uint16 tile data (stored as R16Float).
-     * @param {number} lod
-     * @param {number} t
-     * @param {number} z
-     * @param {number} y
-     * @param {number} x
-     * @param {Uint16Array} data
-     * @param {number} width
-     * @param {number} height
-     * @param {number} depth
-     */
-    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
-        wasm.jsvolumevisual_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
-    }
-    /**
-     * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
-     * Pass a zero-length array to reset to grayscale.
-     * @param {Uint8Array} rgba
-     */
-    setColormap(rgba) {
-        const ret = wasm.jsvolumevisual_setColormap(this.__wbg_ptr, rgba);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Set contrast limits (0.0 to 1.0)
-     * @param {number} min
-     * @param {number} max
-     */
-    setContrast(min, max) {
-        const ret = wasm.jsvolumevisual_setContrast(this.__wbg_ptr, min, max);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Enable or disable debug LOD tinting + tile wireframes (mode 1).
-     * @param {boolean} enabled
-     */
-    setDebugMode(enabled) {
-        const ret = wasm.jsvolumevisual_setDebugMode(this.__wbg_ptr, enabled);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Set density scale (per-step opacity multiplier).
-     * @param {number} scale
-     */
-    setDensityScale(scale) {
-        const ret = wasm.jsvolumevisual_setDensityScale(this.__wbg_ptr, scale);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Set the front-to-back early-exit alpha cutoff (default 0.95).
-     * @param {number} alpha
-     */
-    setEarlyExitAlpha(alpha) {
-        const ret = wasm.jsvolumevisual_setEarlyExitAlpha(this.__wbg_ptr, alpha);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
-     * @param {number} bias
-     */
-    setLodBias(bias) {
-        const ret = wasm.jsvolumevisual_setLodBias(this.__wbg_ptr, bias);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Set step size in LOD-0 voxels (1.0 = Nyquist at finest LOD; coarser LODs step proportionally further).
-     * @param {number} step
-     */
-    setRelativeStepSize(step) {
-        const ret = wasm.jsvolumevisual_setRelativeStepSize(this.__wbg_ptr, step);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Enable step-count heatmap (mode 3): colours pixels by ray-march step count.
-     * Blue = few steps (coarse LOD / short ray), red = many (fine LOD).
-     * @param {boolean} enabled
-     */
-    setStepDebugMode(enabled) {
-        const ret = wasm.jsvolumevisual_setStepDebugMode(this.__wbg_ptr, enabled);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Snapshot of the tile keys bovista currently wants. Returned as a
-     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
-     * sorted by priority. See `JsImageVisual::wanted_keys`.
-     * @returns {Uint32Array}
-     */
-    wantedKeys() {
-        const ret = wasm.jsvolumevisual_wantedKeys(this.__wbg_ptr);
-        return ret;
-    }
-}
-if (Symbol.dispose) JsVolumeVisual.prototype[Symbol.dispose] = JsVolumeVisual.prototype.free;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -1738,7 +2184,7 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 115, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 127, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e013bd767eefc9f);
             return ret;
         },
@@ -1858,24 +2304,36 @@ const __wbindgen_enum_GpuVertexFormat = ["uint8", "uint8x2", "uint8x4", "sint8",
 
 
 const __wbindgen_enum_GpuVertexStepMode = ["vertex", "instance"];
+const JsAverageVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_jsaveragevolume_free(ptr, 1));
+const JsDirectVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_jsdirectvolume_free(ptr, 1));
 const JsImageVisualFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jsimagevisual_free(ptr, 1));
+const JsIsosurfaceVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_jsisosurfacevolume_free(ptr, 1));
 const JsLevelMetadataFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jslevelmetadata_free(ptr, 1));
 const JsLinesVisualFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jslinesvisual_free(ptr, 1));
+const JsMinipVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_jsminipvolume_free(ptr, 1));
+const JsMipVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_jsmipvolume_free(ptr, 1));
 const JsPointsVisualFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jspointsvisual_free(ptr, 1));
 const JsViewerFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jsviewer_free(ptr, 1));
-const JsVolumeVisualFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsvolumevisual_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
