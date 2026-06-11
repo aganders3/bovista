@@ -1,7 +1,7 @@
 //! Spatial data structures and algorithms for volumetric rendering.
 //!
 //! This module provides utilities for working with 3D grids, spatial culling,
-//! and hierarchical traversal. These are used primarily by TiledImageVisual
+//! and hierarchical traversal. These are used primarily by Image
 //! but could be useful for other volumetric visualizations.
 
 use glam::Vec3;
@@ -10,7 +10,7 @@ use glam::Vec3;
 ///
 /// This is a common pattern for spatial partitioning in volumetric rendering,
 /// used for:
-/// - Chunk-based loading (TiledImageVisual)
+/// - Chunk-based loading (Image)
 /// - Spatial queries (finding chunks in a region)
 /// - LOD management (multi-resolution grids)
 #[derive(Debug, Clone)]

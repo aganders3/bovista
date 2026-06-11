@@ -64,7 +64,7 @@ pub enum SliceOrientation {
 }
 
 /// Visual for rendering volume slices via the virtual-texture pipeline.
-pub struct ImageVisual {
+pub struct Image {
     vt: VirtualTextureData,
 
     // Colormap LUT (group 2) — 256-entry 1D RGBA texture
@@ -92,8 +92,8 @@ pub struct ImageVisual {
     name: String,
 }
 
-impl ImageVisual {
-    /// Create an ImageVisual with virtual-texture multiscale rendering.
+impl Image {
+    /// Create an Image with virtual-texture multiscale rendering.
     ///
     /// # Arguments
     /// * `lod_levels` - Configuration for each LOD level (high-res to low-res)
@@ -467,7 +467,7 @@ impl ImageVisual {
     }
 }
 
-impl Visual for ImageVisual {
+impl Visual for Image {
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, camera_info: &crate::visual::CameraInfo) {
         // Upload pending colormap if set
         if let Some(data) = self.pending_colormap.take() {

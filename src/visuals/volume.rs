@@ -415,7 +415,7 @@ impl VolumeCore {
         self.frame_number += 1;
         self.vt.prepare_volume(queue, self.frame_number, camera_info);
 
-        // VT uniforms (identical pattern to ImageVisual).
+        // VT uniforms (identical pattern to Image).
         let vt = &self.vt;
         let mut lods = [VTLodInfo {
             grid_dims: [1, 1, 1], _pad: 0,

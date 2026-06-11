@@ -1,6 +1,6 @@
 //! Point cloud rendering for 3D scatter plots and particle systems.
 //!
-//! This module provides [`PointsVisual`] for rendering collections of colored points in 3D space.
+//! This module provides [`Points`] for rendering collections of colored points in 3D space.
 //! Each point has a position and RGB color, making it ideal for:
 //! - Scientific data visualization (scatter plots)
 //! - Particle systems
@@ -11,7 +11,7 @@
 //! ## Creating a Point Cloud from Vertices
 //!
 //! ```rust,no_run
-//! use bovista::{PointsVisual, Renderer};
+//! use bovista::{Points, Renderer};
 //! use bovista::visuals::points::PointVertex;
 //! # async fn example(renderer: Renderer) {
 //!
@@ -22,7 +22,7 @@
 //!     PointVertex { position: [0.0, 1.0, 0.0], color: [0.0, 0.0, 1.0] }, // Blue
 //! ];
 //!
-//! let points = PointsVisual::new(
+//! let points = Points::new(
 //!     renderer.device(),
 //!     renderer.surface_format(),
 //!     renderer.camera_bind_group_layout(),
@@ -52,7 +52,7 @@
 //! positions = np.random.randn(n_points, 1, 3).astype(np.float32) * 2.0
 //! colors = np.random.rand(n_points, 1, 3).astype(np.float32)
 //!
-//! points = bv.PyPointsVisual.from_numpy(viewer, positions, colors)
+//! points = bv.PyPoints.from_numpy(viewer, positions, colors)
 //! viewer.add_points(points)
 //! viewer.run()  # Opens interactive window
 //! ```
@@ -123,7 +123,7 @@ impl PointVertex {
 
 /// Visual for rendering point clouds in 3D space.
 ///
-/// `PointsVisual` renders a collection of colored points using GPU acceleration.
+/// `Points` renders a collection of colored points using GPU acceleration.
 /// Each point is rendered as a screen-space circle with configurable size.
 ///
 /// # GPU Resources
@@ -142,7 +142,7 @@ impl PointVertex {
 /// ## Basic Usage
 ///
 /// ```rust,no_run
-/// # use bovista::{PointsVisual, Renderer, Scene};
+/// # use bovista::{Points, Renderer, Scene};
 /// # use bovista::visuals::points::PointVertex;
 /// # use std::sync::{Arc, Mutex};
 /// # async fn example(renderer: Renderer) {
@@ -151,7 +151,7 @@ impl PointVertex {
 ///     PointVertex { position: [1.0, 1.0, 1.0], color: [0.0, 1.0, 0.0] },
 /// ];
 ///
-/// let points = PointsVisual::new(
+/// let points = Points::new(
 ///     renderer.device(),
 ///     renderer.surface_format(),
 ///     renderer.camera_bind_group_layout(),
@@ -170,7 +170,7 @@ impl PointVertex {
 /// ```bash
 /// cargo run --example point_cloud
 /// ```
-pub struct PointsVisual {
+pub struct Points {
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
     render_pipeline: wgpu::RenderPipeline,
@@ -179,7 +179,7 @@ pub struct PointsVisual {
     name: String,
 }
 
-impl PointsVisual {
+impl Points {
     /// Creates a new point cloud visual from vertex data.
     ///
     /// # Arguments
@@ -192,12 +192,12 @@ impl PointsVisual {
     /// # Note
     ///
     /// Vertex data is uploaded to GPU immediately and cannot be modified after creation.
-    /// To update points, create a new `PointsVisual` instance.
+    /// To update points, create a new `Points` instance.
     ///
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use bovista::{PointsVisual, Renderer};
+    /// # use bovista::{Points, Renderer};
     /// # use bovista::visuals::points::PointVertex;
     /// # async fn example(renderer: Renderer) {
     /// let vertices = vec![
@@ -205,7 +205,7 @@ impl PointsVisual {
     ///     // ... more vertices
     /// ];
     ///
-    /// let points = PointsVisual::new(
+    /// let points = Points::new(
     ///     renderer.device(),
     ///     renderer.surface_format(),
     ///     renderer.camera_bind_group_layout(),
@@ -228,7 +228,7 @@ impl PointsVisual {
         )
     }
 
-    /// Create a new PointsVisual with a custom shader
+    /// Create a new Points with a custom shader
     pub fn with_shader(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
@@ -322,10 +322,10 @@ impl PointsVisual {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use bovista::{PointsVisual, Renderer};
+    /// # use bovista::{Points, Renderer};
     /// # async fn example(renderer: Renderer) {
     /// // Create 20×20×20 = 8,000 colored points
-    /// let cube = PointsVisual::test_cube(
+    /// let cube = Points::test_cube(
     ///     renderer.device(),
     ///     renderer.surface_format(),
     ///     renderer.camera_bind_group_layout(),
@@ -378,7 +378,7 @@ impl PointsVisual {
     }
 }
 
-impl Visual for PointsVisual {
+impl Visual for Points {
     fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {
         // Points don't need any per-frame preparation currently
         // In the future, this could handle dynamic updates to vertex data

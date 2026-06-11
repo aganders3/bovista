@@ -40,7 +40,7 @@ pub fn wanted_sorted(wanted: &Wanted) -> Vec<(usize, u32, u32, u32, u32, i32)> {
 
 /// Per-prepare timing + counts. Refreshed by every `prepare` /
 /// `prepare_volume` call, exposed via `VolumeVisual::stats()` /
-/// `ImageVisual::stats()` for performance diagnostics. Read it from
+/// `Image::stats()` for performance diagnostics. Read it from
 /// the render loop after `scene.prepare` returns; it reflects the
 /// most recent prepare.
 #[derive(Default, Clone, Debug)]

@@ -262,7 +262,7 @@ function updateSlicePlane() {
     );
 
     // If in orthographic mode, align camera to slice plane
-    if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Orthographic) {
+    if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Orthographic) {
         alignCameraToSlice(normalX, normalY, normalZ);
     }
 
@@ -332,9 +332,9 @@ function createVisual() {
     pendingLoads.clear();
     loadedChunkCount = 0;
 
-    // Convert lodLevels to JsLevelMetadata array
+    // Convert lodLevels to LevelMetadata array
     const jsLevels = lodLevels.map(level => {
-        return new wasmModule.JsLevelMetadata(
+        return new wasmModule.LevelMetadata(
             level.volumeSize[2],  // width
             level.volumeSize[1],  // height
             level.volumeSize[0],  // depth
@@ -351,9 +351,9 @@ function createVisual() {
         );
     });
 
-    tiledImage = new wasmModule.JsImageVisual(
+    tiledImage = new wasmModule.Image(
         viewer,     // Pass the viewer instance
-        jsLevels,   // Array of JsLevelMetadata
+        jsLevels,   // Array of LevelMetadata
         512,        // max_chunks
     );
 
@@ -397,7 +397,7 @@ canvas.addEventListener('mousemove', (e) => {
 
     if (isDragging) {
         // Check projection mode
-        if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Orthographic) {
+        if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Orthographic) {
             // Pan in orthographic mode
             const panSpeed = volumeScale * 0.002;
             viewer.panCamera(-deltaX * panSpeed, deltaY * panSpeed);
@@ -450,7 +450,7 @@ canvas.addEventListener('wheel', (e) => {
     // Use zoomCamera which handles both perspective and orthographic modes
     viewer.zoomCamera(e.deltaY);
 
-    if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Perspective) {
+    if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Perspective) {
         cameraDistance = viewer.getCameraDistance();
     }
 
@@ -710,16 +710,16 @@ document.getElementById('projection-toggle').addEventListener('click', () => {
     const currentMode = viewer.getCameraProjectionMode();
     const button = document.getElementById('projection-toggle');
 
-    if (currentMode === wasmModule.JsProjectionMode.Perspective) {
+    if (currentMode === wasmModule.ProjectionMode.Perspective) {
         // Switch to orthographic
-        viewer.setCameraProjectionMode(wasmModule.JsProjectionMode.Orthographic);
+        viewer.setCameraProjectionMode(wasmModule.ProjectionMode.Orthographic);
         // Set ortho height based on volume size
         viewer.setCameraOrthoHeight(volumeScale * 0.5);
         // Align camera to slice plane
         updateSlicePlane();
         button.textContent = 'Switch to Perspective';
     } else {
-        viewer.setCameraProjectionMode(wasmModule.JsProjectionMode.Perspective);
+        viewer.setCameraProjectionMode(wasmModule.ProjectionMode.Perspective);
         button.textContent = 'Switch to Orthographic';
     }
 });
@@ -808,7 +808,7 @@ async function init() {
 
         console.log('✓ WASM module loaded');
 
-        viewer = await wasmModule.JsViewer.new('canvas');
+        viewer = await wasmModule.Viewer.new('canvas');
 
         // Don't set clip planes here - they will be set adaptively when dataset loads
         // (Hard-coded values like 0.1-10000 don't work for very small volumes like beechnut)

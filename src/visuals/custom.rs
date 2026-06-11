@@ -39,7 +39,7 @@ use wgpu::RenderPass;
 ///     }
 /// "#;
 ///
-/// let visual = CustomVisual::new(
+/// let visual = Custom::new(
 ///     device,
 ///     surface_format,
 ///     camera_bind_group_layout,
@@ -68,7 +68,7 @@ use wgpu::RenderPass;
 /// Custom shaders work on **both native and WebAssembly/browser** targets!
 /// WGSL compilation happens at runtime via the WebGPU API, so your custom
 /// shaders will work in the browser just as well as native applications.
-pub struct CustomVisual {
+pub struct Custom {
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
     render_pipeline: wgpu::RenderPipeline,
@@ -77,7 +77,7 @@ pub struct CustomVisual {
     name: String,
 }
 
-impl CustomVisual {
+impl Custom {
     /// Create a new custom visual with a user-provided WGSL shader
     ///
     /// # Arguments
@@ -179,7 +179,7 @@ impl CustomVisual {
     }
 }
 
-impl Visual for CustomVisual {
+impl Visual for Custom {
     fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {
         // Custom visuals don't need any per-frame preparation currently
         // In the future, this could handle dynamic uniform updates

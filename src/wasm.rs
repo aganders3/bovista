@@ -5,7 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 /// Camera projection mode
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "ProjectionMode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsProjectionMode {
     /// Perspective projection with field of view
@@ -39,7 +39,7 @@ use web_sys::console;
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
+    Camera, Image, Lines, Points, Renderer, Scene, SlicePlane,
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::gpu_structs::{TileData, TileKey},
@@ -49,7 +49,7 @@ use crate::{
 use bovista_codegen::{camera_methods, visual_methods};
 
 /// JavaScript viewer for Bovista
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "Viewer")]
 pub struct JsViewer {
     renderer: Renderer,
     camera: Camera,
@@ -218,7 +218,7 @@ impl JsViewer {
 
     /// Add an image visual to the scene
     #[wasm_bindgen(js_name = addImage)]
-    pub fn add_image(&mut self, visual: &JsImageVisual) -> usize {
+    pub fn add_image(&mut self, visual: &JsImage) -> usize {
         self.scene.add(visual.get_inner())
     }
 
@@ -291,13 +291,13 @@ impl JsViewer {
 
     /// Add a points visual to the scene
     #[wasm_bindgen(js_name = addPoints)]
-    pub fn add_points_visual(&mut self, visual: &JsPointsVisual) -> usize {
+    pub fn add_points_visual(&mut self, visual: &JsPoints) -> usize {
         self.scene.add(visual.inner.clone())
     }
 
     /// Add a lines visual to the scene
     #[wasm_bindgen(js_name = addLines)]
-    pub fn add_lines_visual(&mut self, visual: &JsLinesVisual) -> usize {
+    pub fn add_lines_visual(&mut self, visual: &JsLines) -> usize {
         self.scene.add(visual.inner.clone())
     }
 
@@ -320,7 +320,7 @@ impl JsViewer {
 /// Level metadata for multi-resolution LOD images
 ///
 /// Describes a single LOD level in a chunked image.
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "LevelMetadata")]
 #[derive(Clone)]
 pub struct JsLevelMetadata {
     volume_size: (u32, u32, u32),
@@ -395,20 +395,20 @@ impl JsLevelMetadata {
 }
 
 
-/// JavaScript wrapper for ImageVisual — single-draw-call multiscale rendering.
+/// JavaScript wrapper for Image — single-draw-call multiscale rendering.
 ///
 /// Tile data must be provided as uint16 via `setChunkDataU16`.
-#[wasm_bindgen]
-pub struct JsImageVisual {
+#[wasm_bindgen(js_name = "Image")]
+pub struct JsImage {
     inner: VisualRef,
     pending_chunks: Option<PendingChunks>,
     wanted: crate::visuals::virtual_texture::Wanted,
 }
 
-#[visual_methods(ImageVisual)]
+#[visual_methods(Image)]
 #[wasm_bindgen]
-impl JsImageVisual {
-    /// Create an ImageVisual.
+impl JsImage {
+    /// Create an Image.
     ///
     /// Pull-based: bovista publishes the set of tiles it wants each
     /// frame via `wantedKeys()`. The caller (JS) polls this and pushes
@@ -425,7 +425,7 @@ impl JsImageVisual {
             levels.iter().map(|l| l.to_lod_level_config()).collect();
 
         let renderer = viewer.renderer();
-        let visual = ImageVisual::new(
+        let visual = Image::new(
             renderer.device(),
             renderer.queue(),
             renderer.surface_format(),
@@ -469,7 +469,7 @@ impl JsImageVisual {
     /// Set the slice plane position and normal
     #[wasm_bindgen(js_name = setSlicePlane)]
     pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |img| {
                 let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
@@ -481,7 +481,7 @@ impl JsImageVisual {
     /// Set contrast limits (0.0 to 1.0)
     #[wasm_bindgen(js_name = setContrast)]
     pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |img| img.set_contrast_limits(min, max)
         ).map_err(|e| JsValue::from_str(&e))
@@ -492,7 +492,7 @@ impl JsImageVisual {
     #[wasm_bindgen(js_name = setColormap)]
     pub fn set_colormap(&self, rgba: &Uint8Array) -> Result<(), JsValue> {
         let bytes = rgba.to_vec();
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |img| img.set_colormap(&bytes)
         ).map_err(|e| JsValue::from_str(&e))
@@ -533,7 +533,7 @@ impl JsImageVisual {
     /// Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
     #[wasm_bindgen(js_name = setLodBias)]
     pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(&self.inner, |img| {
+        bindings_common::with_visual_mut::<Image, _, _>(&self.inner, |img| {
             img.set_lod_bias(bias)
         })
         .map_err(|e| JsValue::from_str(&e))
@@ -542,7 +542,7 @@ impl JsImageVisual {
     /// Enable or disable debug LOD tinting (green=LOD0, red=coarsest).
     #[wasm_bindgen(js_name = setDebugMode)]
     pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(&self.inner, |img| {
+        bindings_common::with_visual_mut::<Image, _, _>(&self.inner, |img| {
             img.set_debug_mode(enabled)
         })
         .map_err(|e| JsValue::from_str(&e))
@@ -551,7 +551,7 @@ impl JsImageVisual {
     /// Returns [loaded, visible] tile counts.
     #[wasm_bindgen(js_name = getStats)]
     pub fn get_stats(&self) -> Vec<usize> {
-        bindings_common::with_visual_ref::<ImageVisual, _, _>(&self.inner, |img| {
+        bindings_common::with_visual_ref::<Image, _, _>(&self.inner, |img| {
             let (loaded, visible) = img.get_stats();
             vec![loaded, visible]
         })
@@ -572,10 +572,11 @@ impl JsImageVisual {
 macro_rules! js_volume_class {
     (
         $wrapper:ident,
+        $js_name:literal,
         $rust_ty:ident
         $(, extra: { $($extra:tt)* })?
     ) => {
-        #[wasm_bindgen]
+        #[wasm_bindgen(js_name = $js_name)]
         pub struct $wrapper {
             inner: VisualRef,
             pending_chunks: Option<PendingChunks>,
@@ -696,7 +697,7 @@ macro_rules! js_volume_class {
     };
 }
 
-js_volume_class!(JsDirectVolume, DirectVolume, extra: {
+js_volume_class!(JsDirectVolume, "DirectVolume", DirectVolume, extra: {
     #[wasm_bindgen(js_name = setDensityScale)]
     pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {
         bindings_common::with_visual_mut::<DirectVolume, _, _>(
@@ -733,7 +734,7 @@ js_volume_class!(JsDirectVolume, DirectVolume, extra: {
     }
 });
 
-js_volume_class!(JsMipVolume, MipVolume, extra: {
+js_volume_class!(JsMipVolume, "MipVolume", MipVolume, extra: {
     #[wasm_bindgen(js_name = setAttenuation)]
     pub fn set_attenuation(&self, attenuation: f32) -> Result<(), JsValue> {
         bindings_common::with_visual_mut::<MipVolume, _, _>(
@@ -742,10 +743,10 @@ js_volume_class!(JsMipVolume, MipVolume, extra: {
     }
 });
 
-js_volume_class!(JsMinipVolume, MinipVolume);
-js_volume_class!(JsAverageVolume, AverageVolume);
+js_volume_class!(JsMinipVolume, "MinipVolume", MinipVolume);
+js_volume_class!(JsAverageVolume, "AverageVolume", AverageVolume);
 
-js_volume_class!(JsIsosurfaceVolume, IsosurfaceVolume, extra: {
+js_volume_class!(JsIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra: {
     #[wasm_bindgen(js_name = setIsoThreshold)]
     pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {
         bindings_common::with_visual_mut::<IsosurfaceVolume, _, _>(
@@ -754,20 +755,20 @@ js_volume_class!(JsIsosurfaceVolume, IsosurfaceVolume, extra: {
     }
 });
 
-/// JavaScript wrapper for PointsVisual — colored point cloud.
-#[wasm_bindgen]
-pub struct JsPointsVisual {
+/// JavaScript wrapper for Points — colored point cloud.
+#[wasm_bindgen(js_name = "Points")]
+pub struct JsPoints {
     inner: VisualRef,
 }
 
 #[wasm_bindgen]
-impl JsPointsVisual {
+impl JsPoints {
     /// Create a point cloud from flat Float32Arrays.
     ///
     /// `positions` is a flat array of XYZ triples; `colors` is a flat array of RGB triples
     /// (values 0–1). Both must have length 3 × n_points.
     #[wasm_bindgen(constructor)]
-    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsPointsVisual, JsValue> {
+    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsPoints, JsValue> {
         let pos = positions.to_vec();
         let col = colors.to_vec();
         if pos.len() != col.len() || pos.len() % 3 != 0 {
@@ -781,7 +782,7 @@ impl JsPointsVisual {
             })
             .collect();
         let renderer = viewer.renderer();
-        let visual = PointsVisual::new(
+        let visual = Points::new(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -792,9 +793,9 @@ impl JsPointsVisual {
 
     /// Create a test cube of points.
     #[wasm_bindgen(js_name = testCube)]
-    pub fn test_cube(viewer: &JsViewer, size: u32) -> JsPointsVisual {
+    pub fn test_cube(viewer: &JsViewer, size: u32) -> JsPoints {
         let renderer = viewer.renderer();
-        let visual = PointsVisual::test_cube(
+        let visual = Points::test_cube(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -804,20 +805,20 @@ impl JsPointsVisual {
     }
 }
 
-/// JavaScript wrapper for LinesVisual — line segments and wireframes.
-#[wasm_bindgen]
-pub struct JsLinesVisual {
+/// JavaScript wrapper for Lines — line segments and wireframes.
+#[wasm_bindgen(js_name = "Lines")]
+pub struct JsLines {
     inner: VisualRef,
 }
 
 #[wasm_bindgen]
-impl JsLinesVisual {
+impl JsLines {
     /// Create a lines visual from flat Float32Arrays.
     ///
     /// Each consecutive pair of vertices defines one line segment.
     /// `positions` and `colors` are flat arrays of length 3 × n_vertices.
     #[wasm_bindgen(constructor)]
-    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsLinesVisual, JsValue> {
+    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsLines, JsValue> {
         let pos = positions.to_vec();
         let col = colors.to_vec();
         if pos.len() != col.len() || pos.len() % 3 != 0 {
@@ -831,7 +832,7 @@ impl JsLinesVisual {
             })
             .collect();
         let renderer = viewer.renderer();
-        let visual = LinesVisual::new(
+        let visual = Lines::new(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -842,9 +843,9 @@ impl JsLinesVisual {
 
     /// Create a 3-axis helper (X=red, Y=green, Z=blue).
     #[wasm_bindgen(js_name = axisHelper)]
-    pub fn axis_helper(viewer: &JsViewer, length: f32) -> JsLinesVisual {
+    pub fn axis_helper(viewer: &JsViewer, length: f32) -> JsLines {
         let renderer = viewer.renderer();
-        let visual = LinesVisual::axis_helper(
+        let visual = Lines::axis_helper(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -855,9 +856,9 @@ impl JsLinesVisual {
 
     /// Create a wireframe unit cube.
     #[wasm_bindgen(js_name = testCube)]
-    pub fn test_cube(viewer: &JsViewer) -> JsLinesVisual {
+    pub fn test_cube(viewer: &JsViewer) -> JsLines {
         let renderer = viewer.renderer();
-        let visual = LinesVisual::test_cube(
+        let visual = Lines::test_cube(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),

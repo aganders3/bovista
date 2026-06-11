@@ -8,10 +8,10 @@ pub mod gpu_structs;
 pub mod virtual_texture;
 pub mod volume;
 
-pub use custom::CustomVisual;
-pub use image::{ImageVisual, SliceOrientation, SlicePlane};
-pub use lines::LinesVisual;
-pub use points::PointsVisual;
+pub use custom::Custom;
+pub use image::{Image, SliceOrientation, SlicePlane};
+pub use lines::Lines;
+pub use points::Points;
 pub use virtual_texture::LodLevelConfig;
 pub use volume::{
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, CustomVisual, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
+    Camera, Custom, Image, Lines, Points, Renderer, Scene, SlicePlane,
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     VertexBufferLayout,
 };
@@ -285,13 +285,13 @@ impl PyViewer {
     /// ```
     fn add(&mut self, visual: &Bound<'_, PyAny>) -> PyResult<usize> {
         // Try each visual type
-        if let Ok(points) = visual.extract::<PyRef<PyPointsVisual>>() {
+        if let Ok(points) = visual.extract::<PyRef<PyPoints>>() {
             return Ok(self.scene.add(points.inner.clone()));
         }
-        if let Ok(lines) = visual.extract::<PyRef<PyLinesVisual>>() {
+        if let Ok(lines) = visual.extract::<PyRef<PyLines>>() {
             return Ok(self.scene.add(lines.inner.clone()));
         }
-        if let Ok(image) = visual.extract::<PyRef<PyImageVisual>>() {
+        if let Ok(image) = visual.extract::<PyRef<PyImage>>() {
             return Ok(self.scene.add(image.inner.clone()));
         }
         if let Ok(v) = visual.extract::<PyRef<PyDirectVolume>>()    { return Ok(self.scene.add(v.inner.clone())); }
@@ -299,7 +299,7 @@ impl PyViewer {
         if let Ok(v) = visual.extract::<PyRef<PyMinipVolume>>()     { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyAverageVolume>>()   { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyIsosurfaceVolume>>(){ return Ok(self.scene.add(v.inner.clone())); }
-        if let Ok(custom) = visual.extract::<PyRef<PyCustomVisual>>() {
+        if let Ok(custom) = visual.extract::<PyRef<PyCustom>>() {
             return Ok(self.scene.add(custom.inner.clone()));
         }
 
@@ -643,20 +643,20 @@ trait PyVisualWrapper {
     fn get_inner(&self) -> VisualRef;
 }
 
-/// Python wrapper for PointsVisual
+/// Python wrapper for Points
 #[pyclass(name = "Points")]
-pub struct PyPointsVisual {
+pub struct PyPoints {
     inner: VisualRef,
 }
 
-impl PyVisualWrapper for PyPointsVisual {
+impl PyVisualWrapper for PyPoints {
     fn get_inner(&self) -> VisualRef {
         self.inner.clone()
     }
 }
 
 #[pymethods]
-impl PyPointsVisual {
+impl PyPoints {
     /// Create a point cloud from numpy arrays
     ///
     /// Args:
@@ -692,7 +692,7 @@ impl PyPointsVisual {
             });
         }
 
-        let visual = PointsVisual::new(
+        let visual = Points::new(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -710,7 +710,7 @@ impl PyPointsVisual {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
-        let visual = PointsVisual::test_cube(
+        let visual = Points::test_cube(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -723,27 +723,27 @@ impl PyPointsVisual {
     }
 }
 
-/// Python wrapper for LinesVisual
+/// Python wrapper for Lines
 #[pyclass(name = "Lines")]
-pub struct PyLinesVisual {
+pub struct PyLines {
     inner: VisualRef,
 }
 
-impl PyVisualWrapper for PyLinesVisual {
+impl PyVisualWrapper for PyLines {
     fn get_inner(&self) -> VisualRef {
         self.inner.clone()
     }
 }
 
 #[pymethods]
-impl PyLinesVisual {
+impl PyLines {
     /// Create an axis helper
     #[staticmethod]
     fn axis_helper(viewer: &PyViewer, length: f32) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
-        let visual = LinesVisual::axis_helper(
+        let visual = Lines::axis_helper(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -761,7 +761,7 @@ impl PyLinesVisual {
         let renderer = viewer.renderer.as_ref()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
 
-        let visual = LinesVisual::test_cube(
+        let visual = Lines::test_cube(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -773,23 +773,23 @@ impl PyLinesVisual {
     }
 }
 
-/// Python wrapper for ImageVisual
+/// Python wrapper for Image
 #[pyclass(name = "Image")]
-pub struct PyImageVisual {
+pub struct PyImage {
     inner: VisualRef,
     pending_chunks: crate::visuals::virtual_texture::PendingChunks,
     wanted: crate::visuals::virtual_texture::Wanted,
 }
 
-impl PyVisualWrapper for PyImageVisual {
+impl PyVisualWrapper for PyImage {
     fn get_inner(&self) -> VisualRef {
         self.inner.clone()
     }
 }
 
-#[visual_methods(ImageVisual)]
+#[visual_methods(Image)]
 #[pymethods]
-impl PyImageVisual {
+impl PyImage {
     #[new]
     #[pyo3(signature = (viewer, levels, max_tiles, atlas_count = 1))]
     fn new(
@@ -822,7 +822,7 @@ impl PyImageVisual {
         // Pull-based: bovista publishes `wanted` each prepare; Python
         // polls it via `wanted_keys()` and pushes data via
         // `set_chunk_data_u16(...)`. No callback.
-        let visual = ImageVisual::new(
+        let visual = Image::new(
             renderer.device(),
             renderer.queue(),
             renderer.surface_format(),
@@ -857,7 +857,7 @@ impl PyImageVisual {
 
     /// Set contrast limits
     fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |v| v.set_contrast_limits(min, max)
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
@@ -875,7 +875,7 @@ impl PyImageVisual {
             }
             None => Vec::new(),
         };
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |v| v.set_colormap(&bytes)
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
@@ -883,7 +883,7 @@ impl PyImageVisual {
 
     /// Set an arbitrary slice plane
     fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |v| {
                 let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
@@ -923,7 +923,7 @@ impl PyImageVisual {
 
     /// Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
     fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(&self.inner, |v| {
+        bindings_common::with_visual_mut::<Image, _, _>(&self.inner, |v| {
             v.set_lod_bias(bias)
         })
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
@@ -931,7 +931,7 @@ impl PyImageVisual {
 
     /// Returns (loaded_tiles, visible_tiles).
     fn get_stats(&self) -> PyResult<(usize, usize)> {
-        bindings_common::with_visual_ref::<ImageVisual, _, _>(&self.inner, |v| v.get_stats())
+        bindings_common::with_visual_ref::<Image, _, _>(&self.inner, |v| v.get_stats())
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
     }
 }
@@ -974,20 +974,20 @@ impl PyLevelMetadata {
     }
 }
 
-/// Python wrapper for CustomVisual
+/// Python wrapper for Custom
 #[pyclass(name = "Custom")]
-pub struct PyCustomVisual {
+pub struct PyCustom {
     inner: VisualRef,
 }
 
-impl PyVisualWrapper for PyCustomVisual {
+impl PyVisualWrapper for PyCustom {
     fn get_inner(&self) -> VisualRef {
         self.inner.clone()
     }
 }
 
 #[pymethods]
-impl PyCustomVisual {
+impl PyCustom {
     /// Create a custom visual with a user-provided WGSL shader
     ///
     /// # Arguments
@@ -1033,7 +1033,7 @@ impl PyCustomVisual {
     ///     (0, "Float32x3", 0)  # (location, format, offset)
     /// ])
     ///
-    /// visual = bv.PyCustomVisual.new(
+    /// visual = bv.PyCustom.new(
     ///     viewer, shader, vertices.tobytes(), layout, "triangle_list"
     /// )
     /// viewer.add(visual)
@@ -1061,7 +1061,7 @@ impl PyCustomVisual {
             )),
         };
 
-        let visual = CustomVisual::new(
+        let visual = Custom::new(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -1328,16 +1328,16 @@ py_volume_class!(PyIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra
 #[pymodule]
 fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyViewer>()?;
-    m.add_class::<PyPointsVisual>()?;
-    m.add_class::<PyLinesVisual>()?;
-    m.add_class::<PyImageVisual>()?;
+    m.add_class::<PyPoints>()?;
+    m.add_class::<PyLines>()?;
+    m.add_class::<PyImage>()?;
     m.add_class::<PyDirectVolume>()?;
     m.add_class::<PyMipVolume>()?;
     m.add_class::<PyMinipVolume>()?;
     m.add_class::<PyAverageVolume>()?;
     m.add_class::<PyIsosurfaceVolume>()?;
     m.add_class::<PyLevelMetadata>()?;
-    m.add_class::<PyCustomVisual>()?;
+    m.add_class::<PyCustom>()?;
     m.add_class::<PyVertexBufferLayout>()?;
     m.add_class::<PyProjectionMode>()?;
     Ok(())

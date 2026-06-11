@@ -67,11 +67,11 @@ let stepDebugMode = false;
 // VOLUME_MODES maps the dropdown value → (constructor, viewer.add* method,
 // flags for which mode-specific sliders/toggles apply).
 const VOLUME_MODES = {
-    direct:   { ctor: 'JsDirectVolume',     add: 'addDirectVolume',     density: true,  debug: true  },
-    mip:      { ctor: 'JsMipVolume',        add: 'addMipVolume',        attenuation: true            },
-    minip:    { ctor: 'JsMinipVolume',      add: 'addMinipVolume'                                    },
-    average:  { ctor: 'JsAverageVolume',    add: 'addAverageVolume'                                  },
-    iso:      { ctor: 'JsIsosurfaceVolume', add: 'addIsosurfaceVolume', iso: true                    },
+    direct:   { ctor: 'DirectVolume',     add: 'addDirectVolume',     density: true,  debug: true  },
+    mip:      { ctor: 'MipVolume',        add: 'addMipVolume',        attenuation: true            },
+    minip:    { ctor: 'MinipVolume',      add: 'addMinipVolume'                                    },
+    average:  { ctor: 'AverageVolume',    add: 'addAverageVolume'                                  },
+    iso:      { ctor: 'IsosurfaceVolume', add: 'addIsosurfaceVolume', iso: true                    },
 };
 let currentMode = 'direct';
 
@@ -218,7 +218,7 @@ function createVisual() {
     viewer.clearScene();
     pendingLoads.clear();
 
-    const jsLevels = lodLevels.map(level => new wasmModule.JsLevelMetadata(
+    const jsLevels = lodLevels.map(level => new wasmModule.LevelMetadata(
         level.volumeSize[2], level.volumeSize[1], level.volumeSize[0],
         level.chunkSize[2],  level.chunkSize[1],  level.chunkSize[0],
         level.voxelSize[2],  level.voxelSize[1],  level.voxelSize[0],
@@ -674,7 +674,7 @@ async function init() {
         wasmModule = await import('../../pkg/bovista.js');
         await wasmModule.default();
 
-        viewer = await wasmModule.JsViewer.new('canvas');
+        viewer = await wasmModule.Viewer.new('canvas');
         wasmInitialized = true;
 
         setStatus('Ready — select a dataset', 'status-ready');
