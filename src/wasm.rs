@@ -332,31 +332,48 @@ pub struct JsLevelMetadata {
 
 #[wasm_bindgen]
 impl JsLevelMetadata {
-    /// Construct a level descriptor. All shape and voxel triples follow
-    /// `(z, y, x)` numpy order; translation is `(z, y, x)` world-space offset.
+    /// Construct a level descriptor. Each array is `[z, y, x]` numpy order.
+    ///
+    /// ```js
+    /// new LevelMetadata(
+    ///   /* volume_shape */ [1024, 1024, 1024],   // voxel counts along z, y, x
+    ///   /* chunk_shape  */ [64, 64, 64],          // tile voxel counts
+    ///   /* voxel_size   */ [1.0, 1.0, 1.0],       // world-space units per voxel
+    ///   /* scale_factor */ 1.0,                   // relative to LOD 0
+    ///   /* translation  */ [0.0, 0.0, 0.0],       // world-space origin offset
+    /// );
+    /// ```
     #[wasm_bindgen(constructor)]
     pub fn new(
-        volume_z_shape: u32,
-        volume_y_shape: u32,
-        volume_x_shape: u32,
-        chunk_z_shape: u32,
-        chunk_y_shape: u32,
-        chunk_x_shape: u32,
-        voxel_z_size: f32,
-        voxel_y_size: f32,
-        voxel_x_size: f32,
+        volume_shape: Vec<u32>,
+        chunk_shape: Vec<u32>,
+        voxel_size: Vec<f32>,
         scale_factor: f32,
-        translation_z: f32,
-        translation_y: f32,
-        translation_x: f32,
-    ) -> Self {
-        Self {
-            volume_size: (volume_z_shape, volume_y_shape, volume_x_shape),
-            chunk_size: (chunk_z_shape, chunk_y_shape, chunk_x_shape),
-            voxel_size: (voxel_z_size, voxel_y_size, voxel_x_size),
+        translation: Vec<f32>,
+    ) -> Result<JsLevelMetadata, JsValue> {
+        let triple_u32 = |v: &Vec<u32>, name: &str| -> Result<(u32, u32, u32), JsValue> {
+            if v.len() != 3 {
+                return Err(JsValue::from_str(&format!(
+                    "{} must be a 3-element [z, y, x] array, got length {}", name, v.len()
+                )));
+            }
+            Ok((v[0], v[1], v[2]))
+        };
+        let triple_f32 = |v: &Vec<f32>, name: &str| -> Result<(f32, f32, f32), JsValue> {
+            if v.len() != 3 {
+                return Err(JsValue::from_str(&format!(
+                    "{} must be a 3-element [z, y, x] array, got length {}", name, v.len()
+                )));
+            }
+            Ok((v[0], v[1], v[2]))
+        };
+        Ok(Self {
+            volume_size: triple_u32(&volume_shape, "volume_shape")?,
+            chunk_size:  triple_u32(&chunk_shape,  "chunk_shape")?,
+            voxel_size:  triple_f32(&voxel_size,   "voxel_size")?,
             scale_factor,
-            translation: (translation_z, translation_y, translation_x),
-        }
+            translation: triple_f32(&translation,  "translation")?,
+        })
     }
 
     /// Volume shape as `[z, y, x]` voxel counts.

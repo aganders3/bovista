@@ -332,16 +332,16 @@ function createVisual() {
     pendingLoads.clear();
     loadedChunkCount = 0;
 
-    // LevelMetadata args follow (z, y, x) numpy order.
-    const jsLevels = lodLevels.map(level => {
-        return new wasmModule.LevelMetadata(
-            level.volumeSize[0], level.volumeSize[1], level.volumeSize[2],
-            level.chunkSize[0],  level.chunkSize[1],  level.chunkSize[2],
-            level.voxelSize[0],  level.voxelSize[1],  level.voxelSize[2],
+    // Each shape/size argument is a [z, y, x] array (numpy order).
+    const jsLevels = lodLevels.map(level =>
+        new wasmModule.LevelMetadata(
+            level.volumeSize,
+            level.chunkSize,
+            level.voxelSize,
             level.scaleFactor,
-            level.translation[0], level.translation[1], level.translation[2]
-        );
-    });
+            level.translation,
+        )
+    );
 
     tiledImage = new wasmModule.Image(
         viewer,     // Pass the viewer instance

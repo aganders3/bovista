@@ -190,7 +190,14 @@ import init, { Viewer, DirectVolume, LevelMetadata } from './bovista.js';
 await init();
 
 const viewer = await Viewer.new('canvas-id');           // canvas element
-const levels = lodLevels.map(l => new LevelMetadata(/* dims, chunk, voxel, scale, translation */));
+// LevelMetadata args are 5: three [z, y, x] arrays + scale factor + translation array.
+const levels = lodLevels.map(l => new LevelMetadata(
+    l.volumeSize,   // [z, y, x] voxel counts at this LOD
+    l.chunkSize,    // [z, y, x] voxel counts per chunk
+    l.voxelSize,    // [z, y, x] world-space units per voxel
+    l.scaleFactor,  // resolution ratio relative to LOD 0 (1.0, 2.0, 4.0, …)
+    l.translation,  // [z, y, x] world-space origin offset
+));
 
 const volume = new DirectVolume(viewer, levels, /*maxChunks=*/2000, /*atlasCount=*/1);
 viewer.addDirectVolume(volume);
