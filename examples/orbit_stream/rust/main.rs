@@ -40,9 +40,145 @@ use std::time::{Duration, Instant};
 
 use bovista::visual::CameraInfo;
 use bovista::visuals::virtual_texture::PendingChunks;
-use bovista::visuals::{LodLevelConfig, VolumeVisual};
+use bovista::visuals::{
+    AverageVolume, DirectVolume, IsosurfaceVolume,
+    LodLevelConfig, MinipVolume, MipVolume,
+};
+use bovista::visuals::virtual_texture::{PrepareStats, Wanted};
 use bovista::{Camera, ProjectionMode, Renderer, Scene};
 
+// ── Mode dispatch ───────────────────────────────────────────────────────────
+//
+// orbit_stream picks one of bovista's six volume render modes at startup via
+// `--mode`. The visual type is fixed for the process lifetime; runtime
+// switching without rebuilding the atlas is a follow-up (it needs the
+// VolumeBackend split discussed in PR #6's notes).
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum VolumeMode { Direct, Mip, Minip, Average, Iso }
+
+impl VolumeMode {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "direct"     => Some(Self::Direct),
+            "mip"        => Some(Self::Mip),
+            "minip"      => Some(Self::Minip),
+            "average"    => Some(Self::Average),
+            "iso" | "isosurface" => Some(Self::Iso),
+            _ => None,
+        }
+    }
+}
+
+/// Wraps any of the six volume visual types behind a single Visual impl. The
+/// common bovista methods (contrast, lod_bias, prefetch, t-controls, stats, …)
+/// all match-dispatch through `volume_dispatch!`; the few mode-specific ones
+/// (density on Direct, attenuation on MIP, iso_threshold on Iso) are
+/// no-ops on the variants that don't carry that parameter.
+enum Volume {
+    Direct(DirectVolume),
+    Mip(MipVolume),
+    Minip(MinipVolume),
+    Average(AverageVolume),
+    Iso(IsosurfaceVolume),
+}
+
+macro_rules! volume_dispatch {
+    ($self:ident, $v:ident => $body:expr) => {
+        match $self {
+            Volume::Direct($v)   => $body,
+            Volume::Mip($v)      => $body,
+            Volume::Minip($v)    => $body,
+            Volume::Average($v)  => $body,
+            Volume::Iso($v)      => $body,
+        }
+    };
+}
+
+impl Volume {
+    fn new(
+        mode: VolumeMode,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+        camera_bgl: &wgpu::BindGroupLayout,
+        lod_levels: Vec<LodLevelConfig>,
+        cache_capacity: usize,
+        atlas_count: usize,
+    ) -> Self {
+        match mode {
+            VolumeMode::Direct   => Volume::Direct(DirectVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
+            VolumeMode::Mip      => Volume::Mip(MipVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
+            VolumeMode::Minip    => Volume::Minip(MinipVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
+            VolumeMode::Average  => Volume::Average(AverageVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
+            VolumeMode::Iso      => Volume::Iso(IsosurfaceVolume::new(device, queue, surface_format, camera_bgl, lod_levels, cache_capacity, atlas_count)),
+        }
+    }
+
+    // Common methods — every variant has these.
+    fn set_contrast_limits(&mut self, min: f32, max: f32) {
+        volume_dispatch!(self, v => v.set_contrast_limits(min, max));
+    }
+    fn set_lod_bias(&mut self, bias: f32) {
+        volume_dispatch!(self, v => v.set_lod_bias(bias));
+    }
+    fn set_desired_timepoint(&mut self, t: u32) {
+        volume_dispatch!(self, v => v.set_desired_timepoint(t));
+    }
+    fn set_prefetch(&mut self, lookahead: u32, t_count: u32) {
+        volume_dispatch!(self, v => v.set_prefetch(lookahead, t_count));
+    }
+    fn pending_chunks(&self) -> Option<PendingChunks> {
+        volume_dispatch!(self, v => v.pending_chunks())
+    }
+    fn wanted_handle(&self) -> Wanted {
+        volume_dispatch!(self, v => v.wanted_handle())
+    }
+    fn stats(&self) -> PrepareStats {
+        volume_dispatch!(self, v => v.stats())
+    }
+    fn current_t_load_status(&self) -> (usize, usize) {
+        volume_dispatch!(self, v => v.current_t_load_status())
+    }
+    fn desired_t(&self) -> u32 {
+        volume_dispatch!(self, v => v.desired_t())
+    }
+
+    // Mode-specific: only applicable variants do anything.
+    fn try_set_density_scale(&mut self, scale: f32) {
+        if let Volume::Direct(v) = self { v.set_density_scale(scale); }
+    }
+    fn try_set_attenuation(&mut self, attenuation: f32) {
+        if let Volume::Mip(v) = self { v.set_attenuation(attenuation); }
+    }
+    fn try_set_iso_threshold(&mut self, threshold: f32) {
+        if let Volume::Iso(v) = self { v.set_iso_threshold(threshold); }
+    }
+}
+
+impl bovista::Visual for Volume {
+    fn prepare(&mut self, d: &wgpu::Device, q: &wgpu::Queue, ci: &bovista::visual::CameraInfo) {
+        volume_dispatch!(self, v => v.prepare(d, q, ci));
+    }
+    fn render(&self, rp: &mut wgpu::RenderPass) {
+        volume_dispatch!(self, v => v.render(rp));
+    }
+    fn set_transform(&mut self, t: bovista::Transform) {
+        volume_dispatch!(self, v => v.set_transform(t));
+    }
+    fn transform(&self) -> &bovista::Transform {
+        volume_dispatch!(self, v => v.transform())
+    }
+    fn is_visible(&self) -> bool {
+        volume_dispatch!(self, v => v.is_visible())
+    }
+    fn set_visible(&mut self, vis: bool) {
+        volume_dispatch!(self, v => v.set_visible(vis));
+    }
+    fn name(&self) -> &str {
+        volume_dispatch!(self, v => v.name())
+    }
+}
 
 fn main() {
     env_logger::init();
@@ -52,7 +188,7 @@ fn main() {
         "--width", "--height", "--fps", "--port", "--backend",
         "--zarr", "--cache-tiles", "--atlas-count", "--max-inflight", "--prefetch",
         "--contrast-min", "--contrast-max", "--density-mult", "--lod-bias",
-        "--timepoint",
+        "--timepoint", "--mode", "--attenuation", "--iso-threshold",
     ];
     check_unknown_flags(&args, KNOWN_FLAGS);
 
@@ -106,6 +242,15 @@ fn main() {
     let contrast_max: f32 = flag_str_opt(&args, "--contrast-max").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let density_mult: f32 = flag_str_opt(&args, "--density-mult").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let lod_bias: f32 = flag_str_opt(&args, "--lod-bias").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    // Rendering mode is fixed at startup; the per-mode visual stores the right
+    // pipeline. Runtime mode-switching (without atlas rebuild) needs the
+    // VolumeBackend split — see the follow-up PR.
+    let mode: VolumeMode = flag_str_opt(&args, "--mode")
+        .as_deref().and_then(VolumeMode::parse).unwrap_or(VolumeMode::Direct);
+    let mip_attenuation: f32 = flag_str_opt(&args, "--attenuation")
+        .and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let iso_threshold: f32 = flag_str_opt(&args, "--iso-threshold")
+        .and_then(|v| v.parse().ok()).unwrap_or(0.5);
 
     println!("[orbit] {}x{} @ {} fps, serving on port {}, backend={}",
              width, height, fps, port, backend);
@@ -189,10 +334,19 @@ fn main() {
     let n_timepoints = setup.n_timepoints;
     let queue_count_at = setup.queue_count_at.clone();
 
-    let mut volume = VolumeVisual::new(
+    let mut volume = Volume::new(
+        mode,
         renderer.device(), renderer.queue(), renderer.surface_format(),
         renderer.camera_bind_group_layout(),
         setup.lods.clone(), cache_capacity as usize, atlas_count,
+    );
+    // Apply mode-specific startup parameters (no-ops on variants that
+    // don't carry them — see Volume::try_set_* for the dispatch table).
+    volume.try_set_attenuation(mip_attenuation);
+    volume.try_set_iso_threshold(iso_threshold);
+    println!(
+        "[orbit] render mode: {:?} (--attenuation={} --iso-threshold={})",
+        mode, mip_attenuation, iso_threshold,
     );
     *setup.pending_slot.lock().unwrap() = Some(volume.pending_chunks().unwrap());
     *setup.wanted_slot.lock().unwrap() = Some(volume.wanted_handle());
@@ -327,7 +481,8 @@ fn main() {
         {
             let mut v = volume_arc.lock().unwrap();
             v.set_contrast_limits(view_state.contrast_min(), view_state.contrast_max());
-            v.set_density_scale(base_density * view_state.density_mult());
+            // No-op on modes that don't use density (MIP / minIP / Average / Iso).
+            v.try_set_density_scale(base_density * view_state.density_mult());
             v.set_lod_bias(view_state.lod_bias());
             let gen = view_state.t_generation();
             if gen != last_t_gen {

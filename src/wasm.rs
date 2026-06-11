@@ -39,7 +39,8 @@ use web_sys::console;
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, ImageVisual, LinesVisual, PointsVisual, VolumeVisual, Renderer, Scene, SlicePlane,
+    Camera, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
+    AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::gpu_structs::{TileData, TileKey},
     visuals::points::PointVertex,
@@ -221,9 +222,28 @@ impl JsViewer {
         self.scene.add(visual.get_inner())
     }
 
-    /// Add a volume visual to the scene
-    #[wasm_bindgen(js_name = addVolume)]
-    pub fn add_volume(&mut self, visual: &JsVolumeVisual) -> usize {
+    #[wasm_bindgen(js_name = addDirectVolume)]
+    pub fn add_direct_volume(&mut self, visual: &JsDirectVolume) -> usize {
+        self.scene.add(visual.get_inner())
+    }
+
+    #[wasm_bindgen(js_name = addMipVolume)]
+    pub fn add_mip_volume(&mut self, visual: &JsMipVolume) -> usize {
+        self.scene.add(visual.get_inner())
+    }
+
+    #[wasm_bindgen(js_name = addMinipVolume)]
+    pub fn add_minip_volume(&mut self, visual: &JsMinipVolume) -> usize {
+        self.scene.add(visual.get_inner())
+    }
+
+    #[wasm_bindgen(js_name = addAverageVolume)]
+    pub fn add_average_volume(&mut self, visual: &JsAverageVolume) -> usize {
+        self.scene.add(visual.get_inner())
+    }
+
+    #[wasm_bindgen(js_name = addIsosurfaceVolume)]
+    pub fn add_isosurface_volume(&mut self, visual: &JsIsosurfaceVolume) -> usize {
         self.scene.add(visual.get_inner())
     }
 
@@ -543,198 +563,196 @@ impl JsImageVisual {
     }
 }
 
-/// JavaScript wrapper for VolumeVisual — direct volume rendering via ray marching.
-///
-/// Tile data must be provided as uint16 via `setChunkDataU16`.
-#[wasm_bindgen]
-pub struct JsVolumeVisual {
-    inner: VisualRef,
-    pending_chunks: Option<PendingChunks>,
-    wanted: crate::visuals::virtual_texture::Wanted,
+// ── Volume visuals: one wrapper class per render mode ───────────────────────
+//
+// Pull-based: bovista publishes `wanted` each prepare; JS polls it via
+// `wantedKeys()` and pushes tile data via `setChunkDataU16`. No callbacks.
+
+/// Generate the JS wrapper struct + `#[wasm_bindgen]` impl for a volume type.
+macro_rules! js_volume_class {
+    (
+        $wrapper:ident,
+        $rust_ty:ident
+        $(, extra: { $($extra:tt)* })?
+    ) => {
+        #[wasm_bindgen]
+        pub struct $wrapper {
+            inner: VisualRef,
+            pending_chunks: Option<PendingChunks>,
+            wanted: crate::visuals::virtual_texture::Wanted,
+        }
+
+        #[wasm_bindgen]
+        impl $wrapper {
+            #[wasm_bindgen(constructor)]
+            pub fn new(
+                viewer: &JsViewer,
+                levels: Vec<JsLevelMetadata>,
+                max_chunks: usize,
+                atlas_count: Option<usize>,
+            ) -> Self {
+                let rust_levels: Vec<LodLevelConfig> =
+                    levels.iter().map(|l| l.to_lod_level_config()).collect();
+                let renderer = viewer.renderer();
+                let visual = $rust_ty::new(
+                    renderer.device(),
+                    renderer.queue(),
+                    renderer.surface_format(),
+                    renderer.camera_bind_group_layout(),
+                    rust_levels,
+                    max_chunks,
+                    atlas_count.unwrap_or(1),
+                );
+                let pending_chunks = visual.pending_chunks();
+                let wanted = visual.wanted_handle();
+                let inner = Rc::new(RefCell::new(visual));
+                Self { inner, pending_chunks, wanted }
+            }
+
+            /// Snapshot of the tile keys bovista currently wants. Returned as a
+            /// flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+            /// sorted by priority.
+            #[wasm_bindgen(js_name = wantedKeys)]
+            pub fn wanted_keys(&self) -> js_sys::Uint32Array {
+                let flat: Vec<u32> = crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
+                    .into_iter()
+                    .flat_map(|(lod, t, z, y, x, p)| [lod as u32, t, z, y, x, p as u32])
+                    .collect();
+                js_sys::Uint32Array::from(flat.as_slice())
+            }
+
+            #[wasm_bindgen(js_name = setContrast)]
+            pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(
+                    &self.inner, |v| v.set_contrast_limits(min, max)
+                ).map_err(|e| JsValue::from_str(&e))
+            }
+
+            /// Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+            /// Pass a zero-length array to reset to grayscale.
+            #[wasm_bindgen(js_name = setColormap)]
+            pub fn set_colormap(&self, rgba: &Uint8Array) -> Result<(), JsValue> {
+                let bytes = rgba.to_vec();
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(
+                    &self.inner, |v| v.set_colormap(&bytes)
+                ).map_err(|e| JsValue::from_str(&e))
+            }
+
+            #[wasm_bindgen(js_name = setRelativeStepSize)]
+            pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(
+                    &self.inner, |v| v.set_relative_step_size(step)
+                ).map_err(|e| JsValue::from_str(&e))
+            }
+
+            #[wasm_bindgen(js_name = setLodBias)]
+            pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(
+                    &self.inner, |v| v.set_lod_bias(bias)
+                ).map_err(|e| JsValue::from_str(&e))
+            }
+
+            /// Provide uint16 tile data (stored as R16Float).
+            #[wasm_bindgen(js_name = setChunkDataU16)]
+            pub fn set_chunk_data_u16(
+                &self,
+                lod: usize, t: u32, z: u32, y: u32, x: u32,
+                data: &js_sys::Uint16Array,
+                width: u32, height: u32, depth: u32,
+            ) {
+                if let Some(ref pending_chunks) = self.pending_chunks {
+                    let bytes: Vec<u8> = data
+                        .to_vec()
+                        .iter()
+                        .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
+                        .collect();
+                    let tile_data = TileData {
+                        data: bytes, width, height, depth,
+                        format: wgpu::TextureFormat::R16Float,
+                    };
+                    let key = TileKey { lod_level: lod, t, z, y, x };
+                    pending_chunks.lock().unwrap().insert(key, tile_data);
+                }
+            }
+
+            /// Returns [loaded, visible] tile counts.
+            #[wasm_bindgen(js_name = getStats)]
+            pub fn get_stats(&self) -> Vec<usize> {
+                bindings_common::with_visual_ref::<$rust_ty, _, _>(&self.inner, |v| {
+                    let (loaded, visible) = v.get_stats();
+                    vec![loaded, visible]
+                })
+                .unwrap_or_else(|_| vec![0, 0])
+            }
+
+            $($($extra)*)?
+        }
+
+        impl $wrapper {
+            pub(crate) fn get_inner(&self) -> VisualRef {
+                self.inner.clone()
+            }
+        }
+    };
 }
 
-#[visual_methods(VolumeVisual)]
-#[wasm_bindgen]
-impl JsVolumeVisual {
-    /// Create a VolumeVisual.
-    ///
-    /// Pull-based: poll `wantedKeys()` and push tile data via
-    /// `setChunkDataU16`. See `JsImageVisual::new` for rationale.
-    #[wasm_bindgen(constructor)]
-    pub fn new(
-        viewer: &JsViewer,
-        levels: Vec<JsLevelMetadata>,
-        max_chunks: usize,
-        atlas_count: Option<usize>,
-    ) -> Self {
-        let rust_levels: Vec<LodLevelConfig> =
-            levels.iter().map(|l| l.to_lod_level_config()).collect();
-
-        let renderer = viewer.renderer();
-        let visual = VolumeVisual::new(
-            renderer.device(),
-            renderer.queue(),
-            renderer.surface_format(),
-            renderer.camera_bind_group_layout(),
-            rust_levels,
-            max_chunks,
-            atlas_count.unwrap_or(1),
-        );
-
-        let pending_chunks = visual.pending_chunks();
-        let wanted = visual.wanted_handle();
-        let inner = Rc::new(RefCell::new(visual));
-
-        Self { inner, pending_chunks, wanted }
-    }
-
-    /// Snapshot of the tile keys bovista currently wants. Returned as a
-    /// flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
-    /// sorted by priority. See `JsImageVisual::wanted_keys`.
-    #[wasm_bindgen(js_name = wantedKeys)]
-    pub fn wanted_keys(&self) -> js_sys::Uint32Array {
-        let w = self.wanted.lock().unwrap();
-        let mut v: Vec<(usize, u32, u32, u32, u32, i32)> = w.iter()
-            .map(|(k, p)| (k.lod_level, k.t, k.z, k.y, k.x, *p))
-            .collect();
-        v.sort_by_key(|e| e.5);
-        let flat: Vec<u32> = v.into_iter()
-            .flat_map(|(lod, t, z, y, x, p)| [lod as u32, t, z, y, x, p as u32])
-            .collect();
-        js_sys::Uint32Array::from(flat.as_slice())
-    }
-
-    /// Set contrast limits (0.0 to 1.0)
-    #[wasm_bindgen(js_name = setContrast)]
-    pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
-            &self.inner,
-            |v| v.set_contrast_limits(min, max)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
-    /// Pass a zero-length array to reset to grayscale.
-    #[wasm_bindgen(js_name = setColormap)]
-    pub fn set_colormap(&self, rgba: &Uint8Array) -> Result<(), JsValue> {
-        let bytes = rgba.to_vec();
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
-            &self.inner,
-            |v| v.set_colormap(&bytes)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Set step size in LOD-0 voxels (1.0 = Nyquist at finest LOD; coarser LODs step proportionally further).
-    #[wasm_bindgen(js_name = setRelativeStepSize)]
-    pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
-            &self.inner,
-            |v| v.set_relative_step_size(step)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Set density scale (per-step opacity multiplier).
+js_volume_class!(JsDirectVolume, DirectVolume, extra: {
     #[wasm_bindgen(js_name = setDensityScale)]
     pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
-            &self.inner,
-            |v| v.set_density_scale(scale)
+        bindings_common::with_visual_mut::<DirectVolume, _, _>(
+            &self.inner, |v| v.set_density_scale(scale)
         ).map_err(|e| JsValue::from_str(&e))
     }
 
-    /// Set the front-to-back early-exit alpha cutoff (default 0.95).
     #[wasm_bindgen(js_name = setEarlyExitAlpha)]
     pub fn set_early_exit_alpha(&self, alpha: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(
-            &self.inner,
-            |v| v.set_early_exit_alpha(alpha)
+        bindings_common::with_visual_mut::<DirectVolume, _, _>(
+            &self.inner, |v| v.set_early_exit_alpha(alpha)
         ).map_err(|e| JsValue::from_str(&e))
     }
 
-    /// Provide uint16 tile data (stored as R16Float).
-    #[wasm_bindgen(js_name = setChunkDataU16)]
-    pub fn set_chunk_data_u16(
-        &self,
-        lod: usize,
-        t: u32,
-        z: u32,
-        y: u32,
-        x: u32,
-        data: &js_sys::Uint16Array,
-        width: u32,
-        height: u32,
-        depth: u32,
-    ) {
-        if let Some(ref pending_chunks) = self.pending_chunks {
-            let bytes: Vec<u8> = data
-                .to_vec()
-                .iter()
-                .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
-                .collect();
-            let tile_data = TileData {
-                data: bytes,
-                width,
-                height,
-                depth,
-                format: wgpu::TextureFormat::R16Float,
-            };
-            let key = TileKey { lod_level: lod, t, z, y, x };
-            pending_chunks.lock().unwrap().insert(key, tile_data);
-        }
-    }
-
-    /// Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
-    #[wasm_bindgen(js_name = setLodBias)]
-    pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(&self.inner, |v| {
-            v.set_lod_bias(bias)
-        })
-        .map_err(|e| JsValue::from_str(&e))
-    }
-
-    /// Enable or disable debug LOD tinting + tile wireframes (mode 1).
     #[wasm_bindgen(js_name = setDebugMode)]
     pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(&self.inner, |v| {
-            v.set_debug_mode(enabled)
-        })
-        .map_err(|e| JsValue::from_str(&e))
+        bindings_common::with_visual_mut::<DirectVolume, _, _>(
+            &self.inner, |v| v.set_debug_mode(enabled)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
-    /// Enable or disable atlas-direct debug mode (mode 2): bypasses page-table indirection,
-    /// samples the raw packed atlas texture directly at vol_uv.
     #[wasm_bindgen(js_name = setAtlasDebugMode)]
     pub fn set_atlas_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(&self.inner, |v| {
-            v.set_atlas_debug_mode(enabled)
-        })
-        .map_err(|e| JsValue::from_str(&e))
+        bindings_common::with_visual_mut::<DirectVolume, _, _>(
+            &self.inner, |v| v.set_atlas_debug_mode(enabled)
+        ).map_err(|e| JsValue::from_str(&e))
     }
 
-    /// Enable step-count heatmap (mode 3): colours pixels by ray-march step count.
-    /// Blue = few steps (coarse LOD / short ray), red = many (fine LOD).
     #[wasm_bindgen(js_name = setStepDebugMode)]
     pub fn set_step_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<VolumeVisual, _, _>(&self.inner, |v| {
-            v.set_step_debug_mode(enabled)
-        })
-        .map_err(|e| JsValue::from_str(&e))
+        bindings_common::with_visual_mut::<DirectVolume, _, _>(
+            &self.inner, |v| v.set_step_debug_mode(enabled)
+        ).map_err(|e| JsValue::from_str(&e))
     }
+});
 
-    /// Returns [loaded, visible] tile counts.
-    #[wasm_bindgen(js_name = getStats)]
-    pub fn get_stats(&self) -> Vec<usize> {
-        bindings_common::with_visual_ref::<VolumeVisual, _, _>(&self.inner, |v| {
-            let (loaded, visible) = v.get_stats();
-            vec![loaded, visible]
-        })
-        .unwrap_or_else(|_| vec![0, 0])
+js_volume_class!(JsMipVolume, MipVolume, extra: {
+    #[wasm_bindgen(js_name = setAttenuation)]
+    pub fn set_attenuation(&self, attenuation: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<MipVolume, _, _>(
+            &self.inner, |v| v.set_attenuation(attenuation)
+        ).map_err(|e| JsValue::from_str(&e))
     }
+});
 
-    pub(crate) fn get_inner(&self) -> VisualRef {
-        self.inner.clone()
+js_volume_class!(JsMinipVolume, MinipVolume);
+js_volume_class!(JsAverageVolume, AverageVolume);
+
+js_volume_class!(JsIsosurfaceVolume, IsosurfaceVolume, extra: {
+    #[wasm_bindgen(js_name = setIsoThreshold)]
+    pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {
+        bindings_common::with_visual_mut::<IsosurfaceVolume, _, _>(
+            &self.inner, |v| v.set_iso_threshold(threshold)
+        ).map_err(|e| JsValue::from_str(&e))
     }
-}
+});
 
 /// JavaScript wrapper for PointsVisual — colored point cloud.
 #[wasm_bindgen]
