@@ -440,6 +440,11 @@ class MainWindow(QMainWindow):
                 threading.Thread(target=poll, daemon=True).start()
 
             def setup_scene(viewer):
+                # Drop the previous volume (and axis helper) before rebuilding.
+                # TODO: when bovista exposes shareable VolumeCore (atlas survives
+                # mode swap), this clear + reload should become an in-place
+                # mode switch that keeps the atlas resident.
+                viewer.clear_visuals()
                 # Build the visual for the active mode (set via the Mode dropdown).
                 ctor = self._modes[self.mode_combo.currentIndex()][2]
                 volume = ctor(viewer, lod_levels, 2000)

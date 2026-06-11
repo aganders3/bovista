@@ -84,6 +84,13 @@ const BOX_INDICES: &[u16] = &[
 /// type (`DirectVolume`, `MipVolume`, `IsosurfaceVolume`, …) owns one of these
 /// plus its mode-specific parameters. The pipeline inside the core is fixed
 /// at construction to the right mode's fragment entry point.
+///
+/// TODO: support swapping mode in place — only `pipeline` and `default_name`
+/// are mode-specific; everything else is mode-agnostic, so rebuilding the
+/// pipeline alone would let a single core change rendering mode without
+/// re-decoding tiles. Real cross-visual sharing (4-up orthogonal slices +
+/// volume + cut planes against the same atlas) belongs at the
+/// `VirtualTextureData` layer — see the TODO there.
 pub struct VolumeCore {
     vt: VirtualTextureData,
 

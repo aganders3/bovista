@@ -112,6 +112,16 @@ impl LodLevelConfig {
 /// entry encodes which atlas a tile lives in. atlas_count=1 produces the
 /// same on-GPU behavior as before, just with a 2-bit atlas_id field in
 /// the page table that's always 0.
+///
+/// Already reused across `Image` (slice plane) and `*Volume` (ray march)
+/// visuals — same atlas + page-table machinery, different consumer shader.
+/// TODO: make a single `VirtualTextureData` shareable across multiple
+/// visuals — 4-up orthogonal slices + a volume + cut planes all reading
+/// from one resident atlas, no duplicate decodes, single `wanted` set
+/// driven by the union of view frustums. Today each visual owns its VT
+/// exclusively; sharing needs the visuals to hold a handle (`Arc<RwLock>`
+/// or `Rc<RefCell>`) instead of the value, plus a `wanted` publisher
+/// that merges contributions from each visual's `prepare`.
 pub struct VirtualTextureData {
     pub levels: Vec<LodLevelConfig>,
 
