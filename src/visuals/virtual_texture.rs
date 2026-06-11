@@ -491,7 +491,7 @@ impl VirtualTextureData {
         // tile left there, and the shader's per-LOD data_scale would
         // sample into that stale data.
         let is_full =
-            data.width == tile_w && data.height == tile_h && data.depth == tile_d;
+            data.x_shape == tile_w && data.y_shape == tile_h && data.z_shape == tile_d;
         if is_full {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -503,24 +503,24 @@ impl VirtualTextureData {
                 &data.data,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(data.width * bpv as u32),
-                    rows_per_image: Some(data.height),
+                    bytes_per_row: Some(data.x_shape * bpv as u32),
+                    rows_per_image: Some(data.y_shape),
                 },
                 wgpu::Extent3d {
-                    width: data.width,
-                    height: data.height,
-                    depth_or_array_layers: data.depth,
+                    width: data.x_shape,
+                    height: data.y_shape,
+                    depth_or_array_layers: data.z_shape,
                 },
             );
         } else {
             let stride_row_dst = tile_w as usize * bpv;
             let stride_slice_dst = stride_row_dst * tile_h as usize;
-            let stride_row_src = data.width as usize * bpv;
+            let stride_row_src = data.x_shape as usize * bpv;
             let mut padded = vec![0u8; stride_slice_dst * tile_d as usize];
-            for z in 0..data.depth as usize {
-                for y in 0..data.height as usize {
+            for z in 0..data.z_shape as usize {
+                for y in 0..data.y_shape as usize {
                     let dst = z * stride_slice_dst + y * stride_row_dst;
-                    let src = z * (data.height as usize) * stride_row_src
+                    let src = z * (data.y_shape as usize) * stride_row_src
                             + y * stride_row_src;
                     padded[dst..dst + stride_row_src]
                         .copy_from_slice(&data.data[src..src + stride_row_src]);

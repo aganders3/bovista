@@ -203,7 +203,8 @@ setInterval(() => {
     for (let i = 0; i < wanted.length; i += 6) {
         const [lod, t, z, y, x, prio] = wanted.slice(i, i + 6);
         fetchTile(lod, t, z, y, x).then(arr => {
-            volume.setChunkDataU16(lod, t, z, y, x, arr, width, height, depth);
+            // Shape args are (z, y, x) numpy order — voxel counts along each axis of the tile.
+            volume.setChunkDataU16(lod, t, z, y, x, arr, zShape, yShape, xShape);
         });
     }
 }, 16);

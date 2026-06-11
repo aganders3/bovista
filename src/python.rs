@@ -911,9 +911,9 @@ impl PyImage {
             data: a.iter()
                 .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
                 .collect(),
-            width: a.shape()[2] as u32,
-            height: a.shape()[1] as u32,
-            depth: a.shape()[0] as u32,
+            z_shape: a.shape()[0] as u32,
+            y_shape: a.shape()[1] as u32,
+            x_shape: a.shape()[2] as u32,
             format: wgpu::TextureFormat::R16Float,
         };
         self.pending_chunks.lock().unwrap()
@@ -1243,9 +1243,9 @@ macro_rules! py_volume_class {
                     data: a.iter()
                         .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
                         .collect(),
-                    width: a.shape()[2] as u32,
-                    height: a.shape()[1] as u32,
-                    depth: a.shape()[0] as u32,
+                    z_shape: a.shape()[0] as u32,
+                    y_shape: a.shape()[1] as u32,
+                    x_shape: a.shape()[2] as u32,
                     format: wgpu::TextureFormat::R16Float,
                 };
                 self.pending_chunks.lock().unwrap()

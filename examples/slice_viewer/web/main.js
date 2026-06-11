@@ -332,22 +332,14 @@ function createVisual() {
     pendingLoads.clear();
     loadedChunkCount = 0;
 
-    // Convert lodLevels to LevelMetadata array
+    // LevelMetadata args follow (z, y, x) numpy order.
     const jsLevels = lodLevels.map(level => {
         return new wasmModule.LevelMetadata(
-            level.volumeSize[2],  // width
-            level.volumeSize[1],  // height
-            level.volumeSize[0],  // depth
-            level.chunkSize[2],   // chunk width
-            level.chunkSize[1],   // chunk height
-            level.chunkSize[0],   // chunk depth
-            level.voxelSize[2],   // voxel width
-            level.voxelSize[1],   // voxel height
-            level.voxelSize[0],   // voxel depth
+            level.volumeSize[0], level.volumeSize[1], level.volumeSize[2],
+            level.chunkSize[0],  level.chunkSize[1],  level.chunkSize[2],
+            level.voxelSize[0],  level.voxelSize[1],  level.voxelSize[2],
             level.scaleFactor,
-            level.translation[2], // translation x
-            level.translation[1], // translation y
-            level.translation[0]  // translation z
+            level.translation[0], level.translation[1], level.translation[2]
         );
     });
 

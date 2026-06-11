@@ -218,12 +218,13 @@ function createVisual() {
     viewer.clearScene();
     pendingLoads.clear();
 
+    // LevelMetadata args follow (z, y, x) numpy order.
     const jsLevels = lodLevels.map(level => new wasmModule.LevelMetadata(
-        level.volumeSize[2], level.volumeSize[1], level.volumeSize[0],
-        level.chunkSize[2],  level.chunkSize[1],  level.chunkSize[0],
-        level.voxelSize[2],  level.voxelSize[1],  level.voxelSize[0],
+        level.volumeSize[0], level.volumeSize[1], level.volumeSize[2],
+        level.chunkSize[0],  level.chunkSize[1],  level.chunkSize[2],
+        level.voxelSize[0],  level.voxelSize[1],  level.voxelSize[2],
         level.scaleFactor,
-        level.translation[2], level.translation[1], level.translation[0]
+        level.translation[0], level.translation[1], level.translation[2]
     ));
 
     const maxChunks = computeMaxChunks();

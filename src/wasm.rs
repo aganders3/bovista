@@ -332,44 +332,46 @@ pub struct JsLevelMetadata {
 
 #[wasm_bindgen]
 impl JsLevelMetadata {
+    /// Construct a level descriptor. All shape and voxel triples follow
+    /// `(z, y, x)` numpy order; translation is `(z, y, x)` world-space offset.
     #[wasm_bindgen(constructor)]
     pub fn new(
-        volume_width: u32,
-        volume_height: u32,
-        volume_depth: u32,
-        chunk_width: u32,
-        chunk_height: u32,
-        chunk_depth: u32,
-        voxel_width: f32,
-        voxel_height: f32,
-        voxel_depth: f32,
+        volume_z_shape: u32,
+        volume_y_shape: u32,
+        volume_x_shape: u32,
+        chunk_z_shape: u32,
+        chunk_y_shape: u32,
+        chunk_x_shape: u32,
+        voxel_z_size: f32,
+        voxel_y_size: f32,
+        voxel_x_size: f32,
         scale_factor: f32,
-        translation_x: f32,
-        translation_y: f32,
         translation_z: f32,
+        translation_y: f32,
+        translation_x: f32,
     ) -> Self {
         Self {
-            volume_size: (volume_depth, volume_height, volume_width),
-            chunk_size: (chunk_depth, chunk_height, chunk_width),
-            voxel_size: (voxel_depth, voxel_height, voxel_width),
+            volume_size: (volume_z_shape, volume_y_shape, volume_x_shape),
+            chunk_size: (chunk_z_shape, chunk_y_shape, chunk_x_shape),
+            voxel_size: (voxel_z_size, voxel_y_size, voxel_x_size),
             scale_factor,
             translation: (translation_z, translation_y, translation_x),
         }
     }
 
-    /// Get volume size as [depth, height, width]
+    /// Volume shape as `[z, y, x]` voxel counts.
     #[wasm_bindgen(getter)]
     pub fn volume_size(&self) -> Vec<u32> {
         vec![self.volume_size.0, self.volume_size.1, self.volume_size.2]
     }
 
-    /// Get chunk size as [depth, height, width]
+    /// Chunk shape as `[z, y, x]` voxel counts.
     #[wasm_bindgen(getter)]
     pub fn chunk_size(&self) -> Vec<u32> {
         vec![self.chunk_size.0, self.chunk_size.1, self.chunk_size.2]
     }
 
-    /// Get voxel size as [depth, height, width]
+    /// Voxel size as `[z, y, x]` world-space units per voxel.
     #[wasm_bindgen(getter)]
     pub fn voxel_size(&self) -> Vec<f32> {
         vec![self.voxel_size.0, self.voxel_size.1, self.voxel_size.2]
@@ -508,9 +510,9 @@ impl JsImage {
         y: u32,
         x: u32,
         data: &js_sys::Uint16Array,
-        width: u32,
-        height: u32,
-        depth: u32,
+        z_shape: u32,
+        y_shape: u32,
+        x_shape: u32,
     ) {
         if let Some(ref pending_chunks) = self.pending_chunks {
             let bytes: Vec<u8> = data
@@ -520,9 +522,9 @@ impl JsImage {
                 .collect();
             let tile_data = TileData {
                 data: bytes,
-                width,
-                height,
-                depth,
+                z_shape,
+                y_shape,
+                x_shape,
                 format: wgpu::TextureFormat::R16Float,
             };
             let key = TileKey { lod_level: lod, t, z, y, x };
@@ -659,7 +661,7 @@ macro_rules! js_volume_class {
                 &self,
                 lod: usize, t: u32, z: u32, y: u32, x: u32,
                 data: &js_sys::Uint16Array,
-                width: u32, height: u32, depth: u32,
+                z_shape: u32, y_shape: u32, x_shape: u32,
             ) {
                 if let Some(ref pending_chunks) = self.pending_chunks {
                     let bytes: Vec<u8> = data
@@ -668,7 +670,7 @@ macro_rules! js_volume_class {
                         .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
                         .collect();
                     let tile_data = TileData {
-                        data: bytes, width, height, depth,
+                        data: bytes, z_shape, y_shape, x_shape,
                         format: wgpu::TextureFormat::R16Float,
                     };
                     let key = TileKey { lod_level: lod, t, z, y, x };

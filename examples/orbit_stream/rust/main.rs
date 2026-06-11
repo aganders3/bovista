@@ -2021,7 +2021,7 @@ mod ome_zarr {
 
         Ok(TileData {
             data: f16_bytes,
-            width: extent_x, height: extent_y, depth: extent_z,
+            z_shape: extent_z, y_shape: extent_y, x_shape: extent_x,
             format: wgpu::TextureFormat::R16Float,
         })
     }
