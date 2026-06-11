@@ -518,6 +518,10 @@ impl JsImage {
     }
 
     /// Provide uint16 tile data (stored as R16Float).
+    ///
+    /// TODO: collapse the 9 positional args into `({ lod, t, z, y, x, shape, channel }, data)`
+    /// when multi-channel support lands — the signature will need a channel index then,
+    /// and that's a natural point to also switch to object-style "named args" in JS.
     #[wasm_bindgen(js_name = setChunkDataU16)]
     pub fn set_chunk_data_u16(
         &self,
@@ -673,6 +677,9 @@ macro_rules! js_volume_class {
             }
 
             /// Provide uint16 tile data (stored as R16Float).
+            ///
+            /// TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+            /// when multi-channel support lands (same signature reshape as Image's variant).
             #[wasm_bindgen(js_name = setChunkDataU16)]
             pub fn set_chunk_data_u16(
                 &self,
