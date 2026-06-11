@@ -464,6 +464,7 @@ class MainWindow(QMainWindow):
                 if hasattr(volume, "set_density_scale"):
                     volume.set_density_scale(base_density)
 
+                viewer.add(bv.Lines.axis_helper(viewer, max(lod0.volume_size) * 0.3))
                 viewer.add(volume)
                 self.viewer_widget._volume = volume
                 self.viewer_widget.volume_scale = max_dim
@@ -475,8 +476,6 @@ class MainWindow(QMainWindow):
 
                 viewer.set_camera_position(center[0], center[1], center[2] + camera_distance)
                 viewer.set_camera_target(*center)
-
-                viewer.add(bv.Lines.axis_helper(viewer, max(lod0.volume_size) * 0.3))
 
                 for w in [self.lod_slider, self.density_slider, self.step_slider, self.debug_combo,
                           self.floor_slider, self.ceiling_slider, self.auto_button,

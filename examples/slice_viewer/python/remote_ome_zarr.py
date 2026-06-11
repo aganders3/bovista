@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 import threading
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                            QHBoxLayout, QPushButton, QLabel, QSlider, QComboBox)
+                            QHBoxLayout, QPushButton, QLabel, QSlider, QComboBox,
+                            QSizePolicy)
 from PyQt6.QtCore import Qt, QTimer
 
 import bovista as bv
@@ -22,7 +23,12 @@ class ViewerWidget(QWidget):
     """Simple Qt widget wrapper for Bovista viewer"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(800, 600)
+        # Minimum is small enough to let the window shrink; the canvas
+        # actively claims any remaining vertical space via the Expanding
+        # size policy so resizing the QMainWindow grows the viewer rather
+        # than the control rows.
+        self.setMinimumSize(320, 240)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewer = bv.Viewer(800, 600)
         self._initialized = False
         self._setup_callbacks = []
@@ -290,7 +296,9 @@ class MainWindow(QMainWindow):
 
         # Viewer
         self.viewer_widget = ViewerWidget()
-        layout.addWidget(self.viewer_widget)
+        # stretch=1 → the viewer absorbs all extra vertical space; the
+        # control rows below stay at their natural fixed height.
+        layout.addWidget(self.viewer_widget, 1)
 
         # Controls
         controls = QHBoxLayout()
