@@ -115,6 +115,7 @@ pub struct VolumeCore {
 }
 
 impl VolumeCore {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

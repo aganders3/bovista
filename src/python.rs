@@ -2,6 +2,12 @@
 //!
 //! This module provides Python bindings using PyO3 for the Bovista visualization library.
 
+// PyO3's #[pymethods] expansion runs each return value through `.into()`. For
+// methods returning `PyResult<()>` (or any `Result<_, PyErr>`), that produces
+// `PyErr -> PyErr` and clippy flags it as useless. The conversion is generated
+// by the macro, not us, so silence it module-wide.
+#![allow(clippy::useless_conversion)]
+
 use pyo3::prelude::*;
 use numpy::PyReadonlyArray3;
 use std::sync::{Arc, Mutex};
@@ -92,7 +98,7 @@ impl PyViewer {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Failed to find GPU adapter"))?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -103,7 +109,7 @@ impl PyViewer {
                 trace: wgpu::Trace::Off,
             },
         ))
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create device: {}", e)))?;
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create device: {}", e)))?;
 
         let renderer = pollster::block_on(Renderer::new(device, queue, surface_format));
 
@@ -136,7 +142,7 @@ impl PyViewer {
             use raw_window_handle::{AppKitWindowHandle, AppKitDisplayHandle};
 
             let window_handle = AppKitWindowHandle::new(std::ptr::NonNull::new(handle as *mut _)
-                .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid window handle"))?);
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Invalid window handle"))?);
             let display_handle = AppKitDisplayHandle::new();
 
             (RawWindowHandle::AppKit(window_handle), RawDisplayHandle::AppKit(display_handle))
@@ -147,7 +153,7 @@ impl PyViewer {
             use raw_window_handle::{Win32WindowHandle, WindowsDisplayHandle};
 
             let window_handle = Win32WindowHandle::new(std::ptr::NonNull::new(handle as *mut _)
-                .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid window handle"))?);
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Invalid window handle"))?);
             let display_handle = WindowsDisplayHandle::new();
 
             (RawWindowHandle::Win32(window_handle), RawDisplayHandle::Windows(display_handle))
@@ -200,7 +206,7 @@ impl PyViewer {
 
         // Create surface from the raw handle
         let surface = instance.create_surface(handles)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create surface: {}", e)))?;
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create surface: {}", e)))?;
 
         // Request adapter with the surface
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -208,7 +214,7 @@ impl PyViewer {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
-        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to find GPU adapter"))?;
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Failed to find GPU adapter"))?;
 
         // Get surface capabilities and pick format
         let surface_caps = surface.get_capabilities(&adapter);
@@ -227,7 +233,7 @@ impl PyViewer {
                 trace: wgpu::Trace::Off,
             },
         ))
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create device: {}", e)))?;
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create device: {}", e)))?;
 
         // Configure surface
         let config = wgpu::SurfaceConfiguration {
@@ -303,7 +309,7 @@ impl PyViewer {
             return Ok(self.scene.add(custom.inner.clone()));
         }
 
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        Err(pyo3::exceptions::PyTypeError::new_err(
             "Expected a visual object (Points, Lines, Image, *Volume, or Custom)"
         ))
     }
@@ -327,13 +333,13 @@ impl PyViewer {
     /// Must call initialize_with_window() first
     fn render_frame(&mut self) -> PyResult<()> {
         let surface = self.surface.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("No surface available. Call initialize_with_window() first."))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("No surface available. Call initialize_with_window() first."))?;
 
         let renderer = self.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Renderer not initialized"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Renderer not initialized"))?;
 
         let depth_view = self.depth_texture.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Depth texture not created"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Depth texture not created"))?;
 
         // Update camera and prepare scene
         renderer.update_camera(&self.camera);
@@ -355,7 +361,7 @@ impl PyViewer {
 
         // Get current frame
         let output = surface.get_current_texture()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to get surface texture: {}", e)))?;
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to get surface texture: {}", e)))?;
 
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -383,13 +389,13 @@ impl PyViewer {
         }
 
         let surface = self.surface.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("No surface available. Call initialize_with_window() first."))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("No surface available. Call initialize_with_window() first."))?;
 
         let config = self.config.as_mut()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Surface not configured"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Surface not configured"))?;
 
         let renderer = self.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Renderer not initialized"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Renderer not initialized"))?;
 
         // Update configuration
         config.width = width;
@@ -616,7 +622,7 @@ impl PyViewer {
         }
 
         let event_loop = EventLoop::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to create event loop: {}", e)))?;
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create event loop: {}", e)))?;
 
         let mut app = ViewerApp {
             surface: None,
@@ -624,14 +630,14 @@ impl PyViewer {
             window: None,
             renderer: None,  // Will be created in resumed()
             camera: self.camera.clone(),
-            scene: std::mem::replace(&mut self.scene, Scene::new()),
+            scene: std::mem::take(&mut self.scene),
             depth_texture: None,
             mouse_pressed: false,
             last_mouse_pos: (0.0, 0.0),
         };
 
         event_loop.run_app(&mut app)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Event loop error: {}", e)))?;
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Event loop error: {}", e)))?;
 
         Ok(())
     }
@@ -670,14 +676,14 @@ impl PyPoints {
         colors: PyReadonlyArray3<f32>,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized. Call initialize() first."))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Viewer not initialized. Call initialize() first."))?;
 
         // Convert numpy arrays to vertices
         let pos_array = positions.as_array();
         let col_array = colors.as_array();
 
         if pos_array.shape() != col_array.shape() {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            return Err(pyo3::exceptions::PyValueError::new_err(
                 "Positions and colors must have the same shape",
             ));
         }
@@ -708,7 +714,7 @@ impl PyPoints {
     #[staticmethod]
     fn test_cube(viewer: &PyViewer, size: u32) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Viewer not initialized"))?;
 
         let visual = Points::test_cube(
             renderer.device(),
@@ -741,7 +747,7 @@ impl PyLines {
     #[staticmethod]
     fn axis_helper(viewer: &PyViewer, length: f32) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Viewer not initialized"))?;
 
         let visual = Lines::axis_helper(
             renderer.device(),
@@ -759,7 +765,7 @@ impl PyLines {
     #[staticmethod]
     fn test_cube(viewer: &PyViewer) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Viewer not initialized"))?;
 
         let visual = Lines::test_cube(
             renderer.device(),
@@ -799,10 +805,10 @@ impl PyImage {
         atlas_count: usize,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Viewer not initialized"))?;
 
         if levels.is_empty() {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            return Err(pyo3::exceptions::PyValueError::new_err(
                 "Must provide at least one LOD level",
             ));
         }
@@ -860,7 +866,7 @@ impl PyImage {
         bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |v| v.set_contrast_limits(min, max)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+        ).map_err(pyo3::exceptions::PyTypeError::new_err)
     }
 
     /// Set a colormap LUT.
@@ -878,7 +884,7 @@ impl PyImage {
         bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |v| v.set_colormap(&bytes)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+        ).map_err(pyo3::exceptions::PyTypeError::new_err)
     }
 
     /// Set an arbitrary slice plane
@@ -889,7 +895,7 @@ impl PyImage {
                 let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
                 v.set_slice_plane(plane);
             }
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+        ).map_err(pyo3::exceptions::PyTypeError::new_err)
     }
 
     /// Enable or disable debug LOD tinting
@@ -926,13 +932,13 @@ impl PyImage {
         bindings_common::with_visual_mut::<Image, _, _>(&self.inner, |v| {
             v.set_lod_bias(bias)
         })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+        .map_err(pyo3::exceptions::PyTypeError::new_err)
     }
 
     /// Returns (loaded_tiles, visible_tiles).
     fn get_stats(&self) -> PyResult<(usize, usize)> {
         bindings_common::with_visual_ref::<Image, _, _>(&self.inner, |v| v.get_stats())
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+            .map_err(pyo3::exceptions::PyTypeError::new_err)
     }
 }
 
@@ -1047,7 +1053,7 @@ impl PyCustom {
         topology: &str,
     ) -> PyResult<Self> {
         let renderer = viewer.renderer.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Viewer not initialized"))?;
 
         // Parse topology string
         let topology = match topology.to_lowercase().as_str() {
@@ -1056,7 +1062,7 @@ impl PyCustom {
             "line_strip" | "linestrip" => wgpu::PrimitiveTopology::LineStrip,
             "triangle_list" | "trianglelist" => wgpu::PrimitiveTopology::TriangleList,
             "triangle_strip" | "trianglestrip" => wgpu::PrimitiveTopology::TriangleStrip,
-            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(
                 format!("Invalid topology: '{}'. Use 'point_list', 'line_list', 'line_strip', 'triangle_list', or 'triangle_strip'", topology)
             )),
         };
@@ -1069,7 +1075,7 @@ impl PyCustom {
             vertex_data,
             vertex_layout.into_rust(),
             topology,
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
         Ok(Self {
             inner: Arc::new(Mutex::new(visual)),
@@ -1144,6 +1150,7 @@ macro_rules! py_volume_class {
             fn get_inner(&self) -> VisualRef { self.inner.clone() }
         }
 
+        #[visual_methods($rust_ty)]
         #[pymethods]
         impl $wrapper {
             #[new]
@@ -1155,10 +1162,10 @@ macro_rules! py_volume_class {
                 atlas_count: usize,
             ) -> PyResult<Self> {
                 let renderer = viewer.renderer.as_ref()
-                    .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Viewer not initialized"))?;
+                    .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Viewer not initialized"))?;
 
                 if levels.is_empty() {
-                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    return Err(pyo3::exceptions::PyValueError::new_err(
                         "Must provide at least one LOD level",
                     ));
                 }
@@ -1201,7 +1208,7 @@ macro_rules! py_volume_class {
             fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
                 bindings_common::with_visual_mut::<$rust_ty, _, _>(
                     &self.inner, |v| v.set_contrast_limits(min, max)
-                ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+                ).map_err(pyo3::exceptions::PyTypeError::new_err)
             }
 
             /// Set a colormap LUT. `rgba` is a (256, 4) uint8 array; pass None
@@ -1214,22 +1221,14 @@ macro_rules! py_volume_class {
                 };
                 bindings_common::with_visual_mut::<$rust_ty, _, _>(
                     &self.inner, |v| v.set_colormap(&bytes)
-                ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+                ).map_err(pyo3::exceptions::PyTypeError::new_err)
             }
 
             /// Step size in LOD-0 voxels (1.0 = Nyquist at finest LOD).
-            fn set_relative_step_size(&self, step: f32) -> PyResult<()> {
-                bindings_common::with_visual_mut::<$rust_ty, _, _>(
-                    &self.inner, |v| v.set_relative_step_size(step)
-                ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-            }
+            fn set_relative_step_size(&self, step: f32) -> PyResult<()> {}
 
             /// LOD bias: positive = prefer finer LOD, negative = prefer coarser.
-            fn set_lod_bias(&self, bias: f32) -> PyResult<()> {
-                bindings_common::with_visual_mut::<$rust_ty, _, _>(
-                    &self.inner, |v| v.set_lod_bias(bias)
-                ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-            }
+            fn set_lod_bias(&self, bias: f32) -> PyResult<()> {}
 
             /// Provide uint16 tile data (R16Float in the atlas).
             fn set_chunk_data_u16(
@@ -1254,11 +1253,7 @@ macro_rules! py_volume_class {
             }
 
             /// Returns (loaded_tiles, visible_tiles).
-            fn get_stats(&self) -> PyResult<(usize, usize)> {
-                bindings_common::with_visual_ref::<$rust_ty, _, _>(
-                    &self.inner, |v| v.get_stats()
-                ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-            }
+            fn get_stats(&self) -> PyResult<(usize, usize)> {}
 
             $($($extra)*)?
         }
@@ -1267,49 +1262,21 @@ macro_rules! py_volume_class {
 
 py_volume_class!(PyDirectVolume, "DirectVolume", DirectVolume, extra: {
     /// Per-step extinction multiplier. Higher = denser/more opaque volume.
-    fn set_density_scale(&self, scale: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_density_scale(scale)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
-
+    fn set_density_scale(&self, scale: f32) -> PyResult<()> {}
     /// Front-to-back accumulation cutoff (default 0.95).
-    fn set_early_exit_alpha(&self, alpha: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_early_exit_alpha(alpha)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
-
+    fn set_early_exit_alpha(&self, alpha: f32) -> PyResult<()> {}
     /// Enable LOD tinting + wireframes (mode 1). False restores normal DVR.
-    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_debug_mode(enabled)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
-
+    fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
     /// Bypass page table and sample raw atlas (mode 2). False restores normal DVR.
-    fn set_atlas_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_atlas_debug_mode(enabled)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
-
+    fn set_atlas_debug_mode(&self, enabled: bool) -> PyResult<()> {}
     /// Step-count heatmap (mode 3). False restores normal DVR.
-    fn set_step_debug_mode(&self, enabled: bool) -> PyResult<()> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_step_debug_mode(enabled)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_step_debug_mode(&self, enabled: bool) -> PyResult<()> {}
 });
 
 py_volume_class!(PyMipVolume, "MipVolume", MipVolume, extra: {
     /// Attenuated-MIP falloff per accumulated normalised density.
     /// 0.0 = plain MIP; larger = stronger near-camera emphasis.
-    fn set_attenuation(&self, attenuation: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<MipVolume, _, _>(
-            &self.inner, |v| v.set_attenuation(attenuation)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_attenuation(&self, attenuation: f32) -> PyResult<()> {}
 });
 
 py_volume_class!(PyMinipVolume, "MinipVolume", MinipVolume);
@@ -1317,11 +1284,7 @@ py_volume_class!(PyAverageVolume, "AverageVolume", AverageVolume);
 
 py_volume_class!(PyIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra: {
     /// Isosurface threshold in contrast-normalised raw units (0..1).
-    fn set_iso_threshold(&self, threshold: f32) -> PyResult<()> {
-        bindings_common::with_visual_mut::<IsosurfaceVolume, _, _>(
-            &self.inner, |v| v.set_iso_threshold(threshold)
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
-    }
+    fn set_iso_threshold(&self, threshold: f32) -> PyResult<()> {}
 });
 
 /// Python module definition

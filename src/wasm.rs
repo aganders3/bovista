@@ -523,6 +523,7 @@ impl JsImage {
     /// when multi-channel support lands — the signature will need a channel index then,
     /// and that's a natural point to also switch to object-style "named args" in JS.
     #[wasm_bindgen(js_name = setChunkDataU16)]
+    #[allow(clippy::too_many_arguments)]
     pub fn set_chunk_data_u16(
         &self,
         lod: usize,
@@ -606,6 +607,7 @@ macro_rules! js_volume_class {
             wanted: crate::visuals::virtual_texture::Wanted,
         }
 
+        #[visual_methods($rust_ty)]
         #[wasm_bindgen]
         impl $wrapper {
             #[wasm_bindgen(constructor)]
@@ -662,25 +664,15 @@ macro_rules! js_volume_class {
                 ).map_err(|e| JsValue::from_str(&e))
             }
 
-            #[wasm_bindgen(js_name = setRelativeStepSize)]
-            pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {
-                bindings_common::with_visual_mut::<$rust_ty, _, _>(
-                    &self.inner, |v| v.set_relative_step_size(step)
-                ).map_err(|e| JsValue::from_str(&e))
-            }
-
-            #[wasm_bindgen(js_name = setLodBias)]
-            pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
-                bindings_common::with_visual_mut::<$rust_ty, _, _>(
-                    &self.inner, |v| v.set_lod_bias(bias)
-                ).map_err(|e| JsValue::from_str(&e))
-            }
+            pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+            pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {}
 
             /// Provide uint16 tile data (stored as R16Float).
             ///
             /// TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
             /// when multi-channel support lands (same signature reshape as Image's variant).
             #[wasm_bindgen(js_name = setChunkDataU16)]
+            #[allow(clippy::too_many_arguments)]
             pub fn set_chunk_data_u16(
                 &self,
                 lod: usize, t: u32, z: u32, y: u32, x: u32,
@@ -724,61 +716,22 @@ macro_rules! js_volume_class {
 }
 
 js_volume_class!(JsDirectVolume, "DirectVolume", DirectVolume, extra: {
-    #[wasm_bindgen(js_name = setDensityScale)]
-    pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_density_scale(scale)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setEarlyExitAlpha)]
-    pub fn set_early_exit_alpha(&self, alpha: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_early_exit_alpha(alpha)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setAtlasDebugMode)]
-    pub fn set_atlas_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_atlas_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setStepDebugMode)]
-    pub fn set_step_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_step_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+    pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {}
+    pub fn set_early_exit_alpha(&self, alpha: f32) -> Result<(), JsValue> {}
+    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
+    pub fn set_atlas_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
+    pub fn set_step_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
 });
 
 js_volume_class!(JsMipVolume, "MipVolume", MipVolume, extra: {
-    #[wasm_bindgen(js_name = setAttenuation)]
-    pub fn set_attenuation(&self, attenuation: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<MipVolume, _, _>(
-            &self.inner, |v| v.set_attenuation(attenuation)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+    pub fn set_attenuation(&self, attenuation: f32) -> Result<(), JsValue> {}
 });
 
 js_volume_class!(JsMinipVolume, "MinipVolume", MinipVolume);
 js_volume_class!(JsAverageVolume, "AverageVolume", AverageVolume);
 
 js_volume_class!(JsIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra: {
-    #[wasm_bindgen(js_name = setIsoThreshold)]
-    pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<IsosurfaceVolume, _, _>(
-            &self.inner, |v| v.set_iso_threshold(threshold)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+    pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {}
 });
 
 /// JavaScript wrapper for Points — colored point cloud.
@@ -797,7 +750,7 @@ impl JsPoints {
     pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsPoints, JsValue> {
         let pos = positions.to_vec();
         let col = colors.to_vec();
-        if pos.len() != col.len() || pos.len() % 3 != 0 {
+        if pos.len() != col.len() || !pos.len().is_multiple_of(3) {
             return Err(JsValue::from_str("positions and colors must be flat XYZ/RGB arrays of equal length"));
         }
         let n = pos.len() / 3;
@@ -847,7 +800,7 @@ impl JsLines {
     pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsLines, JsValue> {
         let pos = positions.to_vec();
         let col = colors.to_vec();
-        if pos.len() != col.len() || pos.len() % 3 != 0 {
+        if pos.len() != col.len() || !pos.len().is_multiple_of(3) {
             return Err(JsValue::from_str("positions and colors must be flat XYZ/RGB arrays of equal length"));
         }
         let n = pos.len() / 3;

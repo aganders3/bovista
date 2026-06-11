@@ -449,7 +449,7 @@ pub fn compute_plane_aabb_intersection(
     // Find intersections with each edge
     for (p0, p1) in edges.iter() {
         if let Some(t) = line_plane_intersection(*p0, *p1, plane_pos, plane_normal) {
-            if t >= 0.0 && t <= 1.0 {
+            if (0.0..=1.0).contains(&t) {
                 let point = p0.lerp(*p1, t);
                 // Calculate 3D texture coordinate
                 let texcoord = Vec3::new(

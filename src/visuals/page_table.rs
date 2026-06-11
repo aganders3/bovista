@@ -87,6 +87,7 @@ impl PageTable {
     /// treated as non-resident, so stale-t entries left behind after a
     /// scrub gracefully fall through to coarser LODs without needing
     /// explicit clearing on every desired_t change.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(&self, queue: &wgpu::Queue, lod: usize, tz: u32, ty: u32, tx: u32,
                   atlas_id: u32, t: u32, slot: u32) {
         let (gx, gy, _gz) = self.lod_grids[lod];

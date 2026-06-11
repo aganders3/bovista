@@ -96,9 +96,9 @@ impl LodLevelConfig {
         let (vz, vy, vx) = self.volume_size;
         let (tz, ty, tx) = self.tile_size;
         (
-            (vz + tz - 1) / tz,
-            (vy + ty - 1) / ty,
-            (vx + tx - 1) / tx,
+            vz.div_ceil(tz),
+            vy.div_ceil(ty),
+            vx.div_ceil(tx),
         )
     }
 }
@@ -228,7 +228,7 @@ impl VirtualTextureData {
         let cbrt_cap = (effective_per_atlas as f64).cbrt().ceil() as u32;
         let cols   = cbrt_cap.min(max_cols).max(1);
         let rows   = cbrt_cap.min(max_rows).max(1);
-        let layers = ((effective_per_atlas as u32 + cols * rows - 1) / (cols * rows))
+        let layers = (effective_per_atlas as u32).div_ceil(cols * rows)
             .min(max_layers)
             .max(1);
 
@@ -557,6 +557,7 @@ impl VirtualTextureData {
     /// Two cheap gates keep the GL traffic bounded:
     ///   - skip spatials with no resident `desired_t` tile (slot_map miss),
     ///   - skip spatials where `last_written_slot` already shows this slot.
+    ///
     /// In steady state (page table fully wired for desired_t), this runs
     /// zero `queue.write_texture` calls.
     ///
@@ -877,9 +878,9 @@ impl VirtualTextureData {
                 let child_grid = self.levels[current_lod].grid_size();
                 // Children-per-parent per axis: derived from grid sizes so floating-point
                 // scale_factor imprecision can't cause tiles to be silently skipped.
-                let cpp_z = ((child_grid.0 + parent_grid_dims.0 - 1) / parent_grid_dims.0).max(1);
-                let cpp_y = ((child_grid.1 + parent_grid_dims.1 - 1) / parent_grid_dims.1).max(1);
-                let cpp_x = ((child_grid.2 + parent_grid_dims.2 - 1) / parent_grid_dims.2).max(1);
+                let cpp_z = child_grid.0.div_ceil(parent_grid_dims.0).max(1);
+                let cpp_y = child_grid.1.div_ceil(parent_grid_dims.1).max(1);
+                let cpp_x = child_grid.2.div_ceil(parent_grid_dims.2).max(1);
 
                 for dz in 0..cpp_z {
                     for dy in 0..cpp_y {
@@ -976,9 +977,9 @@ impl VirtualTextureData {
                 let child_lod    = lod - 1;
                 let parent_grid  = self.levels[lod].grid_size();
                 let child_grid   = self.levels[child_lod].grid_size();
-                let cpp_z = ((child_grid.0 + parent_grid.0 - 1) / parent_grid.0).max(1);
-                let cpp_y = ((child_grid.1 + parent_grid.1 - 1) / parent_grid.1).max(1);
-                let cpp_x = ((child_grid.2 + parent_grid.2 - 1) / parent_grid.2).max(1);
+                let cpp_z = child_grid.0.div_ceil(parent_grid.0).max(1);
+                let cpp_y = child_grid.1.div_ceil(parent_grid.1).max(1);
+                let cpp_x = child_grid.2.div_ceil(parent_grid.2).max(1);
                 for dz in 0..cpp_z {
                     for dy in 0..cpp_y {
                         for dx in 0..cpp_x {

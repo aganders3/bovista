@@ -140,12 +140,48 @@ fn extract_arg_names(method: &ImplItemFn) -> Vec<&syn::Ident> {
         .collect()
 }
 
+fn snake_to_camel(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut upper = false;
+    for c in s.chars() {
+        if c == '_' { upper = true; continue; }
+        out.push(if upper { c.to_ascii_uppercase() } else { c });
+        upper = false;
+    }
+    out
+}
+
+fn has_wasm_js_name(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("wasm_bindgen")
+            && quote!(#a).to_string().contains("js_name")
+    })
+}
+
 fn expand_visual_method(method: &ImplItemFn, visual_type: &Type, binding_type: &BindingType) -> ImplItemFn {
     let method_name = &method.sig.ident;
-    let attrs = &method.attrs;
+    let mut attrs: Vec<syn::Attribute> = method.attrs.clone();
     let vis = &method.vis;
     let sig = &method.sig;
     let arg_names = extract_arg_names(method);
+
+    // Reuse the user-written `self` token so the generated body's hygiene
+    // matches the method signature. Required when this proc-macro is invoked
+    // from inside a macro_rules! expansion — the proc-macro's own `self`
+    // token would carry the macro_rules! definition site span and fail to
+    // resolve as the method receiver.
+    let self_tok = method.sig.inputs.iter().find_map(|arg| {
+        if let FnArg::Receiver(r) = arg { Some(r.self_token) } else { None }
+    }).expect("visual_methods: empty-body method must take `self`");
+
+    // For WASM, auto-emit #[wasm_bindgen(js_name = "camelCase")] if not present.
+    // Only applies to methods we're expanding (empty-body delegates); filled-body
+    // methods keep whatever attributes the author wrote.
+    if matches!(binding_type, BindingType::Wasm) && !has_wasm_js_name(&attrs) {
+        let js_name = snake_to_camel(&method_name.to_string());
+        let lit = syn::LitStr::new(&js_name, method_name.span());
+        attrs.insert(0, parse_quote! { #[wasm_bindgen(js_name = #lit)] });
+    }
 
     let is_mutable = matches!(&method.sig.output, ReturnType::Default) || {
         if let ReturnType::Type(_, ty) = &method.sig.output {
@@ -160,13 +196,13 @@ fn expand_visual_method(method: &ImplItemFn, visual_type: &Type, binding_type: &
     let body: TokenStream2 = match binding_type {
         BindingType::Python => quote! {
             bindings_common::#helper_fn::<#visual_type, _, _>(
-                &self.inner,
+                &#self_tok.inner,
                 |visual| visual.#method_name(#(#arg_names),*)
-            ).map_err(|e| PyErr::new::<pyo3::exceptions::PyTypeError, _>(e))
+            ).map_err(pyo3::exceptions::PyTypeError::new_err)
         },
         BindingType::Wasm => quote! {
             bindings_common::#helper_fn::<#visual_type, _, _>(
-                &self.inner,
+                &#self_tok.inner,
                 |visual| visual.#method_name(#(#arg_names),*)
             ).map_err(|e| JsValue::from_str(&e))
         },
