@@ -9,10 +9,10 @@ Bovista is a visualization library for large 3D imaging datasets. Its thesis is 
 Concretely, it provides:
 
 - **Slice rendering** — arbitrary-orientation plane intersections through 3D volumes, rendered via 3D texture sampling
-- **Volume ray marching** — direct volume rendering (DVR) with per-pixel ray casting and transfer function compositing
+- **Volume rendering** — `DirectVolume` / `MipVolume` / `MinipVolume` / `AverageVolume` / `IsosurfaceVolume`, one visual per mode, all via GPU ray casting
 - **Virtual texture streaming** — an atlas + page table architecture that keeps only the visible tiles resident in VRAM, regardless of dataset size
 - **Multi-resolution LOD** — coarse-to-fine pyramid; LOD selection is based on screen-space voxel error
-- **Remote OME-Zarr** — tiles are fetched from S3/HTTP by a user-supplied async callback; Zarr chunking maps directly to atlas tiles
+- **Remote OME-Zarr** — pull-based loading: bovista publishes a `wanted` set each frame; the app polls it and pushes tiles back. Zarr chunking maps directly to atlas tiles
 - **Points, lines, custom visuals** — for annotations and user-defined shaders
 
 ### Real-World Use Cases
@@ -30,8 +30,8 @@ Concretely, it provides:
 ├─────────────────────────────────────────────────────────┤
 │                                                          │
 │  Bindings                                                │
-│  ├─ Python (PyO3 — Viewer, Image, Volume, Lines, ...)   │
-│  └─ WebAssembly (wasm-bindgen — JsViewer, ...)          │
+│  ├─ Python (PyO3 — Viewer, Image, DirectVolume, ...)    │
+│  └─ WebAssembly (wasm-bindgen — Viewer, ...)            │
 │                                                          │
 │  Rendering Engine                                        │
 │  ├─ Renderer: wgpu device/queue, render pass            │
@@ -39,10 +39,10 @@ Concretely, it provides:
 │  └─ Camera: orbit controls, projection, frustum          │
 │                                                          │
 │  Visual Types                                            │
-│  ├─ ImageVisual: slice-plane rendering                  │
-│  ├─ VolumeVisual: ray marching DVR                      │
-│  ├─ PointsVisual / LinesVisual                          │
-│  └─ CustomVisual: user-defined WGSL shaders             │
+│  ├─ Image: slice-plane rendering                        │
+│  ├─ DirectVolume / Mip / Minip / Average / Isosurface   │
+│  ├─ Points / Lines                                      │
+│  └─ Custom: user-defined WGSL shaders                   │
 │                                                          │
 │  Virtual Texture System (shared by Image + Volume)       │
 │  ├─ VirtualTextureData: LOD selection, tile requests    │
@@ -65,21 +65,25 @@ Concretely, it provides:
 
 ### Virtual Texture Streaming
 
-Both `ImageVisual` and `VolumeVisual` share the same streaming back-end. The volume is divided into uniformly-sized tiles. A 3D texture **atlas** holds the physically resident tiles. A **page table** (a small 2D-array texture indexed by LOD + tile grid coordinates) maps each virtual tile address to its atlas slot. The fragment shader looks up the page table at runtime to find each tile's atlas location; if a tile is missing it falls back to the nearest loaded coarser LOD.
+Both `Image` and the volume visuals share the same streaming back-end. The volume is divided into uniformly-sized tiles. A 3D texture **atlas** holds the physically resident tiles. A **page table** (a small 2D-array texture indexed by LOD + tile grid coordinates) maps each virtual tile address to its atlas slot. The fragment shader looks up the page table at runtime to find each tile's atlas location; if a tile is missing it falls back to the nearest loaded coarser LOD.
 
 This means the entire volume can be rendered in a **single draw call** — no per-tile state changes.
 
-### Callback-Based Loading
+### Pull-Based Loading
 
-Data loading is decoupled from rendering via a callback:
+Data loading is decoupled from rendering via a pull model: there is no loader callback across the FFI boundary. Each prepare/frame, bovista publishes a **wanted** set — the tiles it needs, sorted by priority. The app polls that set and pushes arrived tiles back:
 
 ```python
-def request(lod, z, y, x):
-    # Submit async load; call volume.set_chunk_data_u16() when done
-    return bv.ChunkStatus.Accepted
+# Each frame: poll what's wanted, then load and push back.
+for lod, t, z, y, x, priority in volume.wanted_keys():
+    # priority: lower = more urgent, 0 = currently viewed
+    data = load_tile(lod, t, z, y, x)          # however you like
+    volume.set_chunk_data_u16(lod, t, z, y, x, data)
 ```
 
-The rendering engine calls `request()` each frame for tiles it needs. The implementation can use Python thread pools, `asyncio`, JS `fetch()`, or any other mechanism. Arrived data is pushed back via `set_chunk_data_u16()`, which queues it for upload on the next `prepare()` pass.
+`wanted_keys()` returns `(lod, t, z, y, x, priority)` tuples sorted by priority. The implementation can use Python thread pools, `asyncio`, JS `fetch()`, or any other mechanism. Arrived data is pushed back via `set_chunk_data_u16()`, which queues it for upload on the next `prepare()` pass. Cancellation is implicit — a tile that drops out of the wanted set simply stops being requested. Tile keys are 4D-aware: they carry a timepoint `t`.
+
+In WASM the same set is exposed as `volume.wantedKeys()`, a flat `Uint32Array` of `[lod, t, z, y, x, priority, ...]` (6 ints per key), and tiles are pushed back with `volume.setChunkDataU16(lod, t, z, y, x, u16, zShape, yShape, xShape)`.
 
 ### One Codebase, Multiple Targets
 
@@ -96,15 +100,15 @@ src/
   visual.rs                 — Visual trait
   bindings_common.rs        — shared Python/WASM logic
   visuals/
-    image.rs                — ImageVisual (slice rendering)
-    volume.rs               — VolumeVisual (ray marching)
+    image.rs                — Image (slice rendering)
+    volume.rs               — DirectVolume / Mip / Minip / Average / Isosurface (ray marching)
     virtual_texture.rs      — VirtualTextureData: atlas, page table, LOD
     atlas.rs                — AtlasAllocator
     page_table.rs           — PageTable
     tile.rs                 — TileKey, TileData, uniforms
-    points.rs               — PointsVisual
-    lines.rs                — LinesVisual
-    custom.rs               — CustomVisual
+    points.rs               — Points
+    lines.rs                — Lines
+    custom.rs               — Custom
   shaders/
     virtual_tile.wgsl       — slice shader
     volume_raymarch.wgsl    — ray marching shader
@@ -132,11 +136,11 @@ import bovista as bv
 import zarr
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
 
 store = zarr.open_group("https://s3.../dataset.ome.zarr", mode="r")
 
-# Build LevelMetadata for each LOD in the OME-Zarr pyramid
+# Build LevelMetadata for each LOD in the OME-Zarr pyramid.
+# volume_size / chunk_size / voxel_size are [z, y, x] (numpy order).
 lod_levels = [
     bv.LevelMetadata(
         volume_size=(depth, height, width),
@@ -148,29 +152,32 @@ lod_levels = [
     for i, (depth, height, width, cz, cy, cx, sz, sy, sx) in enumerate(...)
 ]
 
-executor = ThreadPoolExecutor(max_workers=8)
-pending = {}
-lock = Lock()
-
-def request(lod, z, y, x):
-    key = (lod, z, y, x)
-    with lock:
-        if key in pending:
-            return bv.ChunkStatus.AlreadyPending
-        future = executor.submit(load_tile, lod, z, y, x)
-        future.add_done_callback(lambda f: volume.set_chunk_data_u16(lod, z, y, x, f.result()))
-        pending[key] = future
-    return bv.ChunkStatus.Accepted
-
 viewer = bv.Viewer(800, 600)
 viewer.initialize_with_window(window_handle, 800, 600)
 
-volume = bv.Volume(viewer, lod_levels, max_tiles=2000, loader=request)
+# No loader argument — loading is pull-based.
+volume = bv.DirectVolume(viewer, lod_levels, max_tiles=2000)
 volume.set_contrast(0.0, 1.0)
 volume.set_density_scale(0.01)
 viewer.add(volume)
 
+executor = ThreadPoolExecutor(max_workers=8)
+pending = set()
+
+def pump():
+    # Each frame: poll the wanted set, submit loads, push results back.
+    for lod, t, z, y, x, priority in volume.wanted_keys():
+        key = (lod, t, z, y, x)
+        if key in pending:
+            continue
+        pending.add(key)
+        future = executor.submit(load_tile, lod, t, z, y, x)
+        future.add_done_callback(
+            lambda f, k=key: (volume.set_chunk_data_u16(*k, f.result()), pending.discard(k))
+        )
+
 # In render loop:
+pump()
 viewer.render_frame()
 ```
 

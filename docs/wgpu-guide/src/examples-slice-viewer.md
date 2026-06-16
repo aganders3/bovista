@@ -1,6 +1,6 @@
 # Example: Slice Viewer
 
-The slice viewer renders an arbitrary-orientation cross-section through a remote OME-Zarr volume. It demonstrates the `ImageVisual` rendering path, the virtual texture streaming system, and the cross-platform loader pattern.
+The slice viewer renders an arbitrary-orientation cross-section through a remote OME-Zarr volume. It demonstrates the `Image` rendering path, the virtual texture streaming system, and the cross-platform pull-based loader pattern.
 
 <!-- toc -->
 
@@ -19,8 +19,8 @@ Source:
 ## What It Demonstrates
 
 - Loading multi-resolution OME-Zarr data from public S3 buckets
-- `ImageVisual`: single-draw-call slice plane with virtual texture streaming
-- Asynchronous tile loading (Python `ThreadPoolExecutor` / JS `fetch()`)
+- `Image`: single-draw-call slice plane with virtual texture streaming
+- Pull-based tile loading (Python `ThreadPoolExecutor` / JS `fetch()`)
 - LOD selection and debug visualization
 - Camera controls: orbit, pan, zoom, orthographic/perspective toggle
 - Window/level contrast adjustment
@@ -55,15 +55,15 @@ python3 -m http.server 8000 --directory examples
 ## Architecture
 
 ```
-OME-Zarr (S3)
-     ↓ fetch/read
-ThreadPoolExecutor / JS fetch
+Image.wanted_keys()  ← published each frame, sorted by priority
+     ↓ poll
+ThreadPoolExecutor / JS fetch  → OME-Zarr (S3)
      ↓ set_chunk_data_u16()
 PendingChunks queue
      ↓ VirtualTextureData::prepare()
 Atlas 3D texture + Page table
      ↓ single draw call
-ImageVisual → virtual_tile.wgsl → screen
+Image → virtual_tile.wgsl → screen
 ```
 
 The slice plane is a flat polygon whose vertices are the intersection of the current plane with each tile's bounding box. The fragment shader resolves the atlas address for each fragment via the page table and samples the 3D atlas.
@@ -107,7 +107,6 @@ image = bv.Image(
     viewer,
     levels,
     max_tiles=500,
-    loader=request_tile,
 )
 viewer.add(image)
 
@@ -116,25 +115,31 @@ cx, cy, cz = compute_center(levels[0])
 image.set_slice_plane(cx, cy, cz, 0.0, 0.0, 1.0)  # Z-normal (XY slice)
 ```
 
-### 3. Loader callback
+### 3. Pull-based loader
+
+There is no loader callback. Bovista publishes the tiles it wants each frame; a background thread
+polls `image.wanted_keys()`, fetches new keys via the thread pool, and pushes results back with
+`set_chunk_data_u16`. The tile keys carry a timepoint `t`; this example always uses `t = 0`.
 
 ```python
 executor = ThreadPoolExecutor(max_workers=8)
+in_flight = set()
 
-def request_tile(lod, z, y, x):
-    key = (lod, z, y, x)
-    if key in pending: return bv.ChunkStatus.AlreadyPending
-    pending.add(key)
-    executor.submit(load_tile, key)
-    return bv.ChunkStatus.Accepted
+def poll_tiles():
+    for lod, t, z, y, x, _priority in image.wanted_keys():
+        key = (lod, t, z, y, x)
+        if key in in_flight or len(in_flight) >= 8:
+            continue
+        in_flight.add(key)
+        executor.submit(load_tile, key)
 
 def load_tile(key):
-    lod, z, y, x = key
+    lod, t, z, y, x = key
     arr = zarr_levels[lod]
     cd, ch, cw = arr.chunks
     data = arr[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw]
-    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
-    pending.discard(key)
+    image.set_chunk_data_u16(lod, t, z, y, x, np.asarray(data, dtype=np.uint16))
+    in_flight.discard(key)
 ```
 
 ### 4. Render loop (Qt timer)

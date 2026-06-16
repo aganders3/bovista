@@ -29,13 +29,17 @@ The **prepare** phase updates GPU resources (buffers, uniforms) before the frame
 
 | Visual | Description |
 |--------|-------------|
-| `PointsVisual` | Colored point cloud; vertices uploaded once at construction |
-| `LinesVisual` | Line segments and wireframes; same pattern as points |
-| `ImageVisual` | Arbitrary-orientation slice plane through a 3D volume; virtual texture streaming |
-| `VolumeVisual` | Direct volume rendering via GPU ray marching; same streaming back-end as `ImageVisual` |
-| `CustomVisual` | User-supplied WGSL shader; Bovista provides the camera bind group and depth buffer |
+| `Points` | Colored point cloud; vertices uploaded once at construction |
+| `Lines` | Line segments and wireframes; same pattern as points |
+| `Image` | Arbitrary-orientation slice plane through a 3D volume; virtual texture streaming |
+| `DirectVolume` | Direct volume rendering via GPU ray marching (front-to-back alpha compositing); same streaming back-end as `Image` |
+| `MipVolume` | Maximum intensity projection (attenuated MIP when `set_attenuation` > 0) |
+| `MinipVolume` | Minimum intensity projection |
+| `AverageVolume` | Mean projection |
+| `IsosurfaceVolume` | Iso-surface rendering (`set_iso_threshold`) |
+| `Custom` | User-supplied WGSL shader; Bovista provides the camera bind group and depth buffer |
 
-`ImageVisual` and `VolumeVisual` share the virtual texture system — see [Chunked Rendering](./07-chunked-rendering.md) for how that works.
+Volume rendering is split across five classes — one visual per mode — instead of a single mode-flag class; each exposes only the parameters that apply to it. `Image` and the volume visuals share the virtual texture system — see [Chunked Rendering](./07-chunked-rendering.md) for how that works.
 
 ## Adding a New Visual Type
 

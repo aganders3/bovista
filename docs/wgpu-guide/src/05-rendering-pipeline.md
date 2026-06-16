@@ -293,7 +293,7 @@ This split exists because `queue.write_buffer` and render pass recording are inc
 
 ---
 
-## The Slice Pipeline: ImageVisual
+## The Slice Pipeline: Image
 
 `src/visuals/image.rs` renders a planar cross-section through a 3D volume using the virtual texture system.
 
@@ -321,7 +321,7 @@ The hardware interpolates `texcoord` across the polygon — every fragment knows
 `compute_plane_aabb_intersection` (in `src/visuals/tile.rs`) tests the slice plane against all 12 edges of the volume bounding box. Each edge that the plane intersects yields one vertex. The result is a convex polygon with 3–6 vertices, triangulated as a fan and uploaded to the GPU as a fresh vertex/index buffer every frame:
 
 ```rust
-// From ImageVisual::prepare()
+// From Image::prepare()
 if let Some((vertices, indices)) =
     compute_plane_aabb_intersection(&tile_plane, &vol_aabb)
 {
@@ -336,7 +336,7 @@ if let Some((vertices, indices)) =
 
 ### Bind Group Layout (Groups 1 and 2)
 
-Group 1 (VT resources) is declared in `ImageVisual::new` with four entries:
+Group 1 (VT resources) is declared in `Image::new` with four entries:
 
 | Binding | Type | Shader access | Purpose |
 |---------|------|---------------|---------|
@@ -471,7 +471,7 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
 ### The Render Call
 
 ```rust
-// From ImageVisual::render()
+// From Image::render()
 fn render(&self, render_pass: &mut RenderPass) {
     if self.vt_index_count == 0 { return; }  // slice missed the volume
     if let (Some(vb), Some(ib)) = (&self.vt_vertex_buffer, &self.vt_index_buffer) {
@@ -490,9 +490,9 @@ fn render(&self, render_pass: &mut RenderPass) {
 
 ---
 
-## The Volume Pipeline: VolumeVisual
+## The Volume Pipeline: DirectVolume
 
-`src/visuals/volume.rs` renders the entire 3D volume via GPU ray marching. The virtual texture back-end (atlas, page table, LOD streaming) is identical to `ImageVisual`.
+`src/visuals/volume.rs` renders the entire 3D volume via GPU ray marching. There are five volume classes — `DirectVolume` (default DVR), `MipVolume`, `MinipVolume`, `AverageVolume`, and `IsosurfaceVolume` — that share this back-end; the pipeline described here applies to all of them. The virtual texture back-end (atlas, page table, LOD streaming) is identical to `Image`.
 
 ### The Box Geometry Trick
 
@@ -607,7 +607,7 @@ if lod_f >= 0.0 {
 
 ### Blending: Pre-multiplied Alpha
 
-`VolumeVisual` uses `wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING` (not the simple alpha blending used by `ImageVisual`). The ray marcher outputs pre-multiplied alpha: `out = (accum_color * accum_alpha, accum_alpha)`. Pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices are rendered together.
+The volume visuals use `wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING` (not the simple alpha blending used by `Image`). The ray marcher outputs pre-multiplied alpha: `out = (accum_color * accum_alpha, accum_alpha)`. Pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices are rendered together.
 
 ### Depth Write Disabled
 
@@ -655,10 +655,10 @@ WGSL uniform structs require 16-byte alignment for sub-structs (`VTLodInfo`). Th
 
 | Visual | Shader | Topology | Cull mode | Depth write | Blend |
 |--------|--------|----------|-----------|-------------|-------|
-| `PointsVisual` | `point_cloud.wgsl` | PointList | None | Yes | Replace |
-| `LinesVisual` | `lines.wgsl` | LineList | None | Yes | Replace |
-| `ImageVisual` | `virtual_tile.wgsl` | TriangleList | None | Yes | Alpha |
-| `VolumeVisual` | `volume_raymarch.wgsl` | TriangleList | Front | No | Pre-multiplied Alpha |
+| `Points` | `point_cloud.wgsl` | PointList | None | Yes | Replace |
+| `Lines` | `lines.wgsl` | LineList | None | Yes | Replace |
+| `Image` | `virtual_tile.wgsl` | TriangleList | None | Yes | Alpha |
+| `DirectVolume` (and siblings) | `volume_raymarch.wgsl` | TriangleList | Front | No | Pre-multiplied Alpha |
 
 ---
 
@@ -670,21 +670,21 @@ One frame, step by step:
 1. CPU: camera.view_projection_matrix() → queue.write_buffer(camera_uniform)
 
 2. CPU (each visual's prepare()):
-   - ImageVisual: recompute slice polygon geometry, upload vertex/index buffers,
-                  write VTUniforms to vt_uniform_buffer
-   - VolumeVisual: write VTUniforms + VolumeUniforms to GPU buffers
-   - PointsVisual: no-op (geometry is static)
+   - Image: recompute slice polygon geometry, upload vertex/index buffers,
+            write VTUniforms to vt_uniform_buffer
+   - DirectVolume: write VTUniforms + VolumeUniforms to GPU buffers
+   - Points: no-op (geometry is static)
 
 3. GPU: begin_render_pass (clears color and depth)
    render_pass.set_bind_group(0, camera_bind_group)  ← once for all visuals
 
 4. GPU (each visual's render()):
-   - PointsVisual:
+   - Points:
        set_pipeline(point_pipeline)
        set_vertex_buffer(point_vb)
        draw(0..N)
 
-   - ImageVisual:
+   - Image:
        set_pipeline(vt_pipeline)
        set_bind_group(1, vt_bind_group)    ← atlas, page table, uniforms
        set_bind_group(2, colormap_bind_group)
@@ -692,7 +692,7 @@ One frame, step by step:
        set_index_buffer(slice_polygon_ib)
        draw_indexed(0..index_count)
 
-   - VolumeVisual:
+   - DirectVolume:
        set_pipeline(volume_pipeline)
        set_bind_group(1, vt_bind_group)
        set_bind_group(2, vol_bind_group)   ← vol uniforms + colormap

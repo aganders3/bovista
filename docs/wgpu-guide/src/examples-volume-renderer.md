@@ -18,7 +18,8 @@ Source:
 
 ## What It Demonstrates
 
-- `VolumeVisual`: direct volume rendering with front-to-back alpha compositing
+- Five volume classes: `DirectVolume` (DVR), `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume`
+- Direct volume rendering with front-to-back alpha compositing (`DirectVolume`)
 - Transfer functions via colormap LUT
 - Ray marching step size and density controls
 - Same streaming back-end as the slice viewer (atlas + page table)
@@ -54,18 +55,18 @@ python3 -m http.server 8000 --directory examples
 ## Architecture
 
 ```
-OME-Zarr (S3)
-     ↓ fetch/read
-ThreadPoolExecutor / JS fetch
+DirectVolume.wanted_keys()  ← published each frame, sorted by priority
+     ↓ poll
+ThreadPoolExecutor / JS fetch  → OME-Zarr (S3)
      ↓ set_chunk_data_u16()
 PendingChunks queue
      ↓ VirtualTextureData::prepare()
 Atlas 3D texture + Page table
      ↓ single draw call
-VolumeVisual → volume_raymarch.wgsl → screen
+DirectVolume → volume_raymarch.wgsl → screen
 ```
 
-`VolumeVisual` renders a unit-cube bounding box with back-face culling inverted (the box is inward-wound, so back faces are rendered — these are the ray exit points). The fragment shader:
+The volume classes render a unit-cube bounding box with back-face culling inverted (the box is inward-wound, so back faces are rendered — these are the ray exit points). The fragment shader:
 
 1. Reconstructs the ray entry point from the clip position and camera
 2. Marches from entry to exit in world space, one voxel per step at the current LOD
@@ -78,12 +79,18 @@ Because the page table records the actual LOD at which each tile was loaded, the
 
 | Parameter | Method | Description |
 |-----------|--------|-------------|
-| Contrast | `set_contrast(min, max)` | Normalized 0–1 window |
-| Colormap | `set_colormap(rgba)` | 256-entry RGBA LUT; `None` = grayscale |
-| Density scale | `set_density_scale(scale)` | Per-step opacity multiplier |
-| Step size | `set_relative_step_size(step)` | 1.0 = Nyquist at finest LOD |
-| LOD bias | `set_lod_bias(bias)` | Positive = prefer finer; negative = coarser |
+| Contrast | `set_contrast(min, max)` | Normalized 0–1 window (all modes) |
+| Colormap | `set_colormap(rgba)` | 256-entry RGBA LUT; `None` = grayscale (all modes) |
+| Step size | `set_relative_step_size(step)` | 1.0 = Nyquist at finest LOD (all modes) |
+| LOD bias | `set_lod_bias(bias)` | Positive = prefer finer; negative = coarser (all modes) |
 | Max tiles | at construction | VRAM budget; ~2 bytes × tile_size³ each |
+| Density scale | `set_density_scale(scale)` | Per-step opacity multiplier (`DirectVolume`) |
+| Attenuation | `set_attenuation(strength)` | `0` = plain MIP; `> 0` = attenuated MIP (`MipVolume`) |
+| Iso threshold | `set_iso_threshold(t)` | First-hit surface level, 0–1 (`IsosurfaceVolume`) |
+
+The five mode classes share the constructor and the "all modes" controls above; each adds only the
+parameters relevant to its ray-marching mode. See [Volume classes](12-python.md#volume-classes) for
+the full per-class breakdown.
 
 ## Code Walkthrough
 
@@ -96,29 +103,34 @@ levels = build_levels_from_ome_zarr(zarr_group)
 ### 2. Create the visual
 
 ```python
-volume = bv.Volume(
+# Swap DirectVolume for MipVolume / MinipVolume / AverageVolume /
+# IsosurfaceVolume to change the ray-marching mode.
+volume = bv.DirectVolume(
     viewer,
     levels,
     max_tiles=2000,
-    loader=request_tile,
 )
 viewer.add(volume)
 
 # Initial parameters
 volume.set_contrast(0.0, 0.3)
-volume.set_density_scale(0.01)
+volume.set_density_scale(0.01)   # DirectVolume only
 volume.set_relative_step_size(1.0)
 ```
 
-### 3. Loader callback (identical pattern to slice viewer)
+### 3. Pull-based loader (identical pattern to slice viewer)
+
+No loader callback — a background thread polls `volume.wanted_keys()` (the same API as `Image`) and
+pushes tiles back with `set_chunk_data_u16`. Tile keys carry a timepoint `t`.
 
 ```python
-def request_tile(lod, z, y, x):
-    key = (lod, z, y, x)
-    if key in pending: return bv.ChunkStatus.AlreadyPending
-    pending.add(key)
-    executor.submit(load_tile, key)
-    return bv.ChunkStatus.Accepted
+def poll_tiles():
+    for lod, t, z, y, x, _priority in volume.wanted_keys():
+        key = (lod, t, z, y, x)
+        if key in in_flight or len(in_flight) >= 8:
+            continue
+        in_flight.add(key)
+        executor.submit(load_tile, key)   # load_tile pushes set_chunk_data_u16(lod, t, z, y, x, data)
 ```
 
 ### 4. Density scale calculation
@@ -143,7 +155,9 @@ The web example includes a VRAM budget selector that converts a GB target into `
 ```javascript
 const tileVram = tileDepth * tileHeight * tileWidth * 2; // R16Float = 2 bytes/voxel
 const maxTiles = Math.floor((budgetBytes * 0.8) / tileVram); // 80% headroom
-const volume = new JsVolumeVisual(viewer, levels, maxTiles, requestTile);
+// No loader argument — poll volume.wantedKeys() and push setChunkDataU16(...).
+const volume = new wasmModule.DirectVolume(viewer, levels, maxTiles);
+viewer.addDirectVolume(volume);
 ```
 
 ## Datasets

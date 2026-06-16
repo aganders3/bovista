@@ -1,6 +1,6 @@
 # Python Bindings
 
-Bovista exposes a Python API via [PyO3](https://pyo3.rs/). The binding layer is thin: it translates Python types to Rust types, bridges the async chunk-loading pattern, and otherwise delegates directly to the core library.
+Bovista exposes a Python API via [PyO3](https://pyo3.rs/). The binding layer is thin: it translates Python types to Rust types, exposes the pull-based tile-loading API, and otherwise delegates directly to the core library.
 
 <!-- toc -->
 
@@ -101,7 +101,7 @@ image = bv.Image(
     viewer,           # must be initialized first
     levels,           # list[LevelMetadata], finest first
     max_tiles=500,    # VRAM budget in tiles
-    loader=request,   # callback: (lod, z, y, x) -> ChunkStatus
+    atlas_count=1,    # optional; number of atlas pages
 )
 viewer.add(image)
 ```
@@ -130,49 +130,67 @@ image.set_debug_mode(True)                        # LOD tint visualization
 loaded, visible = image.get_stats()               # tile counts
 ```
 
-**Push tile data** (called from loader background thread):
+**Tile streaming** (pull-based; see [Tile loading](#tile-loading-pull-based)):
 
 ```python
-image.set_chunk_data_u16(lod, z, y, x, array)    # numpy uint16 array
+for lod, t, z, y, x, priority in image.wanted_keys():
+    ...                                           # fetch + push
+image.set_chunk_data_u16(lod, t, z, y, x, array)  # numpy uint16 array
 ```
 
-## `Volume`
+## Volume classes
 
 Direct volume rendering via GPU ray marching. Shares the same virtual-texture back-end as `Image`.
+There are five volume classes — one per ray-marching mode. They share an identical constructor and
+the common controls below; each adds the parameters relevant to its mode.
+
+| Class | Mode | Mode-specific params |
+|-------|------|----------------------|
+| `bv.DirectVolume` | Front-to-back alpha compositing (default DVR) | `set_density_scale`, `set_early_exit_alpha`, `set_debug_mode`, `set_atlas_debug_mode`, `set_step_debug_mode` |
+| `bv.MipVolume` | Maximum intensity projection (`set_attenuation > 0` → napari-style attenuated MIP) | `set_attenuation` |
+| `bv.MinipVolume` | Minimum intensity projection | — |
+| `bv.AverageVolume` | Mean intensity along the ray | — |
+| `bv.IsosurfaceVolume` | First-hit isosurface with Phong shading | `set_iso_threshold` |
 
 ```python
-volume = bv.Volume(
+volume = bv.DirectVolume(
     viewer,
     levels,
     max_tiles=2000,
-    loader=request,
+    atlas_count=1,    # optional
 )
 viewer.add(volume)
 ```
 
-**Controls:**
+**Common controls** (all five classes):
 
 ```python
 volume.set_contrast(min_val, max_val)
 volume.set_colormap(rgba_array)
-volume.set_density_scale(scale)          # opacity multiplier per step
 volume.set_relative_step_size(step)      # 1.0 = Nyquist; larger = faster, coarser
 volume.set_lod_bias(bias)
 ```
 
-**Debug modes:**
+**`DirectVolume` extras:**
 
 ```python
+volume.set_density_scale(scale)          # opacity multiplier per step
+volume.set_early_exit_alpha(alpha)       # terminate ray when opacity saturates
 volume.set_debug_mode(True)              # LOD tint (mode 1)
 volume.set_atlas_debug_mode(True)        # raw atlas visualization (mode 2)
 volume.set_step_debug_mode(True)         # ray-march step count heatmap (mode 3)
 ```
 
-**Stats / data:**
+**`MipVolume` extra:** `volume.set_attenuation(strength)` — `0` is plain MIP; `> 0` attenuates.
+**`IsosurfaceVolume` extra:** `volume.set_iso_threshold(t)` — normalized 0–1 first-hit level.
+
+**Stats / tile data** (common to all):
 
 ```python
 loaded, visible = volume.get_stats()
-volume.set_chunk_data_u16(lod, z, y, x, array)
+for lod, t, z, y, x, priority in volume.wanted_keys():
+    ...
+volume.set_chunk_data_u16(lod, t, z, y, x, array)
 ```
 
 ## `Points`
@@ -224,14 +242,28 @@ custom = bv.Custom.new(viewer, shader, vertices.tobytes(), layout, "triangle_lis
 viewer.add(custom)
 ```
 
-## `ChunkStatus`
+## Tile loading (pull-based)
 
-Returned by loader callbacks:
+Bovista uses a **pull** model: each frame it publishes the set of tiles it wants, sorted by
+priority, and the application polls that set and pushes data back. There is no loader callback and
+no hot-path FFI — cancellation is implicit, since keys that leave the wanted set simply never get
+re-fetched.
+
+- `image.wanted_keys()` (and the identical method on every volume class) returns a list of
+  `(lod, t, z, y, x, priority)` tuples, sorted by priority (lower = more urgent; `0` = currently
+  viewed). The `t` field is the timepoint.
+- `image.set_chunk_data_u16(lod, t, z, y, x, array)` pushes a fetched tile back in. `array` is a
+  NumPy `uint16` array shaped `(z, y, x)`.
 
 ```python
-bv.ChunkStatus.Accepted       # load started; data will arrive via set_chunk_data_u16
-bv.ChunkStatus.AlreadyPending # already loading; skip
-bv.ChunkStatus.Rejected       # can't accept; Bovista will retry next frame
+import numpy as np
+
+def poll_tiles():
+    for lod, t, z, y, x, priority in image.wanted_keys():
+        level = zarr_levels[lod]
+        cd, ch, cw = level.chunks
+        data = level[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw]
+        image.set_chunk_data_u16(lod, t, z, y, x, np.asarray(data, dtype=np.uint16))
 ```
 
 ## `ProjectionMode`
@@ -243,33 +275,50 @@ bv.ProjectionMode.Orthographic
 
 ## Loader Pattern (full example)
 
+A background thread polls `wanted_keys()` and dispatches fetches via a thread pool; results are
+pushed back through `set_chunk_data_u16`. Keys that leave the wanted set are never re-submitted, so
+cancellation is implicit — the loop just tracks what is currently in flight to avoid double-fetching.
+
 ```python
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import numpy as np
 
 executor = ThreadPoolExecutor(max_workers=8)
-_pending = set()
-_lock = threading.Lock()
 
-def request_tile(lod, z, y, x):
-    key = (lod, z, y, x)
-    with _lock:
-        if key in _pending:
-            return bv.ChunkStatus.AlreadyPending
-        _pending.add(key)
+def start_loader(volume):
+    in_flight = set()
+    lock = threading.Lock()
+    stop = threading.Event()
 
-    executor.submit(_load, key)
-    return bv.ChunkStatus.Accepted
+    def load(lod, t, z, y, x):
+        level = zarr_levels[lod]
+        cd, ch, cw = level.chunks
+        return np.asarray(
+            level[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw],
+            dtype=np.uint16,
+        )
 
-def _load(key):
-    lod, z, y, x = key
-    level = zarr_levels[lod]
-    cd, ch, cw = level.chunks
-    data = level[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw]
-    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
-    with _lock:
-        _pending.discard(key)
+    def on_loaded(key, future):
+        with lock:
+            in_flight.discard(key)
+        data = future.result()
+        if data is not None:
+            volume.set_chunk_data_u16(*key, data)
+
+    def poll():
+        while not stop.is_set():
+            for lod, t, z, y, x, _priority in volume.wanted_keys():
+                key = (lod, t, z, y, x)
+                with lock:
+                    if key in in_flight or len(in_flight) >= 8:
+                        continue
+                    in_flight.add(key)
+                future = executor.submit(load, *key)
+                future.add_done_callback(lambda f, k=key: on_loaded(k, f))
+            stop.wait(0.02)
+
+    threading.Thread(target=poll, daemon=True).start()
 ```
 
 ## Binding Structure

@@ -1,6 +1,6 @@
 # Slice Viewer
 
-Renders an arbitrary-orientation cross-section through a remote OME-Zarr volume using `ImageVisual` and virtual texture streaming.
+Renders an arbitrary-orientation cross-section through a remote OME-Zarr volume using `Image` and virtual texture streaming.
 
 ## Implementations
 
@@ -30,18 +30,33 @@ import bovista as bv
 viewer = bv.Viewer(800, 600)
 viewer.initialize_with_window(handle, width, height)
 
-image = bv.Image(viewer, levels, max_tiles=500, loader=request_tile)
+image = bv.Image(viewer, levels, max_tiles=500)
 image.set_slice_plane(cx, cy, cz, 0.0, 0.0, 1.0)  # XY slice
 image.set_contrast(0.0, 0.5)
 viewer.add(image)
+
+# Pull loop: poll the wanted set, fetch tiles, push them back.
+# Run this on a background thread; keys are sorted by priority.
+for lod, t, z, y, x, priority in image.wanted_keys():
+    data = fetch_tile(lod, t, z, y, x)        # uint16 numpy array
+    image.set_chunk_data_u16(lod, t, z, y, x, data)
 ```
 
 ## API pattern (JavaScript)
 
 ```javascript
-const viewer = await JsViewer.new('canvas');
-const image = new JsImageVisual(viewer, levels, 500, requestTile);
+const viewer = await Viewer.new('canvas');
+const image = new Image(viewer, levels, 500);
 image.setSlicePlane(cx, cy, cz, 0, 0, 1);
 image.setContrast(0.0, 0.5);
 viewer.addImage(image);
+
+// Pull loop: wantedKeys() is a flat Uint32Array of
+// [lod, t, z, y, x, priority, ...] (6 ints per key), sorted by priority.
+const w = image.wantedKeys();
+for (let i = 0; i < w.length; i += 6) {
+    const [lod, t, z, y, x, prio] = w.slice(i, i + 6);
+    fetchTile(lod, t, z, y, x).then(arr =>
+        image.setChunkDataU16(lod, t, z, y, x, arr, zShape, yShape, xShape));
+}
 ```

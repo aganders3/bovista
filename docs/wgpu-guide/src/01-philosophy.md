@@ -82,7 +82,7 @@ Bovista is organized into clear layers:
 ┌─────────────────────────────────────────────────────┐
 │  Bindings Layer (PyO3 / wasm-bindgen)               │
 │  - Type conversion (NumPy ↔ Rust)                   │
-│  - Callback handling                                │
+│  - Wanted-set / tile-data marshalling               │
 │  - Platform abstractions                            │
 └─────────────────────────────────────────────────────┘
                       │
@@ -91,7 +91,7 @@ Bovista is organized into clear layers:
 │  Visualization Layer (Bovista Core)                 │
 │  - Renderer: GPU management                         │
 │  - Scene: Visual organization                       │
-│  - Visuals: Points, Lines, ImageVisual, VolumeVisual │
+│  - Visuals: Points, Lines, Image, DirectVolume       │
 │  - Camera: Orbit controls                           │
 └─────────────────────────────────────────────────────┘
                       │
@@ -144,25 +144,28 @@ pub trait Visual: Send + Sync {
 - **Encapsulation**: Each visual manages its own GPU resources
 - **Flexibility**: Easy to add new visual types
 
-### 2. Callback-Based Loading
+### 2. Pull-Based Loading
 
-Data loading uses callbacks, not inheritance. The loader is called by the rendering engine each frame for tiles it needs; it returns a `ChunkStatus` immediately and pushes data back asynchronously via `set_chunk_data_u16()`:
+Data loading is pull-based, not inheritance and not an engine-invoked callback. Each frame, the engine **publishes** the set of tiles it currently wants; the application **polls** that set on its own schedule, fetches the bytes, and pushes them back via `set_chunk_data_u16()`. The engine never calls into application code on the hot path:
 
 ```python
-def request_tile(lod, z, y, x):
-    key = (lod, z, y, x)
-    if key in pending:
-        return bv.ChunkStatus.AlreadyPending
-    pending.add(key)
-    executor.submit(load_tile, key)
-    return bv.ChunkStatus.Accepted
+# Polled on a timer / each loop iteration — not invoked by the engine.
+def pump(volume):
+    for lod, t, z, y, x, priority in volume.wanted_keys():
+        key = (lod, t, z, y, x)
+        if key in in_flight:
+            continue  # loader handles its own dedup / back-pressure
+        in_flight.add(key)
+        executor.submit(load_and_push, volume, key)
 
-volume = bv.Volume(viewer, levels, max_tiles=2000, loader=request_tile)
+volume = bv.DirectVolume(viewer, levels, max_tiles=2000)
 ```
 
 **Why this works:**
 - **Flexibility**: Any data source (Zarr, HDF5, HTTP, custom)
-- **No subclassing**: Simple function, not class hierarchy
+- **No subclassing**: A simple poll loop, not a class hierarchy
+- **No FFI on the hot path**: The engine just exposes what it wants; the loader decides when to read it
+- **Implicit cancellation**: Tiles that fall out of view drop out of the wanted set, so the loader stops fetching them
 - **Non-blocking**: Rendering never stalls waiting for data
 
 ### 3. Shared Bind Group Pattern
@@ -202,8 +205,8 @@ pub type VisualRef = Rc<RefCell<dyn Visual>>;  // WASM: single-threaded
 
 ### What Bovista Is Good At
 
-✅ **Slice rendering**: Real-time, arbitrary orientations (`ImageVisual`)
-✅ **Volume ray marching**: Direct volume rendering with transfer functions (`VolumeVisual`)
+✅ **Slice rendering**: Real-time, arbitrary orientations (`Image`)
+✅ **Volume ray marching**: Direct volume rendering with transfer functions (`DirectVolume` and sibling modes)
 ✅ **Remote data**: Efficient streaming from S3/Zarr via virtual textures
 ✅ **Large volumes**: Terabyte-scale with atlas LRU eviction
 ✅ **Cross-platform**: Native + web from one codebase
@@ -221,14 +224,14 @@ pub type VisualRef = Rc<RefCell<dyn Visual>>;  // WASM: single-threaded
 - Per-tile draws: Simpler shader but O(n) state changes per frame
 
 **Slice rendering vs ray marching:**
-- Bovista supports both; `ImageVisual` uses slice geometry for speed, `VolumeVisual` uses ray marching for full semi-transparent DVR
+- Bovista supports both; `Image` uses slice geometry for speed, the volume visuals (`DirectVolume`, `MipVolume`, …) use ray marching for full semi-transparent DVR
 
 **LRU atlas eviction vs fixed budget:**
 - Chose LRU: Automatic, adapts to view changes
 - Fixed budget: More predictable but less flexible
 
-**Callback-based loading vs async Rust:**
-- Chose callbacks: Simpler Python/WASM integration; any async runtime can back it
+**Pull-based loading vs async Rust:**
+- Chose a polled wanted-set: Simpler Python/WASM integration, no FFI on the hot path; any async runtime can back it
 - Async: More Rust-idiomatic but complex cross-language interop
 
 ## Summary
@@ -239,7 +242,7 @@ Bovista's architecture is driven by its goal: **write the core visualization onc
 1. **WGPU**: Cross-platform, type-safe, modern GPU API (Vulkan/Metal/DX12 + WebGPU)
 2. **Virtual textures**: Atlas + page table; single draw call; only visible tiles resident
 3. **Visual trait**: Polymorphic rendering system (slice, ray march, points, custom)
-4. **Callback loaders**: Flexible data sources (thread pool, JS fetch, or anything else)
+4. **Pull-based loaders**: Flexible data sources (thread pool, JS fetch, or anything else); the loader polls the engine's wanted set
 5. **LRU atlas eviction**: Automatic memory management regardless of dataset size
 
 **Result**: View terabyte-scale volumes in Python or a web browser from a single Rust codebase.

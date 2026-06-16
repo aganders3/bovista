@@ -25,27 +25,30 @@ The WASM module exposes camelCase JavaScript names. The correspondence to the Py
 
 | Python | JavaScript |
 |--------|-----------|
-| `bv.Viewer(w, h)` | `await JsViewer.new("canvas-id")` |
-| `bv.Image(viewer, ...)` | `new JsImageVisual(viewer, ...)` |
-| `bv.Volume(viewer, ...)` | `new JsVolumeVisual(viewer, ...)` |
-| `bv.LevelMetadata(...)` | `new JsLevelMetadata(...)` |
-| `bv.ChunkStatus` | `JsChunkStatus` |
+| `bv.Viewer(w, h)` | `await Viewer.new("canvas-id")` |
+| `bv.Image(viewer, ...)` | `new Image(viewer, ...)` |
+| `bv.DirectVolume(viewer, ...)` | `new DirectVolume(viewer, ...)` |
+| `bv.MipVolume(viewer, ...)` | `new MipVolume(viewer, ...)` |
+| `bv.IsosurfaceVolume(viewer, ...)` | `new IsosurfaceVolume(viewer, ...)` |
+| `bv.LevelMetadata(...)` | `new LevelMetadata(...)` |
 | `viewer.add(image)` | `viewer.addImage(image)` |
-| `viewer.add(volume)` | `viewer.addVolume(volume)` |
+| `viewer.add(volume)` | `viewer.addDirectVolume(volume)` |
 | `viewer.add(points)` | `viewer.addPoints(points)` |
 | `viewer.add(lines)` | `viewer.addLines(lines)` |
 | `viewer.render_frame()` | `viewer.renderFrame()` |
+| `visual.wanted_keys()` | `visual.wantedKeys()` |
 | `visual.set_contrast(...)` | `visual.setContrast(...)` |
 
-## `JsViewer`
+## `Viewer`
 
 ```javascript
-import init, { JsViewer, JsImageVisual, JsVolumeVisual,
-               JsLevelMetadata, JsChunkStatus } from './pkg/bovista.js';
+import init, { Viewer, Image, DirectVolume, MipVolume, MinipVolume,
+               AverageVolume, IsosurfaceVolume, Points, Lines,
+               LevelMetadata, ProjectionMode } from './bovista.js';
 
 await init();
 
-const viewer = await JsViewer.new('canvas');  // canvas element ID
+const viewer = await Viewer.new('canvas');  // canvas element ID
 
 // Camera
 viewer.setCameraPosition(x, y, z);
@@ -55,14 +58,17 @@ viewer.orbitCamera(dx, dy);
 viewer.panCamera(dx, dy);
 viewer.zoomCamera(delta);
 viewer.setCameraClipPlanes(near, far);
-viewer.setCameraProjectionMode(JsProjectionMode.Perspective);
+viewer.setCameraProjectionMode(ProjectionMode.Perspective);
 viewer.setCameraOrthoHeight(h);
 viewer.getCameraOrthoHeight();
 viewer.getCameraDistance();
 
 // Scene
-viewer.addImage(imageVisual);   // returns index
-viewer.addVolume(volumeVisual);
+viewer.addImage(image);            // returns index
+viewer.addDirectVolume(volume);    // one add* per volume mode:
+viewer.addMipVolume(volume);       //   addMipVolume / addMinipVolume /
+viewer.addAverageVolume(volume);   //   addAverageVolume / addIsosurfaceVolume
+viewer.addIsosurfaceVolume(volume);
 viewer.clearScene();
 viewer.visualCount();
 
@@ -71,19 +77,20 @@ viewer.renderFrame();
 viewer.resize(w, h);            // call on canvas resize
 ```
 
-## `JsLevelMetadata`
+## `LevelMetadata`
 
 ```javascript
-const level = new JsLevelMetadata(
-    width, height, depth,        // volume dimensions at this LOD
-    chunkW, chunkH, chunkD,      // tile size
-    voxelW, voxelH, voxelD,      // physical voxel size
-    scaleFactor,                  // relative to level 0
-    translateX, translateY, translateZ
+const level = new LevelMetadata(
+    [depth, height, width],          // volume_size [z,y,x] at this LOD
+    [chunkD, chunkH, chunkW],        // chunk_size  [z,y,x]
+    [voxelD, voxelH, voxelW],        // voxel_size  [z,y,x]
+    scaleFactor,                     // number, relative to level 0
+    [translateD, translateH, translateW]  // translation [z,y,x]
 );
 ```
 
-Note: the constructor takes individual numbers (no objects). Getters return arrays:
+Note: the first three arguments are `[z, y, x]` arrays (numpy order); `scaleFactor`
+is a single number. Getters return arrays:
 
 ```javascript
 level.volume_size  // [depth, height, width]
@@ -94,13 +101,13 @@ level.scale_factor // number
 
 For anisotropic datasets (e.g. 2× downsampling in XY but not Z), pass `Math.max(vxI/vx0, vyI/vy0, vzI/vz0)` as `scaleFactor` — the largest downsampling factor across any axis. See the Python API docs for details.
 
-## `JsImageVisual`
+## `Image`
 
 ```javascript
-const image = new JsImageVisual(viewer, levels, maxTiles, chunkLoader);
-// levels:      Array<JsLevelMetadata>
-// maxTiles:    number
-// chunkLoader: (lod, z, y, x) => JsChunkStatus
+const image = new Image(viewer, levels, maxChunks, atlasCount);
+// levels:     Array<LevelMetadata>
+// maxChunks:  number
+// atlasCount: number (optional, default 1)
 
 viewer.addImage(image);
 
@@ -119,52 +126,71 @@ image.setLodBias(bias);
 image.setDebugMode(true);
 image.getStats();                  // [loaded, visible]
 
-// Push tile data
-image.setChunkDataU16(lod, z, y, x, uint16Array, width, height, depth);
+// Pull-based tile loading
+image.wantedKeys();                // Uint32Array [lod,t,z,y,x,prio, ...] (6 ints/key)
+image.setChunkDataU16(lod, t, z, y, x, uint16Array, zShape, yShape, xShape);
 ```
 
-## `JsVolumeVisual`
+## Volume (`DirectVolume`, `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume`)
+
+The single mode-flag volume is now five classes, each constructed the same way and
+each exposing only the parameters that apply to it. `DirectVolume` is the default
+(front-to-back alpha-compositing DVR).
 
 ```javascript
-const volume = new JsVolumeVisual(viewer, levels, maxTiles, chunkLoader);
-viewer.addVolume(volume);
+const volume = new DirectVolume(viewer, levels, maxChunks, atlasCount);
+viewer.addDirectVolume(volume);
 
+// Shared by all five volume classes
 volume.setContrast(min, max);
 volume.setColormap(uint8Array);
-volume.setDensityScale(scale);
 volume.setRelativeStepSize(step);   // 1.0 = Nyquist
 volume.setLodBias(bias);
+volume.getStats();                  // [loaded, visible]
 
-// Debug
+// Pull-based tile loading
+volume.wantedKeys();                // Uint32Array [lod,t,z,y,x,prio, ...] (6 ints/key)
+volume.setChunkDataU16(lod, t, z, y, x, uint16Array, zShape, yShape, xShape);
+
+// DirectVolume extras
+volume.setDensityScale(scale);
+volume.setEarlyExitAlpha(alpha);
 volume.setDebugMode(true);          // LOD tint
 volume.setAtlasDebugMode(true);     // raw atlas
 volume.setStepDebugMode(true);      // step count heatmap
 
-volume.getStats();                  // [loaded, visible]
-volume.setChunkDataU16(lod, z, y, x, uint16Array, width, height, depth);
+// MipVolume extra:        mip.setAttenuation(attenuation);   // >0 = attenuated MIP
+// IsosurfaceVolume extra: iso.setIsoThreshold(threshold);
+// MinipVolume / AverageVolume: no extras
 ```
 
-## Loader Pattern (full example)
+## Tile Loading (pull-based)
+
+There is no loader callback. bovista publishes a "wanted" set every prepare/frame;
+the app polls it with `wantedKeys()`, fetches the tiles, and pushes data back with
+`setChunkDataU16(...)`. Keys are `(lod, t, z, y, x, priority)` sorted by priority
+(lower = more urgent, 0 = currently viewed). Cancellation is implicit: keys that
+leave the wanted set are simply no longer requested.
 
 ```javascript
 const pending = new Set();
-const cache = new Map();
 
-function requestTile(lod, z, y, x) {
-    const key = `${lod}_${z}_${y}_${x}`;
-    if (pending.has(key)) return JsChunkStatus.AlreadyPending;
-    pending.add(key);
-
-    fetchZarrChunk(lod, z, y, x).then(({ data, w, h, d }) => {
-        image.setChunkDataU16(lod, z, y, x, data, w, h, d);
-        pending.delete(key);
-    }).catch(() => pending.delete(key));
-
-    return JsChunkStatus.Accepted;
+function pollTiles() {
+    const w = volume.wantedKeys();   // flat Uint32Array, 6 ints per key
+    for (let i = 0; i < w.length; i += 6) {
+        const [lod, t, z, y, x, prio] = w.slice(i, i + 6);
+        const key = `${lod}_${t}_${z}_${y}_${x}`;
+        if (pending.has(key)) continue;   // already in flight
+        pending.add(key);
+        fetchTile(lod, t, z, y, x).then(({ data, zShape, yShape, xShape }) => {
+            volume.setChunkDataU16(lod, t, z, y, x, data, zShape, yShape, xShape);
+        }).finally(() => pending.delete(key));
+    }
 }
 
 // Render loop
 function frame() {
+    pollTiles();
     viewer.renderFrame();
     requestAnimationFrame(frame);
 }
@@ -173,15 +199,17 @@ requestAnimationFrame(frame);
 
 ## Differences from the Python API
 
-**Initialization:** `JsViewer.new()` is async (returns a Promise) and takes a canvas element ID; Python's `Viewer()` is sync and initialization is a separate call.
+**Initialization:** `Viewer.new()` is async (returns a Promise) and takes a canvas element ID; Python's `Viewer()` is sync and initialization is a separate call.
 
-**`add*` methods:** JavaScript has `addImage()` and `addVolume()` as distinct methods since wasm-bindgen doesn't support overloading via `PyAny`. Python uses a single polymorphic `add()`.
+**`add*` methods:** JavaScript has one distinct method per visual type (`addImage()`, `addDirectVolume()`, `addMipVolume()`, etc.) since wasm-bindgen doesn't support overloading via `PyAny`. Python uses a single polymorphic `add()`.
+
+**`wantedKeys()` return type:** JavaScript returns a flat `Uint32Array` (`[lod, t, z, y, x, priority, ...]`, 6 ints per key); Python returns a list of `(lod, t, z, y, x, priority)` tuples. Both are sorted by priority.
 
 **Error handling:** JavaScript methods return `Result<T, JsValue>` which becomes a thrown exception on error. Python methods return `PyResult<T>` which becomes a Python exception.
 
 **`getStats()` return type:** JavaScript returns `number[]` (array); Python returns `(int, int)` tuple.
 
-**`setChunkDataU16` signature:** JavaScript takes explicit `width, height, depth` parameters after the data array. Python infers dimensions from the numpy array shape.
+**`setChunkDataU16` signature:** JavaScript takes explicit `zShape, yShape, xShape` parameters after the data array. Python infers dimensions from the numpy array shape.
 
 **Thread safety:** JavaScript is single-threaded — `Rc<RefCell<>>` instead of `Arc<Mutex<>>`. No locking overhead, but the visual must only be accessed from the main thread.
 

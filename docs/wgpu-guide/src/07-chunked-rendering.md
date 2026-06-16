@@ -1,6 +1,6 @@
 # Chunked Rendering: Virtual Texture Architecture
 
-Both `ImageVisual` (slice rendering) and `VolumeVisual` (ray marching) share a single back-end for streaming large multi-resolution volumes: `VirtualTextureData`. This chapter explains how it works.
+Both `Image` (slice rendering) and the volume visuals (`DirectVolume`, `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume` — all ray marching) share a single back-end for streaming large multi-resolution volumes: `VirtualTextureData`. This chapter explains how it works.
 
 <!-- toc -->
 
@@ -35,84 +35,83 @@ Virtual address:  (lod, z_tile, y_tile, x_tile)
 Atlas slot index → 3D atlas sample
 ```
 
-Because the indirection is resolved in the shader, **both `ImageVisual` and `VolumeVisual` issue a single draw call per frame** regardless of how many tiles are resident. There are no per-tile state changes.
+Because the indirection is resolved in the shader, **both `Image` and `DirectVolume` (and its sibling volume modes) issue a single draw call per frame** regardless of how many tiles are resident. There are no per-tile state changes.
 
 ## Per-Frame Streaming Loop
 
 `VirtualTextureData::prepare()` runs every frame:
 
 1. **LOD selection** — calculates screen-space voxel error from the camera frustum and current view geometry; selects the ideal LOD level (biased by `lod_bias`)
-2. **Tile visibility** — determines which tile addresses at the selected LOD intersect the visible region (slice plane footprint for `ImageVisual`, view frustum for `VolumeVisual`)
-3. **Request missing tiles** — for any tile not resident, calls the user-supplied loader callback with `(lod, z, y, x)`
-4. **Upload arrived tiles** — drains the `PendingChunks` queue (tiles pushed by the loader since last frame), uploads each into an atlas slot, updates the page table
+2. **Tile visibility** — determines which tile addresses at the selected LOD intersect the visible region (slice plane footprint for `Image`, view frustum for the volume visuals)
+3. **Publish wanted tiles** — for any non-resident tile at the selected LOD, adds its key `(lod, t, z, y, x)` to the published "wanted" set with a priority (lower = more urgent; 0 = the currently-viewed timepoint)
+4. **Upload arrived tiles** — drains the `PendingChunks` queue (tiles pushed by the application since last frame), uploads each into an atlas slot, updates the page table
 
-## The Loader Callback
+## The Loader Model: Pull / Poll
 
-The loader is a synchronous callback that Bovista calls when it needs a tile. The loader's job is to **initiate** the load (kick off a background thread or async task) and return a status immediately. It must not block.
+Bovista never calls into application code on the hot path. Instead of pushing requests out through a callback, the engine **publishes** the set of tiles it currently wants, and the application **polls** that set on its own schedule (typically a worker thread or a timer), fetches the bytes, and pushes them back.
+
+Concretely, each prepare/frame the engine recomputes the wanted set (step 3 above). The application reads it via `wanted_keys()` (Python) / `wantedKeys()` (JS), fetches whatever it doesn't already have in flight, and pushes results back with `set_chunk_data_u16()` / `setChunkDataU16()`.
 
 ```
-Signature: (lod: u32, z: u32, y: u32, x: u32) → ChunkStatus
+Signature: wanted_keys() → list of (lod, t, z, y, x, priority)
+                            sorted by priority (lower = more urgent, 0 = current timepoint)
 ```
 
-`ChunkStatus` values:
-- `Accepted` — the request was accepted; data will arrive via `set_chunk_data_u16()` soon
-- `AlreadyPending` — already loading this tile; skip it
-- `Rejected` — unable to accept (e.g. at capacity); try again next frame
+Three consequences of this design:
 
-When the data is ready, the loader (or its background task) calls `set_chunk_data_u16(lod, z, y, x, data)` to push the tile into the `PendingChunks` queue. Bovista drains this queue during the next `prepare()` call and uploads the tile to the atlas.
+- **No FFI on the hot path.** The engine never invokes user code mid-frame. It just exposes a snapshot of what it wants; the application decides when to read it.
+- **Implicit cancellation.** A tile that is no longer wanted simply drops out of the published set. The loader sees it disappear and stops fetching — there is no explicit cancel call.
+- **Deduplication is the loader's job.** Because the engine doesn't track requests, the loader is responsible for not re-fetching tiles it already has in flight (back-pressure). There is no `Accepted`/`AlreadyPending`/`Rejected` return value — the engine doesn't need one.
+
+Tile keys are 4D-aware: they carry a timepoint `t` in addition to `(lod, z, y, x)`.
+
+When data is ready, the application calls `set_chunk_data_u16(lod, t, z, y, x, data)` to push the tile into the `PendingChunks` queue. Bovista drains this queue during the next `prepare()` call and uploads the tile to the atlas.
 
 ### Python Implementation
 
-The Python examples use a `ThreadPoolExecutor` for background loading:
+The Python examples poll `wanted_keys()` and dispatch fetches to a `ThreadPoolExecutor`. The loader tracks `in_flight` itself for deduplication:
 
 ```python
 from concurrent.futures import ThreadPoolExecutor
 executor = ThreadPoolExecutor(max_workers=8)
-pending = {}
-cache = {}
+in_flight = set()
 
-def request_tile(lod, z, y, x):
-    key = (lod, z, y, x)
-    if key in cache:
-        # Already loaded — push data again (Bovista may have evicted it)
-        image.set_chunk_data_u16(lod, z, y, x, cache[key])
-        return bv.ChunkStatus.Accepted
-    if key in pending:
-        return bv.ChunkStatus.AlreadyPending
-    pending.add(key)
-    executor.submit(load_and_push, key)
-    return bv.ChunkStatus.Accepted
+def pump(volume):
+    # Call this on a timer / each loop iteration — NOT from inside the engine.
+    for lod, t, z, y, x, priority in volume.wanted_keys():
+        key = (lod, t, z, y, x)
+        if key in in_flight:
+            continue  # dedup: already fetching this tile
+        in_flight.add(key)
+        executor.submit(load_and_push, volume, key)
 
-def load_and_push(key):
-    lod, z, y, x = key
-    data = zarr_array[lod][z*cz:(z+1)*cz, y*cy:(y+1)*cy, x*cx:(x+1)*cx]
-    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
-    pending.discard(key)
-    cache[key] = data  # optional local cache
+def load_and_push(volume, key):
+    lod, t, z, y, x = key
+    data = fetch_tile(lod, t, z, y, x)  # returns a uint16 numpy array
+    volume.set_chunk_data_u16(lod, t, z, y, x, np.asarray(data, dtype=np.uint16))
+    in_flight.discard(key)
 ```
 
 ### JavaScript Implementation
 
-The web examples use `fetch()` and an `async` pipeline:
+The web examples poll `wantedKeys()` (a flat `Uint32Array` of 6 ints per key) and fetch with `fetch()`:
 
 ```javascript
-const pending = new Set();
-const cache = new Map();
+const inFlight = new Set();
 
-function requestTile(lod, z, y, x) {
-    const key = `${lod}_${z}_${y}_${x}`;
-    if (cache.has(key)) {
-        image.setChunkDataU16(lod, z, y, x, cache.get(key), width, height, depth);
-        return ChunkStatus.Accepted;
+function pump(volume) {
+    // Call this on a timer / requestAnimationFrame — NOT from inside the engine.
+    const w = volume.wantedKeys();  // [lod, t, z, y, x, priority, ...]
+    for (let i = 0; i < w.length; i += 6) {
+        const [lod, t, z, y, x, prio] = w.slice(i, i + 6);
+        const key = `${lod}_${t}_${z}_${y}_${x}`;
+        if (inFlight.has(key)) continue;  // dedup: already fetching this tile
+        inFlight.add(key);
+        fetchTile(lod, t, z, y, x).then(arr => {
+            volume.setChunkDataU16(lod, t, z, y, x, arr, zShape, yShape, xShape);
+            inFlight.delete(key);
+        });
     }
-    if (pending.has(key)) return ChunkStatus.AlreadyPending;
-    pending.add(key);
-    fetchTile(lod, z, y, x).then(data => {
-        image.setChunkDataU16(lod, z, y, x, data, width, height, depth);
-        cache.set(key, data);
-        pending.delete(key);
-    });
-    return ChunkStatus.Accepted;
 }
 ```
 
@@ -123,9 +122,9 @@ Volumes are described as an array of `LevelMetadata`, one per resolution level. 
 ```python
 levels = [
     bv.LevelMetadata(
-        volume_size=(depth, height, width),    # voxels at this level
-        chunk_size=(cdepth, cheight, cwidth),  # tile size
-        voxel_size=(vz, vy, vx),              # physical size in µm
+        volume_size=(depth, height, width),    # voxels at this level, [z, y, x]
+        chunk_size=(cdepth, cheight, cwidth),  # tile size, [z, y, x]
+        voxel_size=(vz, vy, vx),              # physical size in µm, [z, y, x]
         scale_factor=1.0,                      # LOD 0 is the reference
     ),
     bv.LevelMetadata(
@@ -137,6 +136,8 @@ levels = [
     # ... more levels (4.0, 8.0, ...)
 ]
 ```
+
+The first three arguments (`volume_size`, `chunk_size`, `voxel_size`) are `[z, y, x]` numpy-order sequences. An optional `translation` argument follows `scale_factor`.
 
 LOD selection is screen-space: Bovista calculates how many voxels map to a single pixel at the current zoom, and selects the finest LOD where that ratio is close to 1:1.
 
@@ -164,7 +165,7 @@ The atlas size (and therefore VRAM use) is controlled by `max_tiles` at visual c
 ```python
 # Each tile is tile_depth × tile_height × tile_width × 2 bytes (R16Float)
 # e.g. 64³ tile = 524 KB; 2000 tiles ≈ 1 GB
-image = bv.Image(viewer, levels, max_tiles=2000, loader=request_tile)
+image = bv.Image(viewer, levels, max_tiles=2000)
 ```
 
 In the web examples, the VRAM budget selector converts a GB budget into a `max_tiles` count:
@@ -176,7 +177,7 @@ const maxTiles = Math.floor((budgetBytes * 0.8) / tileVram); // 80% headroom
 
 ## Debug Modes
 
-Both `ImageVisual` and `VolumeVisual` support debug visualizations:
+Both `Image` and the volume visuals support debug visualizations:
 
 - **LOD tint** (`set_debug_mode(true)`) — colors tiles by their loaded LOD: green = finest, red = coarsest. Useful for verifying LOD selection and tile streaming.
 - **Atlas debug** (`set_atlas_debug_mode(true)`, volume only) — bypasses page-table indirection and samples the raw atlas texture directly. Shows the packing of tiles.
@@ -188,12 +189,12 @@ Both `ImageVisual` and `VolumeVisual` support debug visualizations:
 |-----------|------|
 | `VirtualTextureData` | Orchestrates streaming, atlas, page table, LOD selection |
 | `AtlasAllocator` | Manages slot assignment and LRU eviction in the 3D atlas texture |
-| `PageTable` | GPU indirection texture: maps `(lod, z, y, x)` → atlas slot |
+| `PageTable` | GPU indirection texture: maps `(lod, t, z, y, x)` → atlas slot |
 | `PendingChunks` | Lock-protected queue for pushing tile data from background threads |
-| Loader callback | User code; kicks off async loads and returns `ChunkStatus` |
+| Wanted set | Engine-published set of desired tiles; the loader polls it via `wanted_keys()` |
 | `set_chunk_data_u16()` | Called by user when data arrives; pushes into `PendingChunks` |
 
-The key architectural win: by resolving tile addresses in the shader, both `ImageVisual` and `VolumeVisual` render in a single draw call per frame regardless of how many tiles are resident or loading.
+The key architectural win: by resolving tile addresses in the shader, both `Image` and the volume visuals render in a single draw call per frame regardless of how many tiles are resident or loading.
 
 ---
 
