@@ -24,7 +24,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install mdBook
-        run: cargo install mdbook mdbook-toc --locked
+        run: cargo install mdbook --locked
 
       - name: Install wasm-bindgen-cli
         # Derive the CLI version from Cargo.lock so it always matches the wasm-bindgen
@@ -46,27 +46,33 @@ jobs:
             target/wasm32-unknown-unknown/release/bovista.wasm
 
       - name: Build docs
-        run: mdbook build docs/wgpu-guide
+        run: mdbook build docs/guide
+
+      - name: Build Rust API docs
+        run: |
+          cargo doc --no-deps -p bovista
+          rm -rf docs/guide/book/api
+          cp -r target/doc docs/guide/book/api
 
       - name: Assemble site
-        # mdBook output is at docs/wgpu-guide/book/
+        # mdBook output is at docs/guide/book/
         # Web examples get copied to /examples/live/ under the site root
         run: |
-          mkdir -p docs/wgpu-guide/book/examples/live
+          mkdir -p docs/guide/book/examples/live
           # Copy web examples with their WASM pkg
-          cp -r examples/slice_viewer/web    docs/wgpu-guide/book/examples/live/slice_viewer
-          cp -r examples/volume_renderer/web docs/wgpu-guide/book/examples/live/volume_renderer
-          cp -r examples/pkg                 docs/wgpu-guide/book/examples/live/pkg
+          cp -r examples/slice_viewer/web    docs/guide/book/examples/live/slice_viewer
+          cp -r examples/volume_renderer/web docs/guide/book/examples/live/volume_renderer
+          cp -r examples/pkg                 docs/guide/book/examples/live/pkg
           # Hub page
-          cp examples/index.html             docs/wgpu-guide/book/examples/live/index.html
+          cp examples/index.html             docs/guide/book/examples/live/index.html
           # Fix pkg import paths for the deployed location
           sed -i "s|../../pkg/bovista\.js|../pkg/bovista.js|g" \
-            docs/wgpu-guide/book/examples/live/slice_viewer/main.js \
-            docs/wgpu-guide/book/examples/live/volume_renderer/main.js
+            docs/guide/book/examples/live/slice_viewer/main.js \
+            docs/guide/book/examples/live/volume_renderer/main.js
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/wgpu-guide/book
+          publish_dir: docs/guide/book
           cname: ""

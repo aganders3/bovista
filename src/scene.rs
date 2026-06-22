@@ -36,13 +36,13 @@ type VisualRef = Rc<RefCell<dyn Visual>>;
 /// # Example
 ///
 /// ```rust,no_run
-/// use bovista::{Scene, PointsVisual};
+/// use bovista::{Scene, Points};
 /// use std::sync::{Arc, Mutex};
 ///
 /// let mut scene = Scene::new();
 ///
 /// // Add visuals to the scene
-/// let points = PointsVisual::test_cube(&device, &format, &layout, 10);
+/// let points = Points::test_cube(&device, &format, &layout, 10);
 /// let index = scene.add(Arc::new(Mutex::new(points)));
 ///
 /// // Prepare and render

@@ -36,8 +36,8 @@ Then navigate to `http://localhost:8000/remote_ome_zarr/`
 This example mirrors the Python `examples/remote_ome_zarr.py` implementation:
 
 1. **Dataset configuration** - Predefined datasets with metadata
-2. **Chunk loading** - Async loading via `zarrita` library
-3. **Visual creation** - Uses `JsTiledImageVisual` with prototype chain inheritance from `JsImageVisual`
+2. **Chunk loading** - Pull-based: a poll loop reads `image.wantedKeys()`, fetches the wanted tiles via the `zarrita` library, and pushes them back with `image.setChunkDataU16(...)`
+3. **Visual creation** - Uses the `Image` visual directly
 4. **Rendering loop** - Continuous render with WebGPU
 
 ## Controls

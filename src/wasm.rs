@@ -5,7 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 /// Camera projection mode
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "ProjectionMode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsProjectionMode {
     /// Perspective projection with field of view
@@ -39,7 +39,7 @@ use web_sys::console;
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, ImageVisual, LinesVisual, PointsVisual, Renderer, Scene, SlicePlane,
+    Camera, Image, Lines, Points, Renderer, Scene, SlicePlane,
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::gpu_structs::{TileData, TileKey},
@@ -48,8 +48,31 @@ use crate::{
 };
 use bovista_codegen::{camera_methods, visual_methods};
 
+/// Validate that a pushed tile's element count matches its declared
+/// `z * y * x` shape before it reaches the (panicking) upload path. The JS
+/// caller supplies the shape separately from the data, so a mismatch is
+/// possible; the native/Python binding derives the shape from the array and
+/// can't hit this. On mismatch we warn and skip the tile rather than letting
+/// an out-of-range slice panic poison the whole wasm instance.
+#[allow(clippy::too_many_arguments)]
+fn check_chunk_len(
+    len: u32,
+    lod: usize, t: u32, z: u32, y: u32, x: u32,
+    z_shape: u32, y_shape: u32, x_shape: u32,
+) -> bool {
+    let expected = z_shape.saturating_mul(y_shape).saturating_mul(x_shape);
+    if len == expected {
+        return true;
+    }
+    console::warn_1(&format!(
+        "setChunkDataU16: dropping tile (lod={lod}, t={t}, z={z}, y={y}, x={x}) — \
+         data length {len} != z*y*x = {z_shape}*{y_shape}*{x_shape} = {expected}"
+    ).into());
+    false
+}
+
 /// JavaScript viewer for Bovista
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "Viewer")]
 pub struct JsViewer {
     renderer: Renderer,
     camera: Camera,
@@ -218,7 +241,7 @@ impl JsViewer {
 
     /// Add an image visual to the scene
     #[wasm_bindgen(js_name = addImage)]
-    pub fn add_image(&mut self, visual: &JsImageVisual) -> usize {
+    pub fn add_image(&mut self, visual: &JsImage) -> usize {
         self.scene.add(visual.get_inner())
     }
 
@@ -291,13 +314,13 @@ impl JsViewer {
 
     /// Add a points visual to the scene
     #[wasm_bindgen(js_name = addPoints)]
-    pub fn add_points_visual(&mut self, visual: &JsPointsVisual) -> usize {
+    pub fn add_points_visual(&mut self, visual: &JsPoints) -> usize {
         self.scene.add(visual.inner.clone())
     }
 
     /// Add a lines visual to the scene
     #[wasm_bindgen(js_name = addLines)]
-    pub fn add_lines_visual(&mut self, visual: &JsLinesVisual) -> usize {
+    pub fn add_lines_visual(&mut self, visual: &JsLines) -> usize {
         self.scene.add(visual.inner.clone())
     }
 
@@ -320,7 +343,7 @@ impl JsViewer {
 /// Level metadata for multi-resolution LOD images
 ///
 /// Describes a single LOD level in a chunked image.
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "LevelMetadata")]
 #[derive(Clone)]
 pub struct JsLevelMetadata {
     volume_size: (u32, u32, u32),
@@ -332,44 +355,63 @@ pub struct JsLevelMetadata {
 
 #[wasm_bindgen]
 impl JsLevelMetadata {
+    /// Construct a level descriptor. Each array is `[z, y, x]` numpy order.
+    ///
+    /// ```js
+    /// new LevelMetadata(
+    ///   [1024, 1024, 1024],   // volume_shape: voxel counts along z, y, x
+    ///   [64, 64, 64],         // chunk_shape:  tile voxel counts
+    ///   [1.0, 1.0, 1.0],      // voxel_size:   world-space units per voxel
+    ///   1.0,                  // scale_factor: relative to LOD 0
+    ///   [0.0, 0.0, 0.0],      // translation:  world-space origin offset
+    /// );
+    /// ```
     #[wasm_bindgen(constructor)]
     pub fn new(
-        volume_width: u32,
-        volume_height: u32,
-        volume_depth: u32,
-        chunk_width: u32,
-        chunk_height: u32,
-        chunk_depth: u32,
-        voxel_width: f32,
-        voxel_height: f32,
-        voxel_depth: f32,
+        volume_shape: Vec<u32>,
+        chunk_shape: Vec<u32>,
+        voxel_size: Vec<f32>,
         scale_factor: f32,
-        translation_x: f32,
-        translation_y: f32,
-        translation_z: f32,
-    ) -> Self {
-        Self {
-            volume_size: (volume_depth, volume_height, volume_width),
-            chunk_size: (chunk_depth, chunk_height, chunk_width),
-            voxel_size: (voxel_depth, voxel_height, voxel_width),
+        translation: Vec<f32>,
+    ) -> Result<JsLevelMetadata, JsValue> {
+        let triple_u32 = |v: &Vec<u32>, name: &str| -> Result<(u32, u32, u32), JsValue> {
+            if v.len() != 3 {
+                return Err(JsValue::from_str(&format!(
+                    "{} must be a 3-element [z, y, x] array, got length {}", name, v.len()
+                )));
+            }
+            Ok((v[0], v[1], v[2]))
+        };
+        let triple_f32 = |v: &Vec<f32>, name: &str| -> Result<(f32, f32, f32), JsValue> {
+            if v.len() != 3 {
+                return Err(JsValue::from_str(&format!(
+                    "{} must be a 3-element [z, y, x] array, got length {}", name, v.len()
+                )));
+            }
+            Ok((v[0], v[1], v[2]))
+        };
+        Ok(Self {
+            volume_size: triple_u32(&volume_shape, "volume_shape")?,
+            chunk_size:  triple_u32(&chunk_shape,  "chunk_shape")?,
+            voxel_size:  triple_f32(&voxel_size,   "voxel_size")?,
             scale_factor,
-            translation: (translation_z, translation_y, translation_x),
-        }
+            translation: triple_f32(&translation,  "translation")?,
+        })
     }
 
-    /// Get volume size as [depth, height, width]
+    /// Volume shape as `[z, y, x]` voxel counts.
     #[wasm_bindgen(getter)]
     pub fn volume_size(&self) -> Vec<u32> {
         vec![self.volume_size.0, self.volume_size.1, self.volume_size.2]
     }
 
-    /// Get chunk size as [depth, height, width]
+    /// Chunk shape as `[z, y, x]` voxel counts.
     #[wasm_bindgen(getter)]
     pub fn chunk_size(&self) -> Vec<u32> {
         vec![self.chunk_size.0, self.chunk_size.1, self.chunk_size.2]
     }
 
-    /// Get voxel size as [depth, height, width]
+    /// Voxel size as `[z, y, x]` world-space units per voxel.
     #[wasm_bindgen(getter)]
     pub fn voxel_size(&self) -> Vec<f32> {
         vec![self.voxel_size.0, self.voxel_size.1, self.voxel_size.2]
@@ -395,20 +437,20 @@ impl JsLevelMetadata {
 }
 
 
-/// JavaScript wrapper for ImageVisual — single-draw-call multiscale rendering.
+/// JavaScript wrapper for Image — single-draw-call multiscale rendering.
 ///
 /// Tile data must be provided as uint16 via `setChunkDataU16`.
-#[wasm_bindgen]
-pub struct JsImageVisual {
+#[wasm_bindgen(js_name = "Image")]
+pub struct JsImage {
     inner: VisualRef,
     pending_chunks: Option<PendingChunks>,
     wanted: crate::visuals::virtual_texture::Wanted,
 }
 
-#[visual_methods(ImageVisual)]
+#[visual_methods(Image)]
 #[wasm_bindgen]
-impl JsImageVisual {
-    /// Create an ImageVisual.
+impl JsImage {
+    /// Create an Image.
     ///
     /// Pull-based: bovista publishes the set of tiles it wants each
     /// frame via `wantedKeys()`. The caller (JS) polls this and pushes
@@ -425,7 +467,7 @@ impl JsImageVisual {
             levels.iter().map(|l| l.to_lod_level_config()).collect();
 
         let renderer = viewer.renderer();
-        let visual = ImageVisual::new(
+        let visual = Image::new(
             renderer.device(),
             renderer.queue(),
             renderer.surface_format(),
@@ -469,7 +511,7 @@ impl JsImageVisual {
     /// Set the slice plane position and normal
     #[wasm_bindgen(js_name = setSlicePlane)]
     pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |img| {
                 let plane = SlicePlane::new([px, py, pz], [nx, ny, nz]);
@@ -481,7 +523,7 @@ impl JsImageVisual {
     /// Set contrast limits (0.0 to 1.0)
     #[wasm_bindgen(js_name = setContrast)]
     pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |img| img.set_contrast_limits(min, max)
         ).map_err(|e| JsValue::from_str(&e))
@@ -492,14 +534,19 @@ impl JsImageVisual {
     #[wasm_bindgen(js_name = setColormap)]
     pub fn set_colormap(&self, rgba: &Uint8Array) -> Result<(), JsValue> {
         let bytes = rgba.to_vec();
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(
+        bindings_common::with_visual_mut::<Image, _, _>(
             &self.inner,
             |img| img.set_colormap(&bytes)
         ).map_err(|e| JsValue::from_str(&e))
     }
 
     /// Provide uint16 tile data (stored as R16Float).
+    ///
+    /// TODO: collapse the 9 positional args into `({ lod, t, z, y, x, shape, channel }, data)`
+    /// when multi-channel support lands — the signature will need a channel index then,
+    /// and that's a natural point to also switch to object-style "named args" in JS.
     #[wasm_bindgen(js_name = setChunkDataU16)]
+    #[allow(clippy::too_many_arguments)]
     pub fn set_chunk_data_u16(
         &self,
         lod: usize,
@@ -508,10 +555,13 @@ impl JsImageVisual {
         y: u32,
         x: u32,
         data: &js_sys::Uint16Array,
-        width: u32,
-        height: u32,
-        depth: u32,
+        z_shape: u32,
+        y_shape: u32,
+        x_shape: u32,
     ) {
+        if !check_chunk_len(data.length(), lod, t, z, y, x, z_shape, y_shape, x_shape) {
+            return;
+        }
         if let Some(ref pending_chunks) = self.pending_chunks {
             let bytes: Vec<u8> = data
                 .to_vec()
@@ -520,9 +570,9 @@ impl JsImageVisual {
                 .collect();
             let tile_data = TileData {
                 data: bytes,
-                width,
-                height,
-                depth,
+                z_shape,
+                y_shape,
+                x_shape,
                 format: wgpu::TextureFormat::R16Float,
             };
             let key = TileKey { lod_level: lod, t, z, y, x };
@@ -533,7 +583,7 @@ impl JsImageVisual {
     /// Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
     #[wasm_bindgen(js_name = setLodBias)]
     pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(&self.inner, |img| {
+        bindings_common::with_visual_mut::<Image, _, _>(&self.inner, |img| {
             img.set_lod_bias(bias)
         })
         .map_err(|e| JsValue::from_str(&e))
@@ -542,7 +592,7 @@ impl JsImageVisual {
     /// Enable or disable debug LOD tinting (green=LOD0, red=coarsest).
     #[wasm_bindgen(js_name = setDebugMode)]
     pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<ImageVisual, _, _>(&self.inner, |img| {
+        bindings_common::with_visual_mut::<Image, _, _>(&self.inner, |img| {
             img.set_debug_mode(enabled)
         })
         .map_err(|e| JsValue::from_str(&e))
@@ -551,7 +601,7 @@ impl JsImageVisual {
     /// Returns [loaded, visible] tile counts.
     #[wasm_bindgen(js_name = getStats)]
     pub fn get_stats(&self) -> Vec<usize> {
-        bindings_common::with_visual_ref::<ImageVisual, _, _>(&self.inner, |img| {
+        bindings_common::with_visual_ref::<Image, _, _>(&self.inner, |img| {
             let (loaded, visible) = img.get_stats();
             vec![loaded, visible]
         })
@@ -572,16 +622,18 @@ impl JsImageVisual {
 macro_rules! js_volume_class {
     (
         $wrapper:ident,
+        $js_name:literal,
         $rust_ty:ident
         $(, extra: { $($extra:tt)* })?
     ) => {
-        #[wasm_bindgen]
+        #[wasm_bindgen(js_name = $js_name)]
         pub struct $wrapper {
             inner: VisualRef,
             pending_chunks: Option<PendingChunks>,
             wanted: crate::visuals::virtual_texture::Wanted,
         }
 
+        #[visual_methods($rust_ty)]
         #[wasm_bindgen]
         impl $wrapper {
             #[wasm_bindgen(constructor)]
@@ -638,28 +690,24 @@ macro_rules! js_volume_class {
                 ).map_err(|e| JsValue::from_str(&e))
             }
 
-            #[wasm_bindgen(js_name = setRelativeStepSize)]
-            pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {
-                bindings_common::with_visual_mut::<$rust_ty, _, _>(
-                    &self.inner, |v| v.set_relative_step_size(step)
-                ).map_err(|e| JsValue::from_str(&e))
-            }
-
-            #[wasm_bindgen(js_name = setLodBias)]
-            pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {
-                bindings_common::with_visual_mut::<$rust_ty, _, _>(
-                    &self.inner, |v| v.set_lod_bias(bias)
-                ).map_err(|e| JsValue::from_str(&e))
-            }
+            pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+            pub fn set_lod_bias(&self, bias: f32) -> Result<(), JsValue> {}
 
             /// Provide uint16 tile data (stored as R16Float).
+            ///
+            /// TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+            /// when multi-channel support lands (same signature reshape as Image's variant).
             #[wasm_bindgen(js_name = setChunkDataU16)]
+            #[allow(clippy::too_many_arguments)]
             pub fn set_chunk_data_u16(
                 &self,
                 lod: usize, t: u32, z: u32, y: u32, x: u32,
                 data: &js_sys::Uint16Array,
-                width: u32, height: u32, depth: u32,
+                z_shape: u32, y_shape: u32, x_shape: u32,
             ) {
+                if !check_chunk_len(data.length(), lod, t, z, y, x, z_shape, y_shape, x_shape) {
+                    return;
+                }
                 if let Some(ref pending_chunks) = self.pending_chunks {
                     let bytes: Vec<u8> = data
                         .to_vec()
@@ -667,7 +715,7 @@ macro_rules! js_volume_class {
                         .flat_map(|&v| half::f16::from_f32(v as f32 / u16::MAX as f32).to_le_bytes())
                         .collect();
                     let tile_data = TileData {
-                        data: bytes, width, height, depth,
+                        data: bytes, z_shape, y_shape, x_shape,
                         format: wgpu::TextureFormat::R16Float,
                     };
                     let key = TileKey { lod_level: lod, t, z, y, x };
@@ -696,81 +744,42 @@ macro_rules! js_volume_class {
     };
 }
 
-js_volume_class!(JsDirectVolume, DirectVolume, extra: {
-    #[wasm_bindgen(js_name = setDensityScale)]
-    pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_density_scale(scale)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setEarlyExitAlpha)]
-    pub fn set_early_exit_alpha(&self, alpha: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_early_exit_alpha(alpha)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setDebugMode)]
-    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setAtlasDebugMode)]
-    pub fn set_atlas_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_atlas_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
-
-    #[wasm_bindgen(js_name = setStepDebugMode)]
-    pub fn set_step_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<DirectVolume, _, _>(
-            &self.inner, |v| v.set_step_debug_mode(enabled)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+js_volume_class!(JsDirectVolume, "DirectVolume", DirectVolume, extra: {
+    pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {}
+    pub fn set_early_exit_alpha(&self, alpha: f32) -> Result<(), JsValue> {}
+    pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
+    pub fn set_atlas_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
+    pub fn set_step_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
 });
 
-js_volume_class!(JsMipVolume, MipVolume, extra: {
-    #[wasm_bindgen(js_name = setAttenuation)]
-    pub fn set_attenuation(&self, attenuation: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<MipVolume, _, _>(
-            &self.inner, |v| v.set_attenuation(attenuation)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+js_volume_class!(JsMipVolume, "MipVolume", MipVolume, extra: {
+    pub fn set_attenuation(&self, attenuation: f32) -> Result<(), JsValue> {}
 });
 
-js_volume_class!(JsMinipVolume, MinipVolume);
-js_volume_class!(JsAverageVolume, AverageVolume);
+js_volume_class!(JsMinipVolume, "MinipVolume", MinipVolume);
+js_volume_class!(JsAverageVolume, "AverageVolume", AverageVolume);
 
-js_volume_class!(JsIsosurfaceVolume, IsosurfaceVolume, extra: {
-    #[wasm_bindgen(js_name = setIsoThreshold)]
-    pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {
-        bindings_common::with_visual_mut::<IsosurfaceVolume, _, _>(
-            &self.inner, |v| v.set_iso_threshold(threshold)
-        ).map_err(|e| JsValue::from_str(&e))
-    }
+js_volume_class!(JsIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra: {
+    pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {}
 });
 
-/// JavaScript wrapper for PointsVisual — colored point cloud.
-#[wasm_bindgen]
-pub struct JsPointsVisual {
+/// JavaScript wrapper for Points — colored point cloud.
+#[wasm_bindgen(js_name = "Points")]
+pub struct JsPoints {
     inner: VisualRef,
 }
 
 #[wasm_bindgen]
-impl JsPointsVisual {
+impl JsPoints {
     /// Create a point cloud from flat Float32Arrays.
     ///
     /// `positions` is a flat array of XYZ triples; `colors` is a flat array of RGB triples
     /// (values 0–1). Both must have length 3 × n_points.
     #[wasm_bindgen(constructor)]
-    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsPointsVisual, JsValue> {
+    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsPoints, JsValue> {
         let pos = positions.to_vec();
         let col = colors.to_vec();
-        if pos.len() != col.len() || pos.len() % 3 != 0 {
+        if pos.len() != col.len() || !pos.len().is_multiple_of(3) {
             return Err(JsValue::from_str("positions and colors must be flat XYZ/RGB arrays of equal length"));
         }
         let n = pos.len() / 3;
@@ -781,7 +790,7 @@ impl JsPointsVisual {
             })
             .collect();
         let renderer = viewer.renderer();
-        let visual = PointsVisual::new(
+        let visual = Points::new(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -792,9 +801,9 @@ impl JsPointsVisual {
 
     /// Create a test cube of points.
     #[wasm_bindgen(js_name = testCube)]
-    pub fn test_cube(viewer: &JsViewer, size: u32) -> JsPointsVisual {
+    pub fn test_cube(viewer: &JsViewer, size: u32) -> JsPoints {
         let renderer = viewer.renderer();
-        let visual = PointsVisual::test_cube(
+        let visual = Points::test_cube(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -804,23 +813,23 @@ impl JsPointsVisual {
     }
 }
 
-/// JavaScript wrapper for LinesVisual — line segments and wireframes.
-#[wasm_bindgen]
-pub struct JsLinesVisual {
+/// JavaScript wrapper for Lines — line segments and wireframes.
+#[wasm_bindgen(js_name = "Lines")]
+pub struct JsLines {
     inner: VisualRef,
 }
 
 #[wasm_bindgen]
-impl JsLinesVisual {
+impl JsLines {
     /// Create a lines visual from flat Float32Arrays.
     ///
     /// Each consecutive pair of vertices defines one line segment.
     /// `positions` and `colors` are flat arrays of length 3 × n_vertices.
     #[wasm_bindgen(constructor)]
-    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsLinesVisual, JsValue> {
+    pub fn new(viewer: &JsViewer, positions: &js_sys::Float32Array, colors: &js_sys::Float32Array) -> Result<JsLines, JsValue> {
         let pos = positions.to_vec();
         let col = colors.to_vec();
-        if pos.len() != col.len() || pos.len() % 3 != 0 {
+        if pos.len() != col.len() || !pos.len().is_multiple_of(3) {
             return Err(JsValue::from_str("positions and colors must be flat XYZ/RGB arrays of equal length"));
         }
         let n = pos.len() / 3;
@@ -831,7 +840,7 @@ impl JsLinesVisual {
             })
             .collect();
         let renderer = viewer.renderer();
-        let visual = LinesVisual::new(
+        let visual = Lines::new(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -842,9 +851,9 @@ impl JsLinesVisual {
 
     /// Create a 3-axis helper (X=red, Y=green, Z=blue).
     #[wasm_bindgen(js_name = axisHelper)]
-    pub fn axis_helper(viewer: &JsViewer, length: f32) -> JsLinesVisual {
+    pub fn axis_helper(viewer: &JsViewer, length: f32) -> JsLines {
         let renderer = viewer.renderer();
-        let visual = LinesVisual::axis_helper(
+        let visual = Lines::axis_helper(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),
@@ -855,9 +864,9 @@ impl JsLinesVisual {
 
     /// Create a wireframe unit cube.
     #[wasm_bindgen(js_name = testCube)]
-    pub fn test_cube(viewer: &JsViewer) -> JsLinesVisual {
+    pub fn test_cube(viewer: &JsViewer) -> JsLines {
         let renderer = viewer.renderer();
-        let visual = LinesVisual::test_cube(
+        let visual = Lines::test_cube(
             renderer.device(),
             renderer.surface_format(),
             renderer.camera_bind_group_layout(),

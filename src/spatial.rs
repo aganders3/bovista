@@ -1,7 +1,7 @@
 //! Spatial data structures and algorithms for volumetric rendering.
 //!
 //! This module provides utilities for working with 3D grids, spatial culling,
-//! and hierarchical traversal. These are used primarily by TiledImageVisual
+//! and hierarchical traversal. These are used primarily by Image
 //! but could be useful for other volumetric visualizations.
 
 use glam::Vec3;
@@ -10,7 +10,7 @@ use glam::Vec3;
 ///
 /// This is a common pattern for spatial partitioning in volumetric rendering,
 /// used for:
-/// - Chunk-based loading (TiledImageVisual)
+/// - Chunk-based loading (Image)
 /// - Spatial queries (finding chunks in a region)
 /// - LOD management (multi-resolution grids)
 #[derive(Debug, Clone)]
@@ -36,9 +36,9 @@ impl VolumeGrid {
         voxel_size: (f32, f32, f32),
     ) -> Self {
         let grid_size = (
-            (volume_size.0 + cell_size.0 - 1) / cell_size.0,
-            (volume_size.1 + cell_size.1 - 1) / cell_size.1,
-            (volume_size.2 + cell_size.2 - 1) / cell_size.2,
+            volume_size.0.div_ceil(cell_size.0),
+            volume_size.1.div_ceil(cell_size.1),
+            volume_size.2.div_ceil(cell_size.2),
         );
 
         Self {
@@ -112,9 +112,9 @@ impl VolumeGrid {
         let cell_min_y = voxel_min_y / cell_y;
         let cell_min_x = voxel_min_x / cell_x;
 
-        let cell_max_z = ((voxel_max_z + cell_z - 1) / cell_z).min(self.grid_size.0);
-        let cell_max_y = ((voxel_max_y + cell_y - 1) / cell_y).min(self.grid_size.1);
-        let cell_max_x = ((voxel_max_x + cell_x - 1) / cell_x).min(self.grid_size.2);
+        let cell_max_z = voxel_max_z.div_ceil(cell_z).min(self.grid_size.0);
+        let cell_max_y = voxel_max_y.div_ceil(cell_y).min(self.grid_size.1);
+        let cell_max_x = voxel_max_x.div_ceil(cell_x).min(self.grid_size.2);
 
         let mut result = Vec::new();
         for cz in cell_min_z..cell_max_z {

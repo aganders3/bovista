@@ -1,4 +1,68 @@
-/* Custom styles for WGPU guide */
+/* Custom styles for the Bovista guide */
+
+/* ============================================================
+   Puffball theme — palette sampled from the header image
+   (Bovista colorata: golden caps on a warm pine-needle floor)
+     gold  #fed518   amber #ebb148   pale-gold #f6dd9b
+     tan   #bd9b5d   brown #624a1f   dark-brown #2a1c03
+   plus natural greens drawn from the forest floor:
+     moss  #6f7d2e   fern  #9fb15a   pine #3f4d1c
+   Two themes only — Light and Dark (coal). The theme picker is
+   trimmed to these in custom.js. Gold/amber is the primary accent
+   (links, sidebar, highlights); green is the secondary accent
+   (quotes, callouts).
+   ============================================================ */
+:root {
+    --puffball-gold: #fed518;
+    --puffball-amber: #ebb148;
+    --moss-green: #6f7d2e;
+    --fern-green: #9fb15a;
+    --pine-green: #3f4d1c;
+}
+
+/* Light — forest-green chrome on a green-cream page; gold pops as the accent */
+html.light {
+    --bg: #f6f8ec;
+    --links: #8c6500;
+    --sidebar-bg: #36441c;
+    --sidebar-fg: #e7ecca;
+    --sidebar-non-existant: #9aa877;
+    --sidebar-active: var(--puffball-gold);
+    --sidebar-spacer: #4a5a28;
+    --scrollbar: #6f7d2e;
+    --search-mark-bg: var(--puffball-gold);
+    --code-accent: var(--moss-green);
+    --quote-border: var(--moss-green);
+    --quote-bg: rgba(111, 125, 46, 0.10);
+    --table-header-bg: #e6ecc9;
+    --table-border-color: #cdd3a3;
+    --border-color: #cdd3a3;
+    --searchbar-border-color: #aab574;
+    --menu-bar-hover-bg: #e3ead0;
+    --inline-code-bg: rgba(111, 125, 46, 0.13);
+}
+
+/* Dark — pine-green chrome on a deep green-black page; gold pops as the accent */
+html.coal {
+    --bg: #14180c;
+    --fg: #e7ecca;
+    --links: #f0d175;
+    --sidebar-bg: #1b240f;
+    --sidebar-fg: #cdd6a0;
+    --sidebar-non-existant: #6a754a;
+    --sidebar-active: var(--puffball-gold);
+    --sidebar-spacer: #2e3a18;
+    --scrollbar: #4a5d23;
+    --search-mark-bg: var(--puffball-gold);
+    --code-accent: var(--fern-green);
+    --quote-border: var(--fern-green);
+    --quote-bg: rgba(159, 177, 90, 0.11);
+    --table-header-bg: #2b3514;
+    --table-border-color: #44521f;
+    --border-color: #3a471b;
+    --searchbar-border-color: #4a5d23;
+    --inline-code-bg: rgba(159, 177, 90, 0.13);
+}
 
 /* Live demo iframes — break out of the content column and fill the viewport height */
 .live-demo-container {
@@ -73,7 +137,7 @@
 
 /* Better code block styling */
 pre {
-    border-left: 3px solid var(--links);
+    border-left: 3px solid var(--code-accent, var(--links));
     padding-left: 1em !important;
 }
 
@@ -81,8 +145,8 @@ pre {
 .warning, .important {
     padding: 1em;
     margin: 1em 0;
-    border-left: 4px solid #f0ad4e;
-    background-color: rgba(240, 173, 78, 0.1);
+    border-left: 4px solid var(--puffball-amber);
+    background-color: rgba(235, 177, 72, 0.12);
 }
 
 /* Better table styling */
@@ -155,7 +219,7 @@ h3 {
     margin: 1em 0;
     border-radius: 4px;
     background-color: var(--quote-bg);
-    border-left: 4px solid var(--links);
+    border-left: 4px solid var(--quote-border);
 }
 
 /* Next chapter link styling */

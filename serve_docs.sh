@@ -6,34 +6,32 @@ set -e
 #
 # Usage:
 #   ./serve_docs.sh          # build everything and serve
-#   ./serve_docs.sh --skip-wasm  # skip WASM rebuild (faster if already built)
+#
+# Always rebuilds the WASM — it's fast, and serving a stale bovista_bg.wasm
+# (out of sync with the Rust source) is a confusing footgun not worth saving
+# a few seconds for.
 
-SKIP_WASM=false
-for arg in "$@"; do
-    case $arg in
-        --skip-wasm) SKIP_WASM=true ;;
-    esac
-done
-
-BOOK_DIR="docs/wgpu-guide/book"
+BOOK_DIR="docs/guide/book"
 LIVE_DIR="$BOOK_DIR/examples/live"
 PORT=8000
 
 # 1. WASM
-if [ "$SKIP_WASM" = false ]; then
-    echo "Building WASM..."
-    ./build_wasm.sh
-else
-    echo "Skipping WASM build (--skip-wasm)"
-fi
+echo "Building WASM..."
+./build_wasm.sh
 
 # 2. mdBook
 if ! command -v mdbook &> /dev/null; then
     echo "mdbook not found — installing..."
-    cargo install mdbook mdbook-toc --locked
+    cargo install mdbook --locked
 fi
 echo "Building docs..."
-mdbook build docs/wgpu-guide
+mdbook build docs/guide
+
+# 2b. Rust API docs (rustdoc) → served at /api/bovista/
+echo "Building Rust API docs..."
+cargo doc --no-deps -p bovista
+rm -rf "$BOOK_DIR/api"
+cp -r target/doc "$BOOK_DIR/api"
 
 # 3. Assemble: copy examples into the book output, rewrite pkg path
 mkdir -p "$LIVE_DIR"
@@ -54,6 +52,7 @@ echo "  Docs:             http://localhost:$PORT"
 echo "  Examples hub:     http://localhost:$PORT/examples/live/"
 echo "  Slice viewer:     http://localhost:$PORT/examples/live/slice_viewer/"
 echo "  Volume renderer:  http://localhost:$PORT/examples/live/volume_renderer/"
+echo "  Rust API docs:    http://localhost:$PORT/api/bovista/"
 echo ""
 echo "Press Ctrl-C to stop."
 python3 -m http.server $PORT --directory "$BOOK_DIR"

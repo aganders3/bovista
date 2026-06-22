@@ -25,7 +25,7 @@ impl LineVertex {
 }
 
 /// Visual for rendering lines
-pub struct LinesVisual {
+pub struct Lines {
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
     render_pipeline: wgpu::RenderPipeline,
@@ -34,8 +34,8 @@ pub struct LinesVisual {
     name: String,
 }
 
-impl LinesVisual {
-    /// Create a new LinesVisual from vertex pairs
+impl Lines {
+    /// Create a new Lines from vertex pairs
     /// Each pair of vertices defines a line segment
     pub fn new(
         device: &wgpu::Device,
@@ -52,7 +52,7 @@ impl LinesVisual {
         )
     }
 
-    /// Create a new LinesVisual with a custom shader
+    /// Create a new Lines with a custom shader
     pub fn with_shader(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
@@ -220,7 +220,7 @@ impl LinesVisual {
     }
 }
 
-impl Visual for LinesVisual {
+impl Visual for Lines {
     fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {
         // Lines don't need any per-frame preparation currently
     }

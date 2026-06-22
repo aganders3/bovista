@@ -18,14 +18,14 @@
 //!
 //! Bovista provides several built-in visual types for different use cases:
 //!
-//! - **[`PointsVisual`]**: Render point clouds with per-point colors
-//! - **[`LinesVisual`]**: Render line segments and wireframes
-//! - **[`ImageVisual`]**: Render 3D volumes with slice plane visualization and on-demand chunk loading
-//! - **[`CustomVisual`]**: Base for creating custom visualization types
+//! - **[`Points`]**: Render point clouds with per-point colors
+//! - **[`Lines`]**: Render line segments and wireframes
+//! - **[`Image`]**: Render 3D volumes with slice plane visualization and on-demand chunk loading
+//! - **[`Custom`]**: Base for creating custom visualization types
 //!
 //! ### Chunked Loading System
 //!
-//! [`ImageVisual`] supports chunked loading with multi-resolution LOD (Level of Detail) for handling
+//! [`Image`] supports chunked loading with multi-resolution LOD (Level of Detail) for handling
 //! datasets that are too large to fit in memory:
 //!
 //! 1. **Spatial Partitioning**: Volume is divided into tiles at multiple LOD levels
@@ -36,7 +36,7 @@
 //! ## Usage Example
 //!
 //! ```rust,no_run
-//! use bovista::{Renderer, Scene, Camera, PointsVisual};
+//! use bovista::{Renderer, Scene, Camera, Points};
 //!
 //! // Initialize renderer with GPU device
 //! let renderer = Renderer::new(device, queue, surface_format).await;
@@ -44,7 +44,7 @@
 //! let camera = Camera::new(aspect_ratio);
 //!
 //! // Create and add visuals
-//! let points = PointsVisual::test_cube(&device, &format, &layout, 10);
+//! let points = Points::test_cube(&device, &format, &layout, 10);
 //! scene.add(Arc::new(Mutex::new(points)));
 //!
 //! // Render loop
@@ -68,7 +68,7 @@
 //! # Add point cloud
 //! positions = np.random.rand(1000, 1, 3).astype(np.float32)
 //! colors = np.random.rand(1000, 1, 3).astype(np.float32)
-//! points = bv.PyPointsVisual.from_numpy(viewer, positions, colors)
+//! points = bv.PyPoints.from_numpy(viewer, positions, colors)
 //! viewer.add_points(points)
 //!
 //! # Run interactive window
@@ -123,7 +123,7 @@ pub use scene::Scene;
 pub use spatial::VolumeGrid;
 pub use visual::{Transform, VertexAttribute, VertexBufferLayout, VertexFormat, Visual};
 pub use visuals::{
-    AverageVolume, CustomVisual, DirectVolume, ImageVisual, IsosurfaceVolume,
-    LinesVisual, LodLevelConfig, MinipVolume, MipVolume, PointsVisual, SliceOrientation,
+    AverageVolume, Custom, DirectVolume, Image, IsosurfaceVolume,
+    Lines, LodLevelConfig, MinipVolume, MipVolume, Points, SliceOrientation,
     SlicePlane,
 };

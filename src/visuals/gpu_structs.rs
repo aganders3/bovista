@@ -8,20 +8,23 @@ use glam::Vec3;
 use std::sync::Arc;
 use wgpu::{BindGroup, Buffer, Texture, TextureView};
 
-/// Response containing tile/chunk data
+/// Response containing tile/chunk data.
+///
+/// Shape uses the numpy convention: `z_shape`, `y_shape`, `x_shape` are voxel
+/// counts along each axis. The struct field order is z/y/x to match how the
+/// data is typically indexed (slowest-varying first). For a 2D image the
+/// `z_shape` is 1.
 #[derive(Debug, Clone)]
 pub struct TileData {
     /// Raw voxel data as bytes (layout determined by `format`)
     pub data: Vec<u8>,
 
-    /// Width of the data in voxels
-    pub width: u32,
-
-    /// Height of the data in voxels
-    pub height: u32,
-
-    /// Depth of the data in voxels (1 for 2D images)
-    pub depth: u32,
+    /// Voxel count along Z (slowest-varying axis).
+    pub z_shape: u32,
+    /// Voxel count along Y.
+    pub y_shape: u32,
+    /// Voxel count along X (fastest-varying axis).
+    pub x_shape: u32,
 
     /// GPU texture format for this data (determines bytes-per-voxel)
     pub format: wgpu::TextureFormat,
@@ -446,7 +449,7 @@ pub fn compute_plane_aabb_intersection(
     // Find intersections with each edge
     for (p0, p1) in edges.iter() {
         if let Some(t) = line_plane_intersection(*p0, *p1, plane_pos, plane_normal) {
-            if t >= 0.0 && t <= 1.0 {
+            if (0.0..=1.0).contains(&t) {
                 let point = p0.lerp(*p1, t);
                 // Calculate 3D texture coordinate
                 let texcoord = Vec3::new(

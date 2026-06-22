@@ -1,5 +1,15 @@
 import * as zarr from 'https://cdn.jsdelivr.net/npm/zarrita@latest/+esm';
 
+// Logical atlas tile size [z, y, x], uniform across all LOD levels. This is
+// bovista's *virtual* tiling and is deliberately decoupled from the dataset's
+// on-disk chunk shape — zarrita's slice reads assemble any region from the
+// stored chunks, so we never need to match them. (bovista's virtual texture
+// assumes one tile size for all LODs; datasets like marmoset_neurons use
+// different storage chunks per level, which would otherwise break that.)
+// Tuning this toward the dataset's chunking reduces over-fetch but isn't
+// required for correctness.
+const LOGICAL_TILE = [64, 64, 64];
+
 // Configuration
 const DATASETS = {
     idr0062: {
@@ -140,7 +150,6 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
             throw new Error(`No array for LOD ${lod}`);
         }
 
-        const chunks = zarrArray.chunks;
         const shape = zarrArray.shape;
 
         const ndim = shape.length;
@@ -148,11 +157,7 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const yIdx = ndim - 2;
         const xIdx = ndim - 1;
 
-        const [chunkDepth, chunkHeight, chunkWidth] = [
-            chunks[zIdx],
-            chunks[yIdx],
-            chunks[xIdx]
-        ];
+        const [chunkDepth, chunkHeight, chunkWidth] = LOGICAL_TILE;
 
         const zStart = z * chunkDepth;
         const yStart = y * chunkHeight;
@@ -188,10 +193,6 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
             ];
         }
 
-        const actualWidth = xEnd - xStart;
-        const actualHeight = yEnd - yStart;
-        const actualDepth = zEnd - zStart;
-
         let chunk;
         try {
             chunk = await zarr.get(zarrArray, selection);
@@ -209,6 +210,15 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
             throw new Error('Empty chunk data');
         }
 
+        // Tile extents come from the RETURNED chunk shape (z, y, x — scalar
+        // t/c dims already dropped), never the requested slice bounds, so they
+        // always match u16data.length. setChunkDataU16 wants (z_shape, y_shape,
+        // x_shape) in numpy order.
+        const sh = chunk.shape;
+        const dz = sh[sh.length - 3];
+        const dy = sh[sh.length - 2];
+        const dx = sh[sh.length - 1];
+
         // Provide to WASM — VT pipeline requires uint16; upscale uint8 if needed.
         if (tiledImage) {
             let u16data;
@@ -220,7 +230,7 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
                 u16data = new Uint16Array(src.length);
                 for (let i = 0; i < src.length; i++) u16data[i] = src[i] * 257;
             }
-            tiledImage.setChunkDataU16(lod, t, z, y, x, u16data, actualWidth, actualHeight, actualDepth);
+            tiledImage.setChunkDataU16(lod, t, z, y, x, u16data, dz, dy, dx);
             loadedChunkCount++;
         }
 
@@ -262,7 +272,7 @@ function updateSlicePlane() {
     );
 
     // If in orthographic mode, align camera to slice plane
-    if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Orthographic) {
+    if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Orthographic) {
         alignCameraToSlice(normalX, normalY, normalZ);
     }
 
@@ -326,34 +336,33 @@ function alignCameraToSlice(normalX, normalY, normalZ) {
  * Called on initial load and when changing channels
  */
 function createVisual() {
+    // The renderer initializes asynchronously (WebGPU adapter + WASM). Guard
+    // against the Load button being clicked before init() resolves, or after
+    // it failed (e.g. no WebGPU adapter) — otherwise `viewer` is null here.
+    if (!viewer || !wasmInitialized) {
+        setStatus('Renderer not ready yet — waiting for WebGPU…', 'status-error');
+        return;
+    }
 
     viewer.clearScene();
 
     pendingLoads.clear();
     loadedChunkCount = 0;
 
-    // Convert lodLevels to JsLevelMetadata array
-    const jsLevels = lodLevels.map(level => {
-        return new wasmModule.JsLevelMetadata(
-            level.volumeSize[2],  // width
-            level.volumeSize[1],  // height
-            level.volumeSize[0],  // depth
-            level.chunkSize[2],   // chunk width
-            level.chunkSize[1],   // chunk height
-            level.chunkSize[0],   // chunk depth
-            level.voxelSize[2],   // voxel width
-            level.voxelSize[1],   // voxel height
-            level.voxelSize[0],   // voxel depth
+    // Each shape/size argument is a [z, y, x] array (numpy order).
+    const jsLevels = lodLevels.map(level =>
+        new wasmModule.LevelMetadata(
+            level.volumeSize,
+            level.chunkSize,
+            level.voxelSize,
             level.scaleFactor,
-            level.translation[2], // translation x
-            level.translation[1], // translation y
-            level.translation[0]  // translation z
-        );
-    });
+            level.translation,
+        )
+    );
 
-    tiledImage = new wasmModule.JsImageVisual(
+    tiledImage = new wasmModule.Image(
         viewer,     // Pass the viewer instance
-        jsLevels,   // Array of JsLevelMetadata
+        jsLevels,   // Array of LevelMetadata
         512,        // max_chunks
     );
 
@@ -397,7 +406,7 @@ canvas.addEventListener('mousemove', (e) => {
 
     if (isDragging) {
         // Check projection mode
-        if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Orthographic) {
+        if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Orthographic) {
             // Pan in orthographic mode
             const panSpeed = volumeScale * 0.002;
             viewer.panCamera(-deltaX * panSpeed, deltaY * panSpeed);
@@ -450,7 +459,7 @@ canvas.addEventListener('wheel', (e) => {
     // Use zoomCamera which handles both perspective and orthographic modes
     viewer.zoomCamera(e.deltaY);
 
-    if (viewer.getCameraProjectionMode() === wasmModule.JsProjectionMode.Perspective) {
+    if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Perspective) {
         cameraDistance = viewer.getCameraDistance();
     }
 
@@ -515,7 +524,6 @@ async function loadDataset(datasetKey) {
             zarrArrays.push(zarrArray);
 
             const shape = zarrArray.shape;
-            const chunks = zarrArray.chunks;
             const ndim = shape.length;
 
             const zIdx = ndim - 3;
@@ -523,7 +531,8 @@ async function loadDataset(datasetKey) {
             const xIdx = ndim - 1;
 
             const volumeSize = [shape[zIdx], shape[yIdx], shape[xIdx]];
-            const chunkSize = [chunks[zIdx], chunks[yIdx], chunks[xIdx]];
+            // Logical tile, uniform across LODs — NOT the dataset's storage chunk.
+            const chunkSize = LOGICAL_TILE;
 
             const transforms = datasets[lodIdx].coordinateTransformations || [];
             let voxelSize = [1.0, 1.0, 1.0];
@@ -710,16 +719,16 @@ document.getElementById('projection-toggle').addEventListener('click', () => {
     const currentMode = viewer.getCameraProjectionMode();
     const button = document.getElementById('projection-toggle');
 
-    if (currentMode === wasmModule.JsProjectionMode.Perspective) {
+    if (currentMode === wasmModule.ProjectionMode.Perspective) {
         // Switch to orthographic
-        viewer.setCameraProjectionMode(wasmModule.JsProjectionMode.Orthographic);
+        viewer.setCameraProjectionMode(wasmModule.ProjectionMode.Orthographic);
         // Set ortho height based on volume size
         viewer.setCameraOrthoHeight(volumeScale * 0.5);
         // Align camera to slice plane
         updateSlicePlane();
         button.textContent = 'Switch to Perspective';
     } else {
-        viewer.setCameraProjectionMode(wasmModule.JsProjectionMode.Perspective);
+        viewer.setCameraProjectionMode(wasmModule.ProjectionMode.Perspective);
         button.textContent = 'Switch to Orthographic';
     }
 });
@@ -760,7 +769,12 @@ function renderLoop() {
                 const stats = tiledImage.getStats();
             }
         } catch (error) {
-            console.error('Render error:', error);
+            // A render error (e.g. a Rust panic) leaves the wasm module
+            // unusable, so stop the loop instead of rescheduling forever and
+            // flooding the console with follow-on "recursive use" errors.
+            console.error('Render error — stopping render loop:', error);
+            setStatus(`Render error: ${error.message || error}`, 'status-error');
+            return;
         }
     }
     animationFrameId = requestAnimationFrame(renderLoop);
@@ -808,7 +822,7 @@ async function init() {
 
         console.log('✓ WASM module loaded');
 
-        viewer = await wasmModule.JsViewer.new('canvas');
+        viewer = await wasmModule.Viewer.new('canvas');
 
         // Don't set clip planes here - they will be set adaptively when dataset loads
         // (Hard-coded values like 0.1-10000 don't work for very small volumes like beechnut)

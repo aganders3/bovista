@@ -7,11 +7,12 @@ The same rendering engine — GPU resource management, LOD selection, virtual te
 Built on [wgpu](https://wgpu.rs), which maps to Vulkan/Metal/DX12 on the desktop and WebGPU in the browser. The core library has no Python or browser dependencies — bindings are thin wrappers at the boundary.
 
 Current capabilities:
-- **Slice rendering** (`ImageVisual`): arbitrary-orientation plane intersection through 3D volumes
-- **Volume ray marching** (`VolumeVisual`): direct volume rendering with transfer functions and colormap LUTs
-- **Virtual texture streaming**: atlas + page table architecture; only the tiles in view are resident
+- **Slice rendering** (`Image`): arbitrary-orientation plane intersection through 3D volumes
+- **Volume ray marching** (`DirectVolume`, `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume`): one visual per mode, each exposing only the parameters that apply to it (density, attenuation, iso threshold, …)
+- **Virtual texture streaming**: atlas + page table architecture, time-resolved 4D, up to 4 atlases per visual (lifts the per-texture VRAM cap); only the tiles in view are resident
 - **Multi-resolution LOD**: coarse-to-fine pyramid, screen-space error-based selection
-- **Remote OME-Zarr**: streams tiles from S3/HTTP, loads asynchronously via callback
+- **Pull-based remote loading**: bovista publishes a `wanted` set every frame; loaders poll it and push tile bytes back. No callback across the FFI boundary on the hot path
+- **OME-Zarr** examples: streams tiles from S3 / HTTP / local filesystem
 - **Points and lines**: for annotations, axis helpers, point clouds
 
 | Native (PyQt6) | Browser (WebAssembly) |
@@ -138,20 +139,33 @@ import bovista as bv
 viewer = bv.Viewer(800, 600)
 viewer.initialize_with_window(handle, width, height)
 
-# Volume ray marching
-volume = bv.Volume(viewer, lod_levels, max_tiles=2000, loader=request)
+# Volume ray marching. Pick one of the five mode classes; each only exposes
+# the parameters that apply to its algorithm.
+volume = bv.DirectVolume(viewer, lod_levels, max_tiles=2000)
 volume.set_contrast(0.0, 1.0)
-volume.set_density_scale(0.01)
+volume.set_density_scale(0.01)         # Direct only
 volume.set_relative_step_size(1.0)
 viewer.add(volume)
 
-# Slice rendering
-image = bv.Image(viewer, lod_levels, max_tiles=500, loader=request)
+# Other modes:
+# bv.MipVolume(viewer, lod_levels, max_tiles).set_attenuation(0.5)
+# bv.MinipVolume(viewer, lod_levels, max_tiles)
+# bv.AverageVolume(viewer, lod_levels, max_tiles)
+# bv.IsosurfaceVolume(viewer, lod_levels, max_tiles).set_iso_threshold(0.3)
+
+# Slice rendering — same LOD pipeline, plane intersection instead of raymarch.
+image = bv.Image(viewer, lod_levels, max_tiles=500)
 image.set_slice_plane(cx, cy, cz, nx, ny, nz)  # position + normal
 viewer.add(image)
 
 # Annotations
 viewer.add(bv.Lines.axis_helper(viewer, 100.0))
+
+# Pull-based tile loading. Drive this from a worker thread.
+while True:
+    for lod, t, z, y, x, priority in volume.wanted_keys():
+        data = fetch_tile(lod, t, z, y, x)        # your fetch
+        volume.set_chunk_data_u16(lod, t, z, y, x, data)
 
 # Render loop (called by Qt timer or similar)
 viewer.render_frame()
@@ -159,7 +173,53 @@ viewer.render_frame()
 
 LOD levels are described with `bv.LevelMetadata(volume_size, chunk_size, voxel_size, scale_factor, translation)`.
 
-The loader callback signature is `(lod, z, y, x) -> ChunkStatus` where `ChunkStatus` is `Accepted`, `AlreadyPending`, or `Rejected`. Loaded data is pushed back via `volume.set_chunk_data_u16(lod, z, y, x, array)`.
+**Loader model.** bovista publishes a `wanted` set every prepare — `volume.wanted_keys()` returns `[(lod, t, z, y, x, priority), ...]` sorted by priority (0 = "user is viewing this t now"; positive offsets = prefetch). Your loader thread polls this list, fetches the data, and pushes back via `volume.set_chunk_data_u16(lod, t, z, y, x, np_array)`. No callback across the Python/Rust boundary on the hot path.
+
+**Multi-atlas.** For very large caches, pass `atlas_count=N` (1..=4) to spread the slot budget across N physical 3D textures. Useful when `max_tiles * 4 MiB` exceeds the per-resource VRAM cap.
+
+**Time-resolved data.** Each `TileKey` carries a `t` index; use `volume.set_desired_timepoint(t)` and `volume.set_prefetch(lookahead, t_count)` to scrub through 4D OME-Zarr datasets. Adjacent timepoints stay resident in the atlas as a free cache.
+
+---
+
+## WASM API (quick reference)
+
+The browser bindings mirror the Python API — same class names, lowerCamelCase methods:
+
+```js
+import init, { Viewer, DirectVolume, LevelMetadata } from './bovista.js';
+await init();
+
+const viewer = await Viewer.new('canvas-id');           // canvas element
+// LevelMetadata args are 5: three [z, y, x] arrays + scale factor + translation array.
+const levels = lodLevels.map(l => new LevelMetadata(
+    l.volumeSize,   // [z, y, x] voxel counts at this LOD
+    l.chunkSize,    // [z, y, x] voxel counts per chunk
+    l.voxelSize,    // [z, y, x] world-space units per voxel
+    l.scaleFactor,  // resolution ratio relative to LOD 0 (1.0, 2.0, 4.0, …)
+    l.translation,  // [z, y, x] world-space origin offset
+));
+
+const volume = new DirectVolume(viewer, levels, /*maxChunks=*/2000, /*atlasCount=*/1);
+viewer.addDirectVolume(volume);
+volume.setContrast(0.0, 1.0);
+volume.setDensityScale(0.01);
+
+// Pull-based loader: poll wantedKeys() in a JS loop, fetch, push back.
+setInterval(() => {
+    const wanted = volume.wantedKeys();  // flat Uint32Array [lod, t, z, y, x, priority, ...]
+    for (let i = 0; i < wanted.length; i += 6) {
+        const [lod, t, z, y, x, prio] = wanted.slice(i, i + 6);
+        fetchTile(lod, t, z, y, x).then(arr => {
+            // Shape args are (z, y, x) numpy order — voxel counts along each axis of the tile.
+            volume.setChunkDataU16(lod, t, z, y, x, arr, zShape, yShape, xShape);
+        });
+    }
+}, 16);
+
+viewer.renderFrame();  // hook into requestAnimationFrame
+```
+
+Add-volume methods are typed per mode (`addDirectVolume`, `addMipVolume`, …); see `examples/volume_renderer/web/` for the full pattern.
 
 ---
 

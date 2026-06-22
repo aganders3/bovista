@@ -49,13 +49,19 @@ PendingChunks queue
     ↓  VirtualTextureData::prepare()
 Atlas (3D GPU texture)  +  Page table (indirection)
     ↓  single draw call per frame
-ImageVisual (virtual_tile.wgsl)   ← slice renderer
-VolumeVisual (volume_raymarch.wgsl) ← ray march DVR
+Image (virtual_tile.wgsl)        ← slice renderer
+DirectVolume (volume_raymarch.wgsl) ← ray march DVR
 ```
 
-The loader callback signature is the same across platforms:
-```
-(lod: int, z: int, y: int, x: int) → ChunkStatus
-```
+Tile loading is pull-based and identical across platforms. Each frame
+bovista publishes the set of tiles it wants; the app polls that set and
+pushes data back. There is no loader callback.
 
-Data is pushed back via `visual.set_chunk_data_u16(lod, z, y, x, data)`.
+- Poll: `visual.wanted_keys()` (Python) / `visual.wantedKeys()` (Web)
+  returns the wanted tiles as `(lod, t, z, y, x, priority)` keys, sorted
+  by priority (lower = more urgent, 0 = currently viewed).
+- Push: `visual.set_chunk_data_u16(lod, t, z, y, x, data)` (Python) /
+  `visual.setChunkDataU16(lod, t, z, y, x, u16, zShape, yShape, xShape)` (Web).
+
+Cancellation is implicit — keys that leave the wanted set are simply
+never re-submitted.

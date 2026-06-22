@@ -84,6 +84,13 @@ const BOX_INDICES: &[u16] = &[
 /// type (`DirectVolume`, `MipVolume`, `IsosurfaceVolume`, …) owns one of these
 /// plus its mode-specific parameters. The pipeline inside the core is fixed
 /// at construction to the right mode's fragment entry point.
+///
+/// TODO: support swapping mode in place — only `pipeline` and `default_name`
+/// are mode-specific; everything else is mode-agnostic, so rebuilding the
+/// pipeline alone would let a single core change rendering mode without
+/// re-decoding tiles. Real cross-visual sharing (4-up orthogonal slices +
+/// volume + cut planes against the same atlas) belongs at the
+/// `VirtualTextureData` layer — see the TODO there.
 pub struct VolumeCore {
     vt: VirtualTextureData,
 
@@ -115,6 +122,7 @@ pub struct VolumeCore {
 }
 
 impl VolumeCore {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -415,7 +423,7 @@ impl VolumeCore {
         self.frame_number += 1;
         self.vt.prepare_volume(queue, self.frame_number, camera_info);
 
-        // VT uniforms (identical pattern to ImageVisual).
+        // VT uniforms (identical pattern to Image).
         let vt = &self.vt;
         let mut lods = [VTLodInfo {
             grid_dims: [1, 1, 1], _pad: 0,

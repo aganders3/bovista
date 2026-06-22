@@ -1,5 +1,15 @@
 import * as zarr from 'https://cdn.jsdelivr.net/npm/zarrita@latest/+esm';
 
+// Logical atlas tile size [z, y, x], uniform across all LOD levels. This is
+// bovista's *virtual* tiling and is deliberately decoupled from the dataset's
+// on-disk chunk shape — zarrita's slice reads assemble any region from the
+// stored chunks, so we never need to match them. (bovista's virtual texture
+// assumes one tile size for all LODs; datasets like marmoset_neurons use
+// different storage chunks per level, which would otherwise break that.)
+// Tuning this toward the dataset's chunking reduces over-fetch but isn't
+// required for correctness.
+const LOGICAL_TILE = [64, 64, 64];
+
 // Configuration
 const DATASETS = {
     pawpawsaurus: {
@@ -67,11 +77,11 @@ let stepDebugMode = false;
 // VOLUME_MODES maps the dropdown value → (constructor, viewer.add* method,
 // flags for which mode-specific sliders/toggles apply).
 const VOLUME_MODES = {
-    direct:   { ctor: 'JsDirectVolume',     add: 'addDirectVolume',     density: true,  debug: true  },
-    mip:      { ctor: 'JsMipVolume',        add: 'addMipVolume',        attenuation: true            },
-    minip:    { ctor: 'JsMinipVolume',      add: 'addMinipVolume'                                    },
-    average:  { ctor: 'JsAverageVolume',    add: 'addAverageVolume'                                  },
-    iso:      { ctor: 'JsIsosurfaceVolume', add: 'addIsosurfaceVolume', iso: true                    },
+    direct:   { ctor: 'DirectVolume',     add: 'addDirectVolume',     density: true,  debug: true  },
+    mip:      { ctor: 'MipVolume',        add: 'addMipVolume',        attenuation: true            },
+    minip:    { ctor: 'MinipVolume',      add: 'addMinipVolume'                                    },
+    average:  { ctor: 'AverageVolume',    add: 'addAverageVolume'                                  },
+    iso:      { ctor: 'IsosurfaceVolume', add: 'addIsosurfaceVolume', iso: true                    },
 };
 let currentMode = 'direct';
 
@@ -123,12 +133,11 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const zarrArray = zarrArrays[lod];
         if (!zarrArray) throw new Error(`No array for LOD ${lod}`);
 
-        const chunks = zarrArray.chunks;
         const shape = zarrArray.shape;
         const ndim = shape.length;
 
         const zIdx = ndim - 3, yIdx = ndim - 2, xIdx = ndim - 1;
-        const [chunkD, chunkH, chunkW] = [chunks[zIdx], chunks[yIdx], chunks[xIdx]];
+        const [chunkD, chunkH, chunkW] = LOGICAL_TILE;
 
         const zStart = z * chunkD, yStart = y * chunkH, xStart = x * chunkW;
         const zEnd = Math.min(zStart + chunkD, shape[zIdx]);
@@ -155,6 +164,15 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const data = chunk.data;
         if (!data || data.length === 0) throw new Error('Empty chunk data');
 
+        // Tile extents come from the RETURNED chunk shape (z, y, x — scalar
+        // t/c dims already dropped), never the requested slice bounds, so they
+        // always match u16data.length. setChunkDataU16 wants (z_shape, y_shape,
+        // x_shape) in numpy order.
+        const sh = chunk.shape;
+        const dz = sh[sh.length - 3];
+        const dy = sh[sh.length - 2];
+        const dx = sh[sh.length - 1];
+
         if (volumeVisual) {
             let u16data;
             if (data instanceof Uint16Array) {
@@ -164,10 +182,7 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
                 u16data = new Uint16Array(src.length);
                 for (let i = 0; i < src.length; i++) u16data[i] = src[i] * 257;
             }
-            volumeVisual.setChunkDataU16(
-                lod, t, z, y, x, u16data,
-                xEnd - xStart, yEnd - yStart, zEnd - zStart
-            );
+            volumeVisual.setChunkDataU16(lod, t, z, y, x, u16data, dz, dy, dx);
         }
     } catch (error) {
         console.error(`[ChunkLoader] Error loading ${key}:`, error);
@@ -215,15 +230,24 @@ function computeMaxChunks() {
 }
 
 function createVisual() {
+    // The renderer initializes asynchronously (WebGPU adapter + WASM). Guard
+    // against the Load button being clicked before init() resolves, or after
+    // it failed (e.g. no WebGPU adapter) — otherwise `viewer` is null here.
+    if (!viewer || !wasmInitialized) {
+        setStatus('Renderer not ready yet — waiting for WebGPU…', 'status-error');
+        return;
+    }
+
     viewer.clearScene();
     pendingLoads.clear();
 
-    const jsLevels = lodLevels.map(level => new wasmModule.JsLevelMetadata(
-        level.volumeSize[2], level.volumeSize[1], level.volumeSize[0],
-        level.chunkSize[2],  level.chunkSize[1],  level.chunkSize[0],
-        level.voxelSize[2],  level.voxelSize[1],  level.voxelSize[0],
+    // Each shape/size argument is a [z, y, x] array (numpy order).
+    const jsLevels = lodLevels.map(level => new wasmModule.LevelMetadata(
+        level.volumeSize,
+        level.chunkSize,
+        level.voxelSize,
         level.scaleFactor,
-        level.translation[2], level.translation[1], level.translation[0]
+        level.translation,
     ));
 
     const maxChunks = computeMaxChunks();
@@ -459,12 +483,12 @@ async function loadDataset(datasetKey) {
             zarrArrays.push(zarrArray);
 
             const shape = zarrArray.shape;
-            const chunks = zarrArray.chunks;
             const ndim = shape.length;
             const zIdx = ndim - 3, yIdx = ndim - 2, xIdx = ndim - 1;
 
             const volumeSize = [shape[zIdx], shape[yIdx], shape[xIdx]];
-            const chunkSize  = [chunks[zIdx], chunks[yIdx], chunks[xIdx]];
+            // Logical tile, uniform across LODs — NOT the dataset's storage chunk.
+            const chunkSize  = LOGICAL_TILE;
 
             const transforms = multiscales.datasets[i].coordinateTransformations || [];
             let voxelSize   = [1.0, 1.0, 1.0];
@@ -646,8 +670,16 @@ setInterval(() => {
 // Render loop
 function renderLoop() {
     if (viewer && wasmInitialized) {
-        try { viewer.renderFrame(); }
-        catch (e) { console.error('Render error:', e); }
+        try {
+            viewer.renderFrame();
+        } catch (e) {
+            // A render error (e.g. a Rust panic) leaves the wasm module
+            // unusable, so stop the loop instead of rescheduling forever and
+            // flooding the console with follow-on "recursive use" errors.
+            console.error('Render error — stopping render loop:', e);
+            setStatus(`Render error: ${e.message || e}`, 'status-error');
+            return;
+        }
     }
     animationFrameId = requestAnimationFrame(renderLoop);
 }
@@ -674,7 +706,7 @@ async function init() {
         wasmModule = await import('../../pkg/bovista.js');
         await wasmModule.default();
 
-        viewer = await wasmModule.JsViewer.new('canvas');
+        viewer = await wasmModule.Viewer.new('canvas');
         wasmInitialized = true;
 
         setStatus('Ready — select a dataset', 'status-ready');

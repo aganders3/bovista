@@ -40,7 +40,7 @@ pub fn wanted_sorted(wanted: &Wanted) -> Vec<(usize, u32, u32, u32, u32, i32)> {
 
 /// Per-prepare timing + counts. Refreshed by every `prepare` /
 /// `prepare_volume` call, exposed via `VolumeVisual::stats()` /
-/// `ImageVisual::stats()` for performance diagnostics. Read it from
+/// `Image::stats()` for performance diagnostics. Read it from
 /// the render loop after `scene.prepare` returns; it reflects the
 /// most recent prepare.
 #[derive(Default, Clone, Debug)]
@@ -96,9 +96,9 @@ impl LodLevelConfig {
         let (vz, vy, vx) = self.volume_size;
         let (tz, ty, tx) = self.tile_size;
         (
-            (vz + tz - 1) / tz,
-            (vy + ty - 1) / ty,
-            (vx + tx - 1) / tx,
+            vz.div_ceil(tz),
+            vy.div_ceil(ty),
+            vx.div_ceil(tx),
         )
     }
 }
@@ -112,6 +112,16 @@ impl LodLevelConfig {
 /// entry encodes which atlas a tile lives in. atlas_count=1 produces the
 /// same on-GPU behavior as before, just with a 2-bit atlas_id field in
 /// the page table that's always 0.
+///
+/// Already reused across `Image` (slice plane) and `*Volume` (ray march)
+/// visuals — same atlas + page-table machinery, different consumer shader.
+/// TODO: make a single `VirtualTextureData` shareable across multiple
+/// visuals — 4-up orthogonal slices + a volume + cut planes all reading
+/// from one resident atlas, no duplicate decodes, single `wanted` set
+/// driven by the union of view frustums. Today each visual owns its VT
+/// exclusively; sharing needs the visuals to hold a handle (`Arc<RwLock>`
+/// or `Rc<RefCell>`) instead of the value, plus a `wanted` publisher
+/// that merges contributions from each visual's `prepare`.
 pub struct VirtualTextureData {
     pub levels: Vec<LodLevelConfig>,
 
@@ -164,7 +174,7 @@ pub struct VirtualTextureData {
     pub wanted: Wanted,
 
     /// Diagnostic snapshot of the most recent prepare. Read by the
-    /// example's render loop to print [perf] lines.
+    /// example's render loop to print `[perf]` lines.
     pub stats: PrepareStats,
 
     pub max_tiles: usize,
@@ -228,7 +238,7 @@ impl VirtualTextureData {
         let cbrt_cap = (effective_per_atlas as f64).cbrt().ceil() as u32;
         let cols   = cbrt_cap.min(max_cols).max(1);
         let rows   = cbrt_cap.min(max_rows).max(1);
-        let layers = ((effective_per_atlas as u32 + cols * rows - 1) / (cols * rows))
+        let layers = (effective_per_atlas as u32).div_ceil(cols * rows)
             .min(max_layers)
             .max(1);
 
@@ -485,13 +495,42 @@ impl VirtualTextureData {
         let atlas_texture = &self.atlas_textures[atlas_id as usize];
         let bpv = data.bytes_per_voxel() as usize;
 
+        // Defensive: reject a tile we can't safely upload, rather than panic.
+        // A bad shape can come from a caller that supplies the shape separately
+        // from the data (the WASM binding) — e.g. transposed axes. Two ways it
+        // bites, both of which would otherwise panic on an out-of-range slice
+        // (and in WASM a panic aborts the module and poisons the viewer for
+        // every later call):
+        //   1. byte count != z*y*x  → the source row read below overruns;
+        //   2. any extent > the slot → the padded *destination* row write
+        //      overruns, even when the byte count happens to match (e.g. axes
+        //      transposed to the same total). Boundary tiles are always <= the
+        //      slot, so a larger extent is by definition malformed.
+        // Native/Python derive the shape from the array and never hit either.
+        let expected = data.z_shape as usize
+            * data.y_shape as usize
+            * data.x_shape as usize
+            * bpv;
+        if data.data.len() != expected
+            || data.x_shape > tile_w
+            || data.y_shape > tile_h
+            || data.z_shape > tile_d
+        {
+            log::warn!(
+                "write_tile_to_atlas: skipping malformed tile — {} bytes, shape \
+                 z={} y={} x={} (expected {expected} bytes, slot {tile_d}x{tile_h}x{tile_w})",
+                data.data.len(), data.z_shape, data.y_shape, data.x_shape,
+            );
+            return;
+        }
+
         // Boundary tiles (z/y/x edge of the volume at this LOD) have
         // smaller extent than the slot. Without zero-padding, the
         // remainder of the slot would still hold whatever a previous
         // tile left there, and the shader's per-LOD data_scale would
         // sample into that stale data.
         let is_full =
-            data.width == tile_w && data.height == tile_h && data.depth == tile_d;
+            data.x_shape == tile_w && data.y_shape == tile_h && data.z_shape == tile_d;
         if is_full {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -503,24 +542,24 @@ impl VirtualTextureData {
                 &data.data,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(data.width * bpv as u32),
-                    rows_per_image: Some(data.height),
+                    bytes_per_row: Some(data.x_shape * bpv as u32),
+                    rows_per_image: Some(data.y_shape),
                 },
                 wgpu::Extent3d {
-                    width: data.width,
-                    height: data.height,
-                    depth_or_array_layers: data.depth,
+                    width: data.x_shape,
+                    height: data.y_shape,
+                    depth_or_array_layers: data.z_shape,
                 },
             );
         } else {
             let stride_row_dst = tile_w as usize * bpv;
             let stride_slice_dst = stride_row_dst * tile_h as usize;
-            let stride_row_src = data.width as usize * bpv;
+            let stride_row_src = data.x_shape as usize * bpv;
             let mut padded = vec![0u8; stride_slice_dst * tile_d as usize];
-            for z in 0..data.depth as usize {
-                for y in 0..data.height as usize {
+            for z in 0..data.z_shape as usize {
+                for y in 0..data.y_shape as usize {
                     let dst = z * stride_slice_dst + y * stride_row_dst;
-                    let src = z * (data.height as usize) * stride_row_src
+                    let src = z * (data.y_shape as usize) * stride_row_src
                             + y * stride_row_src;
                     padded[dst..dst + stride_row_src]
                         .copy_from_slice(&data.data[src..src + stride_row_src]);
@@ -557,6 +596,7 @@ impl VirtualTextureData {
     /// Two cheap gates keep the GL traffic bounded:
     ///   - skip spatials with no resident `desired_t` tile (slot_map miss),
     ///   - skip spatials where `last_written_slot` already shows this slot.
+    ///
     /// In steady state (page table fully wired for desired_t), this runs
     /// zero `queue.write_texture` calls.
     ///
@@ -877,9 +917,9 @@ impl VirtualTextureData {
                 let child_grid = self.levels[current_lod].grid_size();
                 // Children-per-parent per axis: derived from grid sizes so floating-point
                 // scale_factor imprecision can't cause tiles to be silently skipped.
-                let cpp_z = ((child_grid.0 + parent_grid_dims.0 - 1) / parent_grid_dims.0).max(1);
-                let cpp_y = ((child_grid.1 + parent_grid_dims.1 - 1) / parent_grid_dims.1).max(1);
-                let cpp_x = ((child_grid.2 + parent_grid_dims.2 - 1) / parent_grid_dims.2).max(1);
+                let cpp_z = child_grid.0.div_ceil(parent_grid_dims.0).max(1);
+                let cpp_y = child_grid.1.div_ceil(parent_grid_dims.1).max(1);
+                let cpp_x = child_grid.2.div_ceil(parent_grid_dims.2).max(1);
 
                 for dz in 0..cpp_z {
                     for dy in 0..cpp_y {
@@ -976,9 +1016,9 @@ impl VirtualTextureData {
                 let child_lod    = lod - 1;
                 let parent_grid  = self.levels[lod].grid_size();
                 let child_grid   = self.levels[child_lod].grid_size();
-                let cpp_z = ((child_grid.0 + parent_grid.0 - 1) / parent_grid.0).max(1);
-                let cpp_y = ((child_grid.1 + parent_grid.1 - 1) / parent_grid.1).max(1);
-                let cpp_x = ((child_grid.2 + parent_grid.2 - 1) / parent_grid.2).max(1);
+                let cpp_z = child_grid.0.div_ceil(parent_grid.0).max(1);
+                let cpp_y = child_grid.1.div_ceil(parent_grid.1).max(1);
+                let cpp_x = child_grid.2.div_ceil(parent_grid.2).max(1);
                 for dz in 0..cpp_z {
                     for dy in 0..cpp_y {
                         for dx in 0..cpp_x {

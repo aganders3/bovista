@@ -2,9 +2,9 @@
 
 A comprehensive guide to understanding Bovista's GPU-accelerated volumetric visualization architecture, built with WGPU for rendering massive remote datasets.
 
-> **📝 NOTE:** This guide has been updated to reflect the recent ImageVisual unification.
+> **📝 NOTE:** This guide has been updated to reflect the recent `Image` unification.
 > Code examples using old components have been updated or marked with notes where needed.
-> The architecture now uses a unified Strategy pattern with `ImageVisual`, `TileStrategy`,
+> The architecture now uses a unified Strategy pattern with `Image`, `TileStrategy`,
 > and `tile.wgsl` shader. See repository's NEXT_STEPS.md for implementation details.
 
 ## About This Guide
@@ -28,7 +28,7 @@ cargo install mdbook
 
 ### Build and Serve
 
-From this directory (`docs/wgpu-guide`):
+From this directory (`docs/guide`):
 
 ```bash
 # Build the book
@@ -121,7 +121,7 @@ bovista/
 ├── examples/         # Example applications
 ├── web/              # Web UI components
 └── docs/
-    └── wgpu-guide/   # This architecture guide
+    └── guide/        # This architecture guide
 ```
 
 ## Contributing
