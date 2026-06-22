@@ -31,6 +31,10 @@ from PyQt6.QtCore import Qt, QTimer
 import bovista as bv
 import zarr
 
+# Logical atlas tile size (z, y, x), uniform across all LOD levels and
+# decoupled from the dataset's on-disk chunk shape. See chunk_shape below.
+LOGICAL_TILE = (64, 64, 64)
+
 
 class ViewerWidget(QWidget):
     def __init__(self, parent=None):
@@ -336,9 +340,14 @@ class MainWindow(QMainWindow):
                 path = ds_info.get("path", str(i))
                 arr = store[path]
                 volume_shape = (arr.shape[z_idx], arr.shape[y_idx], arr.shape[x_idx])
-                chunk_shape  = (arr.chunks[z_idx] if arr.chunks else 64,
-                                arr.chunks[y_idx] if arr.chunks else 64,
-                                arr.chunks[x_idx] if arr.chunks else 64)
+                # Logical atlas tile, uniform across LODs and decoupled from the
+                # dataset's on-disk chunk shape — the slice read in load_chunk()
+                # assembles any region from the stored chunks. bovista's virtual
+                # texture assumes one tile size for all LODs; datasets like
+                # marmoset_neurons store a different chunk shape per level, which
+                # would otherwise break that. Tuning toward the dataset chunking
+                # reduces over-fetch but isn't required for correctness.
+                chunk_shape  = LOGICAL_TILE
                 transforms = ds_info.get("coordinateTransformations", [])
                 scale_t = next((t for t in transforms if t.get("type") == "scale"), None)
                 voxel_spacing = tuple(scale_t["scale"][i] for i in [z_idx, y_idx, x_idx]) if scale_t else (1.0, 1.0, 1.0)

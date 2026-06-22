@@ -28,7 +28,7 @@ cargo install mdbook
 
 ### Build and Serve
 
-From this directory (`docs/wgpu-guide`):
+From this directory (`docs/guide`):
 
 ```bash
 # Build the book
@@ -121,7 +121,7 @@ bovista/
 ├── examples/         # Example applications
 ├── web/              # Web UI components
 └── docs/
-    └── wgpu-guide/   # This architecture guide
+    └── guide/        # This architecture guide
 ```
 
 ## Contributing

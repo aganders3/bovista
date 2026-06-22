@@ -1,12 +1,8 @@
 # Visual System
 
-The visual system in Bovista provides a unified interface for rendering different types of 3D content. All visuals implement the `Visual` trait, which defines the core rendering lifecycle and provides common functionality for transforms, visibility, and naming.
-
-<!-- toc -->
+Bovista renders all 3D content through one interface: the `Visual` trait, which defines the rendering lifecycle plus common handling of transforms, visibility, and naming.
 
 ## The Visual Trait
-
-Every visual in Bovista implements this trait:
 
 ```rust
 pub trait Visual: Send {
@@ -39,14 +35,8 @@ The **prepare** phase updates GPU resources (buffers, uniforms) before the frame
 | `IsosurfaceVolume` | Iso-surface rendering (`set_iso_threshold`) |
 | `Custom` | User-supplied WGSL shader; Bovista provides the camera bind group and depth buffer |
 
-Volume rendering is split across five classes — one visual per mode — instead of a single mode-flag class; each exposes only the parameters that apply to it. `Image` and the volume visuals share the virtual texture system — see [Chunked Rendering](./07-chunked-rendering.md) for how that works.
+Volume rendering is split across five classes — one visual per mode, not a single mode-flag class — so each exposes only the parameters that apply to it. `Image` and the volume visuals share the virtual texture system; see [Virtual Textures](./01-philosophy.md).
 
 ## Adding a New Visual Type
 
-Implement the `Visual` trait for your struct. Construct it with a `wgpu::Device` reference from `viewer.renderer()`. `src/visuals/points.rs` and `src/visuals/lines.rs` are the simplest concrete examples; `src/visuals/image.rs` shows a more complex case with per-frame GPU updates.
-
-All visuals automatically share the camera bind group (`@group(0)`), which `Renderer` sets once per frame before iterating the scene.
-
----
-
-**Next**: [Chunked Rendering →](./07-chunked-rendering.md)
+Implement the `Visual` trait for your struct, constructing it with a `wgpu::Device` reference from `viewer.renderer()`. `src/visuals/points.rs` and `src/visuals/lines.rs` are the simplest examples; `src/visuals/image.rs` shows per-frame GPU updates. All visuals share the camera bind group (`@group(0)`), which `Renderer` sets once per frame before iterating the scene.

@@ -8,13 +8,9 @@ src = "src"
 [build]
 build-dir = "book"
 
-[preprocessor.toc]
-command = "mdbook-toc"
-renderer = ["html"]
-
 [output.html]
-default-theme = "rust"
-preferred-dark-theme = "navy"
+default-theme = "light"
+preferred-dark-theme = "coal"
 git-repository-url = "https://github.com/aganders3/bovista"
 additional-css = ["custom.css"]
 additional-js = ["custom.js"]

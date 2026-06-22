@@ -48,6 +48,29 @@ use crate::{
 };
 use bovista_codegen::{camera_methods, visual_methods};
 
+/// Validate that a pushed tile's element count matches its declared
+/// `z * y * x` shape before it reaches the (panicking) upload path. The JS
+/// caller supplies the shape separately from the data, so a mismatch is
+/// possible; the native/Python binding derives the shape from the array and
+/// can't hit this. On mismatch we warn and skip the tile rather than letting
+/// an out-of-range slice panic poison the whole wasm instance.
+#[allow(clippy::too_many_arguments)]
+fn check_chunk_len(
+    len: u32,
+    lod: usize, t: u32, z: u32, y: u32, x: u32,
+    z_shape: u32, y_shape: u32, x_shape: u32,
+) -> bool {
+    let expected = z_shape.saturating_mul(y_shape).saturating_mul(x_shape);
+    if len == expected {
+        return true;
+    }
+    console::warn_1(&format!(
+        "setChunkDataU16: dropping tile (lod={lod}, t={t}, z={z}, y={y}, x={x}) — \
+         data length {len} != z*y*x = {z_shape}*{y_shape}*{x_shape} = {expected}"
+    ).into());
+    false
+}
+
 /// JavaScript viewer for Bovista
 #[wasm_bindgen(js_name = "Viewer")]
 pub struct JsViewer {
@@ -336,11 +359,11 @@ impl JsLevelMetadata {
     ///
     /// ```js
     /// new LevelMetadata(
-    ///   /* volume_shape */ [1024, 1024, 1024],   // voxel counts along z, y, x
-    ///   /* chunk_shape  */ [64, 64, 64],          // tile voxel counts
-    ///   /* voxel_size   */ [1.0, 1.0, 1.0],       // world-space units per voxel
-    ///   /* scale_factor */ 1.0,                   // relative to LOD 0
-    ///   /* translation  */ [0.0, 0.0, 0.0],       // world-space origin offset
+    ///   [1024, 1024, 1024],   // volume_shape: voxel counts along z, y, x
+    ///   [64, 64, 64],         // chunk_shape:  tile voxel counts
+    ///   [1.0, 1.0, 1.0],      // voxel_size:   world-space units per voxel
+    ///   1.0,                  // scale_factor: relative to LOD 0
+    ///   [0.0, 0.0, 0.0],      // translation:  world-space origin offset
     /// );
     /// ```
     #[wasm_bindgen(constructor)]
@@ -536,6 +559,9 @@ impl JsImage {
         y_shape: u32,
         x_shape: u32,
     ) {
+        if !check_chunk_len(data.length(), lod, t, z, y, x, z_shape, y_shape, x_shape) {
+            return;
+        }
         if let Some(ref pending_chunks) = self.pending_chunks {
             let bytes: Vec<u8> = data
                 .to_vec()
@@ -679,6 +705,9 @@ macro_rules! js_volume_class {
                 data: &js_sys::Uint16Array,
                 z_shape: u32, y_shape: u32, x_shape: u32,
             ) {
+                if !check_chunk_len(data.length(), lod, t, z, y, x, z_shape, y_shape, x_shape) {
+                    return;
+                }
                 if let Some(ref pending_chunks) = self.pending_chunks {
                     let bytes: Vec<u8> = data
                         .to_vec()

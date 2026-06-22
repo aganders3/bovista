@@ -1,8 +1,6 @@
 # Python Bindings
 
-Bovista exposes a Python API via [PyO3](https://pyo3.rs/). The binding layer is thin: it translates Python types to Rust types, exposes the pull-based tile-loading API, and otherwise delegates directly to the core library.
-
-<!-- toc -->
+Bovista exposes a Python API via [PyO3](https://pyo3.rs/). The binding layer is thin: it converts Python types to Rust, exposes the pull-based tile-loading API, and delegates to the core library.
 
 ## Installation
 
@@ -16,27 +14,25 @@ or with maturin directly:
 maturin develop --features python --release
 ```
 
-Import as:
-
 ```python
 import bovista as bv
 ```
 
 ## `Viewer`
 
-The top-level object that owns the GPU device, renderer, camera, and scene.
+The top-level object owns the GPU device, renderer, camera, and scene.
 
 ```python
 viewer = bv.Viewer(width=800, height=600)
 ```
 
-**Initialization:**
+Initialization:
 
-- `viewer.initialize()` — headless / offscreen initialization (no window)
-- `viewer.initialize_with_window(handle, width, height)` — attach to an existing native window handle (NSView on macOS, HWND on Windows, X11 Window on Linux); used when embedding in Qt or other GUI toolkits
+- `viewer.initialize()` — headless / offscreen (no window)
+- `viewer.initialize_with_window(handle, width, height)` — attach to a native window handle (NSView / HWND / X11 Window) for embedding in Qt or other toolkits
 - `viewer.run()` — open a standalone winit window and block until closed
 
-**Camera:**
+Camera:
 
 ```python
 viewer.set_camera_position(x, y, z)
@@ -53,7 +49,7 @@ viewer.get_camera_ortho_height() -> float
 viewer.get_camera_distance() -> float
 ```
 
-**Scene management:**
+Scene management:
 
 ```python
 idx = viewer.add(visual)          # add any visual; returns index
@@ -61,7 +57,7 @@ viewer.clear_visuals()            # remove all
 viewer.visual_count() -> int
 ```
 
-**Render loop (embedded mode):**
+Render loop (embedded mode):
 
 ```python
 viewer.render_frame()   # render one frame to the attached window surface
@@ -84,13 +80,7 @@ level = bv.LevelMetadata(
 
 All sizes use `(depth/z, height/y, width/x)` ordering to match OME-Zarr / NumPy convention.
 
-**`scale_factor` for anisotropic datasets:** `scale_factor` is a single scalar used by the LOD
-selection to estimate how many screen pixels a voxel covers at this level. For isotropic 2×
-downsampling use `2.0`, `4.0`, etc. For anisotropic downsampling (e.g. 2× in XY but not Z), use
-`max(vz_i/vz_0, vy_i/vy_0, vx_i/vx_0)` — the largest downsampling factor across any axis. This is
-a conservative approximation: it biases toward finer LODs, which is correct for a viewer where the
-user can rotate freely. A future improvement would make LOD selection view-direction-aware so the
-relevant axis is weighted automatically.
+`scale_factor` is a scalar the LOD selector uses to estimate how many screen pixels a voxel covers at this level. For isotropic 2× downsampling use `2.0`, `4.0`, etc. For anisotropic downsampling (e.g. 2× in XY but not Z), use `max(vz_i/vz_0, vy_i/vy_0, vx_i/vx_0)` — the largest factor across any axis. This biases toward finer LODs, which is correct for a freely-rotating viewer. A future improvement would make LOD selection view-direction-aware.
 
 ## `Image`
 
@@ -106,7 +96,7 @@ image = bv.Image(
 viewer.add(image)
 ```
 
-**Slice control:**
+Slice control:
 
 ```python
 image.set_slice_z(z)                              # axis-aligned Z slice
@@ -115,7 +105,7 @@ image.set_slice_x(x)
 image.set_slice_plane(px, py, pz, nx, ny, nz)     # arbitrary plane
 ```
 
-**Appearance:**
+Appearance:
 
 ```python
 image.set_contrast(min_val, max_val)              # 0.0–1.0 normalized
@@ -123,14 +113,14 @@ image.set_colormap(rgba_array)                    # numpy (256, 4) uint8; None =
 image.set_lod_bias(bias)                          # positive = finer LOD
 ```
 
-**Diagnostics:**
+Diagnostics:
 
 ```python
 image.set_debug_mode(True)                        # LOD tint visualization
 loaded, visible = image.get_stats()               # tile counts
 ```
 
-**Tile streaming** (pull-based; see [Tile loading](#tile-loading-pull-based)):
+Tile streaming (pull-based; see [Tile loading](#tile-loading-pull-based)):
 
 ```python
 for lod, t, z, y, x, priority in image.wanted_keys():
@@ -140,9 +130,7 @@ image.set_chunk_data_u16(lod, t, z, y, x, array)  # numpy uint16 array
 
 ## Volume classes
 
-Direct volume rendering via GPU ray marching. Shares the same virtual-texture back-end as `Image`.
-There are five volume classes — one per ray-marching mode. They share an identical constructor and
-the common controls below; each adds the parameters relevant to its mode.
+Direct volume rendering via GPU ray marching, sharing the same virtual-texture back-end as `Image`. There are five classes — one per ray-marching mode. They share an identical constructor and the common controls below; each adds the parameters relevant to its mode.
 
 | Class | Mode | Mode-specific params |
 |-------|------|----------------------|
@@ -162,7 +150,7 @@ volume = bv.DirectVolume(
 viewer.add(volume)
 ```
 
-**Common controls** (all five classes):
+Common controls (all five classes):
 
 ```python
 volume.set_contrast(min_val, max_val)
@@ -171,7 +159,7 @@ volume.set_relative_step_size(step)      # 1.0 = Nyquist; larger = faster, coars
 volume.set_lod_bias(bias)
 ```
 
-**`DirectVolume` extras:**
+`DirectVolume` extras:
 
 ```python
 volume.set_density_scale(scale)          # opacity multiplier per step
@@ -181,10 +169,10 @@ volume.set_atlas_debug_mode(True)        # raw atlas visualization (mode 2)
 volume.set_step_debug_mode(True)         # ray-march step count heatmap (mode 3)
 ```
 
-**`MipVolume` extra:** `volume.set_attenuation(strength)` — `0` is plain MIP; `> 0` attenuates.
-**`IsosurfaceVolume` extra:** `volume.set_iso_threshold(t)` — normalized 0–1 first-hit level.
+`MipVolume` extra: `volume.set_attenuation(strength)` — `0` is plain MIP; `> 0` attenuates.
+`IsosurfaceVolume` extra: `volume.set_iso_threshold(t)` — normalized 0–1 first-hit level.
 
-**Stats / tile data** (common to all):
+Stats / tile data (common to all):
 
 ```python
 loaded, visible = volume.get_stats()
@@ -193,32 +181,22 @@ for lod, t, z, y, x, priority in volume.wanted_keys():
 volume.set_chunk_data_u16(lod, t, z, y, x, array)
 ```
 
-## `Points`
+## `Points`, `Lines`, `Custom`
 
-Point cloud rendering. Static geometry — no streaming.
+`Points` renders a point cloud; `Lines` renders segments (each vertex pair is one segment). Both are static geometry — no streaming.
 
 ```python
 points = bv.Points.from_numpy(viewer, positions, colors)
 # positions: numpy (N, 1, 3) float32
 # colors:    numpy (N, 1, 3) float32  (RGB 0-1)
 viewer.add(points)
+viewer.add(bv.Points.test_cube(viewer, size=10))       # quick test shape
 
-# or a quick test shape:
-viewer.add(bv.Points.test_cube(viewer, size=10))
-```
-
-## `Lines`
-
-Line segment rendering. Each pair of vertices forms one segment.
-
-```python
 viewer.add(bv.Lines.axis_helper(viewer, length=1.0))   # RGB axis gizmo
 viewer.add(bv.Lines.test_cube(viewer))
 ```
 
-## `Custom`
-
-User-defined WGSL shader. The shader must expose `vs_main` / `fs_main` entry points and declare the camera uniforms at `@group(0) @binding(0)`.
+`Custom` runs a user-defined WGSL shader. It must expose `vs_main` / `fs_main` entry points and declare the camera uniforms at `@group(0) @binding(0)`.
 
 ```python
 shader = """
@@ -244,16 +222,10 @@ viewer.add(custom)
 
 ## Tile loading (pull-based)
 
-Bovista uses a **pull** model: each frame it publishes the set of tiles it wants, sorted by
-priority, and the application polls that set and pushes data back. There is no loader callback and
-no hot-path FFI — cancellation is implicit, since keys that leave the wanted set simply never get
-re-fetched.
+Bovista uses a **pull** model: each frame it publishes the tiles it wants, sorted by priority, and the application polls that set and pushes data back. There is no loader callback and no hot-path FFI; cancellation is implicit, since keys that leave the wanted set are never re-fetched.
 
-- `image.wanted_keys()` (and the identical method on every volume class) returns a list of
-  `(lod, t, z, y, x, priority)` tuples, sorted by priority (lower = more urgent; `0` = currently
-  viewed). The `t` field is the timepoint.
-- `image.set_chunk_data_u16(lod, t, z, y, x, array)` pushes a fetched tile back in. `array` is a
-  NumPy `uint16` array shaped `(z, y, x)`.
+- `image.wanted_keys()` (identical on every volume class) returns a list of `(lod, t, z, y, x, priority)` tuples sorted by priority (lower = more urgent; `0` = currently viewed). `t` is the timepoint.
+- `image.set_chunk_data_u16(lod, t, z, y, x, array)` pushes a fetched tile back in. `array` is a NumPy `uint16` array shaped `(z, y, x)`.
 
 ```python
 import numpy as np
@@ -266,18 +238,11 @@ def poll_tiles():
         image.set_chunk_data_u16(lod, t, z, y, x, np.asarray(data, dtype=np.uint16))
 ```
 
-## `ProjectionMode`
+`ProjectionMode` values are `bv.ProjectionMode.Perspective` and `bv.ProjectionMode.Orthographic`.
 
-```python
-bv.ProjectionMode.Perspective
-bv.ProjectionMode.Orthographic
-```
+### Loader pattern (full example)
 
-## Loader Pattern (full example)
-
-A background thread polls `wanted_keys()` and dispatches fetches via a thread pool; results are
-pushed back through `set_chunk_data_u16`. Keys that leave the wanted set are never re-submitted, so
-cancellation is implicit — the loop just tracks what is currently in flight to avoid double-fetching.
+A background thread polls `wanted_keys()` and dispatches fetches via a thread pool; results are pushed back through `set_chunk_data_u16`. The loop tracks what is in flight to avoid double-fetching; keys that leave the wanted set are never re-submitted.
 
 ```python
 from concurrent.futures import ThreadPoolExecutor
@@ -321,8 +286,8 @@ def start_loader(volume):
     threading.Thread(target=poll, daemon=True).start()
 ```
 
-## Binding Structure
+## Binding structure
 
-The Python bindings live in `src/python.rs`. The `#[visual_methods(VisualType)]` procedural macro (in `bovista-codegen/`) generates the boilerplate downcast + error mapping for methods with empty bodies — keeping the binding file focused on constructors and type-conversion logic.
+The Python bindings live in `src/python.rs`. The `#[visual_methods(VisualType)]` proc-macro (in `bovista-codegen/`) generates the downcast + error-mapping boilerplate for empty-body methods, keeping the binding file focused on constructors and type conversion.
 
-The `Arc<Mutex<dyn Visual>>` reference type (`VisualRef`) is shared between the Python wrapper and the `Scene`, so the viewer can call `prepare()` and `render()` on visuals without the Python wrapper holding the lock.
+The `Arc<Mutex<dyn Visual>>` reference type (`VisualRef`) is shared between the Python wrapper and the `Scene`, so the viewer can call `prepare()` and `render()` without the wrapper holding the lock.

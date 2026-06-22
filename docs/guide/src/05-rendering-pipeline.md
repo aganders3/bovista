@@ -1,26 +1,12 @@
 # The wgpu Rendering Pipeline
 
-This chapter is a ground-up walkthrough of how Bovista actually draws pixels — from GPU initialization through shader execution. If you're new to wgpu or WebGPU, start here.
-
-<!-- toc -->
+A ground-up walkthrough of how Bovista draws pixels, from GPU initialization through shader execution. If you're new to wgpu or WebGPU, start here.
 
 ---
 
-## What wgpu Is (and Isn't)
+## Core Concepts
 
-wgpu is a Rust library that exposes the **WebGPU API**, a modern, explicit graphics API. "Explicit" means you, the programmer, are responsible for:
-
-- Describing memory layouts to the GPU in advance
-- Binding resources (textures, buffers) before drawing
-- Specifying exactly how vertices flow into fragments
-
-You get a lot of control — and a lot of upfront setup. In exchange you get predictable performance and the same code running on Vulkan, Metal, DirectX 12, and WebGPU in the browser.
-
----
-
-## Core Concepts Before We Start
-
-### The GPU Rendering Model
+wgpu is a Rust library exposing the **WebGPU API**, a modern, explicit graphics API. "Explicit" means you describe memory layouts in advance, bind resources before drawing, and specify exactly how vertices flow into fragments. The cost is upfront setup; the payoff is predictable performance and one codebase running on Vulkan, Metal, DirectX 12, and WebGPU in the browser.
 
 The GPU executes a **render pipeline** for each draw call:
 
@@ -40,13 +26,9 @@ CPU uploads vertex data + uniforms
   [ Output Merging ]    ← depth test, blending, write to texture
 ```
 
-Shaders are small programs written in WGSL (WebGPU Shading Language) that run on the GPU. Each pipeline has one vertex shader and one fragment shader.
+Shaders are small programs written in WGSL (WebGPU Shading Language). Each pipeline has one vertex shader and one fragment shader.
 
-### Bind Groups
-
-Rather than setting individual texture or buffer pointers before every draw, wgpu groups related resources into **bind groups**. A bind group is a bundle of GPU resources (buffers, textures, samplers) with a fixed layout that you attach to the pipeline once.
-
-Bovista uses a consistent three-group layout across all its visual pipelines:
+Rather than setting individual resource pointers before every draw, wgpu groups related resources into **bind groups** — a bundle of buffers, textures, and samplers with a fixed layout attached to the pipeline once. Bovista uses a consistent three-group layout across all visual pipelines:
 
 | Group | Who owns it | Contents |
 |-------|------------|----------|
@@ -56,19 +38,13 @@ Bovista uses a consistent three-group layout across all its visual pipelines:
 
 Simple visuals (points, lines) only use group 0.
 
-### Buffers vs Textures
-
-- **Buffer**: raw bytes. Used for vertex data, index data, and uniform structs.
-- **Texture**: sampled image data with filtering support. Used for the atlas, the page table, and the colormap LUT.
-- **Sampler**: describes how to filter a texture (bilinear? clamp to edge?). Bound alongside textures.
+The resources themselves are **buffers** (raw bytes: vertex data, index data, uniform structs), **textures** (sampled image data with filtering: atlas, page table, colormap LUT), and **samplers** (which describe how to filter a texture and are bound alongside it).
 
 ---
 
 ## The Renderer: Setting Up the GPU
 
-`src/renderer.rs` owns the GPU device, queue, and the shared camera bind group.
-
-### Device and Queue
+`src/renderer.rs` owns the GPU device, queue, and the shared camera bind group. `Device` creates GPU objects; `Queue` sends data and commands to the GPU.
 
 ```rust
 // In practice, these come from wgpu surface setup (not shown here).
@@ -81,11 +57,7 @@ pub struct Renderer {
 }
 ```
 
-`Device` creates GPU objects; `Queue` sends data and commands to the GPU.
-
-### Camera Uniform Buffer
-
-Every shader needs to transform vertices from world space to screen space. The renderer creates a 64-byte uniform buffer that holds a single 4×4 matrix and updates it every frame:
+Every shader transforms vertices from world space to screen space. The renderer creates a 64-byte uniform buffer holding a single 4×4 matrix and updates it every frame. `UNIFORM` means the shader can read it; `COPY_DST` means the CPU can write to it via `queue.write_buffer`:
 
 ```rust
 let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -95,9 +67,7 @@ let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
 });
 ```
 
-`UNIFORM` means the shader can read it. `COPY_DST` means the CPU can write to it each frame via `queue.write_buffer`.
-
-The bind group layout tells the GPU "binding 0 is a uniform buffer, visible only in the vertex stage":
+The bind group layout declares "binding 0 is a uniform buffer, visible only in the vertex stage", matching the WGSL declaration:
 
 ```rust
 wgpu::BindGroupLayoutEntry {
@@ -111,8 +81,6 @@ wgpu::BindGroupLayoutEntry {
 }
 ```
 
-The matching WGSL declaration:
-
 ```wgsl
 // virtual_tile.wgsl, group 0
 struct CameraUniforms {
@@ -122,7 +90,7 @@ struct CameraUniforms {
 var<uniform> camera: CameraUniforms;
 ```
 
-Every frame, `Renderer::update_camera` computes the view-projection matrix and sends it to the GPU:
+Each frame, `Renderer::update_camera` computes the view-projection matrix and sends it to the GPU. `bytemuck::cast_slice` safely reinterprets the Rust struct as raw bytes:
 
 ```rust
 pub fn update_camera(&self, camera: &Camera) {
@@ -134,11 +102,7 @@ pub fn update_camera(&self, camera: &Camera) {
 }
 ```
 
-`bytemuck::cast_slice` safely reinterprets the Rust struct as raw bytes for the GPU.
-
-### The Depth Buffer
-
-Bovista creates a depth texture at startup and recreates it on resize:
+Bovista also creates a depth texture at startup and recreates it on resize. The depth buffer stores the depth of the closest fragment at each pixel; an arriving fragment further away is discarded (the depth test). This makes closer objects correctly occlude farther ones without sorting draw calls.
 
 ```rust
 let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -148,17 +112,7 @@ let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
 });
 ```
 
-The depth buffer stores the depth of the closest fragment seen so far at each pixel. When a new fragment arrives, it's compared against the stored depth — if it's further away, it's discarded (the depth test). This is what makes closer objects correctly occlude farther ones without sorting draw calls.
-
-### The Render Loop
-
-Each frame, `Renderer::render`:
-
-1. Creates a **command encoder** — a recorder for GPU commands
-2. Begins a **render pass** — declares what texture to draw into and how to clear it
-3. Sets the camera bind group at `@group(0)` **once**, for all visuals
-4. Calls `scene.render()` which iterates each visible `impl Visual` and calls its `render()`
-5. Finishes and submits the command buffer to the queue
+Each frame, `Renderer::render` creates a **command encoder** (a recorder for GPU commands), begins a **render pass** (declaring the target texture and clear behavior), sets the camera bind group at `@group(0)` **once** for all visuals, calls `scene.render()` (which iterates each visible `impl Visual` and calls its `render()`), then finishes and submits the command buffer:
 
 ```rust
 // From renderer.rs
@@ -179,11 +133,7 @@ scene.render(&mut render_pass);  // each visual sets groups 1, 2 and draws
 
 ## Simple Visuals: Points and Lines
 
-`src/visuals/points.rs` and `src/visuals/lines.rs` show the minimal pipeline pattern.
-
-### Vertex Layout
-
-A point has a world-space position and an RGB color:
+`src/visuals/points.rs` and `src/visuals/lines.rs` show the minimal pipeline pattern. A point has a world-space position and an RGB color:
 
 ```rust
 #[repr(C)]
@@ -194,7 +144,7 @@ pub struct PointVertex {
 }
 ```
 
-The `wgpu::VertexBufferLayout` tells the pipeline what this struct looks like:
+The `wgpu::VertexBufferLayout` tells the pipeline what this struct looks like. The attribute numbers (`0 =>`, `1 =>`) match the `@location(0)` and `@location(1)` annotations in the WGSL vertex input struct:
 
 ```rust
 wgpu::VertexBufferLayout {
@@ -206,10 +156,6 @@ wgpu::VertexBufferLayout {
     ],
 }
 ```
-
-The numbers here (`0 =>`, `1 =>`) match the `@location(0)` and `@location(1)` annotations in the WGSL vertex input struct.
-
-### Pipeline Creation
 
 `device.create_render_pipeline` is the big upfront declaration:
 
@@ -248,9 +194,9 @@ device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
 })
 ```
 
-A pipeline is **immutable** once created. The topology, shader, and vertex layout are all baked in. This is intentional — the GPU driver compiles the pipeline to native GPU code at creation time, making draw calls very fast.
+A pipeline is **immutable** once created — topology, shader, and vertex layout are all baked in. This is intentional: the driver compiles the pipeline to native GPU code at creation time, making draw calls fast.
 
-### Shader: point_cloud.wgsl
+The shader, `point_cloud.wgsl`:
 
 ```wgsl
 struct Uniforms { view_proj: mat4x4<f32> }
@@ -280,31 +226,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 ```
 
-`@builtin(position)` is a special output understood by the rasterizer as the clip-space position. The other outputs (like `color`) are interpolated across the triangle/point by the hardware and handed to the fragment shader.
+`@builtin(position)` is understood by the rasterizer as the clip-space position. Other outputs (like `color`) are interpolated across the primitive by the hardware and handed to the fragment shader.
 
-### The `prepare` / `render` Split
-
-The `Visual` trait separates work into two phases:
-
-- **`prepare()`** — called before the render pass begins. Can write to GPU buffers (`queue.write_buffer`), create new textures, compute geometry. For points and lines this is a no-op because vertex data never changes.
-- **`render()`** — called inside the render pass. Can only issue draw commands (`set_pipeline`, `set_bind_group`, `draw`). No CPU work here.
-
-This split exists because `queue.write_buffer` and render pass recording are incompatible — you can't upload data mid-pass.
+The `Visual` trait splits work into two phases. **`prepare()`** runs before the render pass and can write GPU buffers (`queue.write_buffer`), create textures, and compute geometry — for points and lines it's a no-op since vertex data never changes. **`render()`** runs inside the render pass and can only issue draw commands (`set_pipeline`, `set_bind_group`, `draw`). The split exists because `queue.write_buffer` and render pass recording are incompatible — you can't upload data mid-pass.
 
 ---
 
 ## The Slice Pipeline: Image
 
-`src/visuals/image.rs` renders a planar cross-section through a 3D volume using the virtual texture system.
-
-### How It Works (Overview)
-
-1. Each frame, `prepare()` computes where the slice plane intersects the volume AABB and generates a polygon mesh for that cross-section (3–6 vertices, depending on the slice angle).
-2. Each vertex carries a **3D volume UV** (`texcoord: vec3<f32>`) — the normalized position within the volume at that point.
-3. In the fragment shader, those UVs are used to look up the voxel value via the virtual texture page table.
-4. The voxel value is passed through a contrast window and then into a colormap LUT to produce the final color.
-
-### Vertex Layout: TileVertex
+`src/visuals/image.rs` renders a planar cross-section through a 3D volume using the virtual texture system. Each frame, `prepare()` computes where the slice plane intersects the volume AABB and generates a polygon mesh (3–6 vertices, depending on slice angle). Each vertex carries a **3D volume UV** (`texcoord: vec3<f32>`), the normalized position within the volume. The fragment shader uses those UVs to look up the voxel value via the page table, then passes it through a contrast window and a colormap LUT to produce the final color.
 
 ```rust
 #[repr(C)]
@@ -314,11 +244,9 @@ pub struct TileVertex {
 }
 ```
 
-The hardware interpolates `texcoord` across the polygon — every fragment knows where in the volume it sits.
+The hardware interpolates `texcoord` across the polygon, so every fragment knows where in the volume it sits.
 
-### Geometry: Plane-AABB Intersection
-
-`compute_plane_aabb_intersection` (in `src/visuals/tile.rs`) tests the slice plane against all 12 edges of the volume bounding box. Each edge that the plane intersects yields one vertex. The result is a convex polygon with 3–6 vertices, triangulated as a fan and uploaded to the GPU as a fresh vertex/index buffer every frame:
+`compute_plane_aabb_intersection` (in `src/visuals/tile.rs`) tests the slice plane against all 12 edges of the volume bounding box. Each intersected edge yields one vertex, giving a convex polygon of 3–6 vertices, triangulated as a fan and uploaded fresh every frame:
 
 ```rust
 // From Image::prepare()
@@ -334,9 +262,7 @@ if let Some((vertices, indices)) =
 }
 ```
 
-### Bind Group Layout (Groups 1 and 2)
-
-Group 1 (VT resources) is declared in `Image::new` with four entries:
+Group 1 (VT resources), declared in `Image::new`, has four entries:
 
 | Binding | Type | Shader access | Purpose |
 |---------|------|---------------|---------|
@@ -359,7 +285,7 @@ wgpu::BindGroupLayoutEntry {
 }
 ```
 
-The page table is a `texture_2d_array` where each array layer is one LOD level. Using `TextureSampleType::Uint` instead of `Float` means you read raw 32-bit integers with `textureLoad` (no filtering — you want exact values, not interpolated ones).
+The page table is a `texture_2d_array` with one array layer per LOD level. `TextureSampleType::Uint` means you read raw 32-bit integers with `textureLoad` — no filtering, since you want exact values, not interpolated ones.
 
 Group 2 (colormap) has two entries:
 
@@ -368,9 +294,7 @@ Group 2 (colormap) has two entries:
 | 0 | `texture_1d<f32>` | 256-entry RGBA colormap LUT |
 | 1 | `sampler` | Linear filter for smooth colormap interpolation |
 
-### Shader: virtual_tile.wgsl
-
-**Vertex stage** is trivial — multiply world position by view-projection:
+In `virtual_tile.wgsl`, the vertex stage is trivial — multiply world position by view-projection and pass the UV through:
 
 ```wgsl
 @vertex
@@ -382,7 +306,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 }
 ```
 
-**Fragment stage** is where the work happens. For each pixel:
+The fragment stage does the work — sample, contrast, colormap:
 
 ```wgsl
 @fragment
@@ -405,9 +329,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 ```
 
-### Virtual Texture Lookup: sample_vvt
-
-The key function is `sample_vvt(vol_uv)`. It walks the LOD pyramid looking for a resident tile:
+The key function `sample_vvt(vol_uv)` walks the LOD pyramid for a resident tile — from the ideal LOD up to coarsest (normal fallback while tiles load), then finer than ideal (stale fine data beats black):
 
 ```wgsl
 fn sample_vvt(vol_uv: vec3f) -> vec2f {
@@ -428,7 +350,7 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
 }
 ```
 
-And `try_lod` maps from volume UV → page table address → atlas slot → texture sample:
+`try_lod` maps volume UV → page table address → atlas slot → texture sample:
 
 ```wgsl
 fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
@@ -466,9 +388,9 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
 }
 ```
 
-`tile_scale` is `tile_size / volume_size` per axis — it tells you what fraction of the full volume UV one tile spans. `data_scale` handles the case where a coarser LOD tile has fewer voxels than the atlas slot is sized for (the extra space in the slot is unused padding; `data_scale` clamps sampling to the populated region).
+`tile_scale` is `tile_size / volume_size` per axis — what fraction of the full volume UV one tile spans. `data_scale` handles coarser LOD tiles that have fewer voxels than the atlas slot is sized for (the extra space is unused padding; `data_scale` clamps sampling to the populated region).
 
-### The Render Call
+`Image::render` issues the draw. `draw_indexed` draws triangles using a u16 index buffer, reusing vertices across triangles (the fan triangulation):
 
 ```rust
 // From Image::render()
@@ -486,23 +408,13 @@ fn render(&self, render_pass: &mut RenderPass) {
 }
 ```
 
-`draw_indexed` draws triangles using the index buffer. The index buffer contains u16 offsets into the vertex buffer — this lets you reuse vertices across triangles (important for the fan triangulation of the polygon).
-
 ---
 
 ## The Volume Pipeline: DirectVolume
 
-`src/visuals/volume.rs` renders the entire 3D volume via GPU ray marching. There are five volume classes — `DirectVolume` (default DVR), `MipVolume`, `MinipVolume`, `AverageVolume`, and `IsosurfaceVolume` — that share this back-end; the pipeline described here applies to all of them. The virtual texture back-end (atlas, page table, LOD streaming) is identical to `Image`.
+`src/visuals/volume.rs` renders the entire 3D volume via GPU ray marching. Five volume classes share this back-end — `DirectVolume` (default DVR), `MipVolume`, `MinipVolume`, `AverageVolume`, and `IsosurfaceVolume`. The virtual texture back-end (atlas, page table, LOD streaming) is identical to `Image`.
 
-### The Box Geometry Trick
-
-Instead of rasterizing every voxel, the volume is rendered using a **proxy geometry** approach:
-
-1. Draw the back faces of a unit cube that covers the volume AABB
-2. In the fragment shader, reconstruct the ray from the camera through each fragment's world-space position
-3. March that ray through the volume, sampling voxels front-to-back
-
-Why back faces? The rasterizer fires a fragment for each pixel where the cube's surface is visible. Using back faces means a fragment fires for every pixel that the volume occupies in screen space, even when the camera is inside the volume (at which point the front faces would be clipped by the near plane):
+Instead of rasterizing every voxel, the volume uses **proxy geometry**: draw the back faces of a unit cube covering the volume AABB, reconstruct the camera ray through each fragment's world-space position, and march that ray through the volume sampling voxels front-to-back. Back faces are used because the rasterizer then fires a fragment for every pixel the volume occupies in screen space, even when the camera is inside the volume (where front faces would be clipped by the near plane):
 
 ```rust
 // Volume box: 12 triangles, CW winding = inward-facing normals
@@ -514,7 +426,7 @@ primitive: wgpu::PrimitiveState {
 }
 ```
 
-The volume shader's vertex stage positions the cube:
+The vertex stage positions the cube and passes world position for ray reconstruction:
 
 ```wgsl
 @vertex
@@ -527,9 +439,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 }
 ```
 
-### Ray Marching: The Fragment Shader
-
-The fragment shader (`volume_raymarch.wgsl`) does the heavy lifting:
+The fragment shader (`volume_raymarch.wgsl`) does the heavy lifting. It reconstructs the ray, runs an AABB slab test to find entry/exit, then steps along the ray accumulating color front-to-back (**alpha compositing**):
 
 ```wgsl
 @fragment
@@ -550,8 +460,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if t_exit <= max(t_enter, 0.0) { discard; }  // ray misses or is behind camera
     ...
 ```
-
-Then it steps along the ray, accumulating color front-to-back (a technique called **alpha compositing**):
 
 ```wgsl
     var accum_color = vec3f(0.0);
@@ -587,11 +495,7 @@ Then it steps along the ray, accumulating color front-to-back (a technique calle
     }
 ```
 
-The early-out `accum_alpha >= 0.95` is an optimization — once the ray is 95% opaque, continuing adds less than 5% contribution to the final color.
-
-### LOD-Adaptive Step Size
-
-In unloaded regions, the shader jumps to the next tile boundary instead of crawling one LOD-0 voxel at a time:
+The `accum_alpha >= 0.95` early-out stops once the ray is 95% opaque, since further samples add under 5% to the final color. The step size is LOD-adaptive: in unloaded regions the shader jumps to the next tile boundary instead of crawling one LOD-0 voxel at a time:
 
 ```wgsl
 if lod_f >= 0.0 {
@@ -605,11 +509,9 @@ if lod_f >= 0.0 {
 }
 ```
 
-### Blending: Pre-multiplied Alpha
+Volume visuals use `wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING` (not the simple alpha blending used by `Image`). The ray marcher outputs `out = (accum_color * accum_alpha, accum_alpha)`; pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices render together.
 
-The volume visuals use `wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING` (not the simple alpha blending used by `Image`). The ray marcher outputs pre-multiplied alpha: `out = (accum_color * accum_alpha, accum_alpha)`. Pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices are rendered together.
-
-### Depth Write Disabled
+Volume depth writes are disabled. The volume reads the depth buffer (so opaque geometry occludes it) but doesn't write — otherwise its back-face fragments would block any geometry behind the volume:
 
 ```rust
 depth_stencil: Some(wgpu::DepthStencilState {
@@ -619,13 +521,11 @@ depth_stencil: Some(wgpu::DepthStencilState {
 })
 ```
 
-The volume reads the depth buffer (so it's occluded by opaque geometry) but doesn't write to it. If it wrote, its back-face fragments would prevent any geometry behind the volume from rendering.
-
 ---
 
 ## VT Uniforms: The CPU-GPU Contract
 
-`VTUniforms` (defined in `src/visuals/tile.rs`) is the main data structure shared between the CPU and the VT shaders. Every field must match between Rust and WGSL exactly, including padding:
+`VTUniforms` (in `src/visuals/tile.rs`) is the main structure shared between CPU and VT shaders. Every field must match between Rust and WGSL exactly, including padding:
 
 ```rust
 #[repr(C)]  // C-compatible layout — field order is preserved
@@ -647,7 +547,7 @@ pub struct VTUniforms {
 }
 ```
 
-WGSL uniform structs require 16-byte alignment for sub-structs (`VTLodInfo`). The `_pad_c` field ensures `lods` starts at offset 48 (a multiple of 16). Getting this wrong produces subtle visual corruption with no error message — the GPU silently reads the wrong bytes.
+WGSL uniform structs require 16-byte alignment for sub-structs (`VTLodInfo`). The `_pad_c` field ensures `lods` starts at offset 48. Getting this wrong produces subtle visual corruption with no error — the GPU silently reads the wrong bytes.
 
 ---
 
@@ -659,10 +559,6 @@ WGSL uniform structs require 16-byte alignment for sub-structs (`VTLodInfo`). Th
 | `Lines` | `lines.wgsl` | LineList | None | Yes | Replace |
 | `Image` | `virtual_tile.wgsl` | TriangleList | None | Yes | Alpha |
 | `DirectVolume` (and siblings) | `volume_raymarch.wgsl` | TriangleList | Front | No | Pre-multiplied Alpha |
-
----
-
-## Putting It All Together
 
 One frame, step by step:
 
@@ -704,7 +600,3 @@ One frame, step by step:
 ```
 
 The entire visible result — slice planes, volume, overlaid point clouds — comes from this single render pass.
-
----
-
-**Next**: [Chunked Rendering →](./07-chunked-rendering.md)

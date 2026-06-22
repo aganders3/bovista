@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build script for WGPU guide
+# Build script for the Bovista guide
 
 set -e
 
-echo "Building WGPU for OpenGL Developers guide..."
+echo "Building the Bovista guide..."
 
 # Check if mdbook is installed
 if ! command -v mdbook &> /dev/null; then

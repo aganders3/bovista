@@ -1,8 +1,6 @@
-# WebAssembly & Browser
+# JavaScript Bindings
 
-Bovista compiles to WebAssembly via [wasm-bindgen](https://rustwasm.github.io/wasm-bindgen/). The resulting module loads directly in any browser with WebGPU support (Chrome 113+, Edge 113+, Safari 18+) with no server-side component.
-
-<!-- toc -->
+Bovista compiles to WebAssembly via [wasm-bindgen](https://rustwasm.github.io/wasm-bindgen/). The module loads directly in any browser with WebGPU support (Chrome 113+, Edge 113+, Safari 18+), with no server-side component.
 
 ## Building
 
@@ -10,9 +8,7 @@ Bovista compiles to WebAssembly via [wasm-bindgen](https://rustwasm.github.io/wa
 ./build_wasm.sh       # compiles Rust → WASM, generates JS bindings to examples/pkg/
 ```
 
-The script installs `wasm32-unknown-unknown` if needed and invokes `wasm-bindgen`.
-
-To serve locally:
+The script installs `wasm32-unknown-unknown` if needed and invokes `wasm-bindgen`. To serve locally:
 
 ```bash
 python3 -m http.server 8000 --directory examples
@@ -21,7 +17,7 @@ python3 -m http.server 8000 --directory examples
 
 ## JavaScript API
 
-The WASM module exposes camelCase JavaScript names. The correspondence to the Python API is intentional:
+The WASM module exposes camelCase names that mirror the Python API:
 
 | Python | JavaScript |
 |--------|-----------|
@@ -89,8 +85,7 @@ const level = new LevelMetadata(
 );
 ```
 
-Note: the first three arguments are `[z, y, x]` arrays (numpy order); `scaleFactor`
-is a single number. Getters return arrays:
+The first three arguments are `[z, y, x]` arrays (numpy order); `scaleFactor` is a single number. Getters return arrays:
 
 ```javascript
 level.volume_size  // [depth, height, width]
@@ -99,7 +94,7 @@ level.voxel_size   // [depth, height, width]
 level.scale_factor // number
 ```
 
-For anisotropic datasets (e.g. 2× downsampling in XY but not Z), pass `Math.max(vxI/vx0, vyI/vy0, vzI/vz0)` as `scaleFactor` — the largest downsampling factor across any axis. See the Python API docs for details.
+For anisotropic datasets (e.g. 2× downsampling in XY but not Z), pass `Math.max(vxI/vx0, vyI/vy0, vzI/vz0)` as `scaleFactor` — the largest factor across any axis. See the Python docs for details.
 
 ## `Image`
 
@@ -133,9 +128,7 @@ image.setChunkDataU16(lod, t, z, y, x, uint16Array, zShape, yShape, xShape);
 
 ## Volume (`DirectVolume`, `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume`)
 
-The single mode-flag volume is now five classes, each constructed the same way and
-each exposing only the parameters that apply to it. `DirectVolume` is the default
-(front-to-back alpha-compositing DVR).
+Five classes, each constructed the same way and each exposing only the parameters that apply to it. `DirectVolume` is the default (front-to-back alpha-compositing DVR).
 
 ```javascript
 const volume = new DirectVolume(viewer, levels, maxChunks, atlasCount);
@@ -164,13 +157,9 @@ volume.setStepDebugMode(true);      // step count heatmap
 // MinipVolume / AverageVolume: no extras
 ```
 
-## Tile Loading (pull-based)
+## Tile loading (pull-based)
 
-There is no loader callback. bovista publishes a "wanted" set every prepare/frame;
-the app polls it with `wantedKeys()`, fetches the tiles, and pushes data back with
-`setChunkDataU16(...)`. Keys are `(lod, t, z, y, x, priority)` sorted by priority
-(lower = more urgent, 0 = currently viewed). Cancellation is implicit: keys that
-leave the wanted set are simply no longer requested.
+There is no loader callback. Bovista publishes a "wanted" set every prepare/frame; the app polls it with `wantedKeys()`, fetches the tiles, and pushes data back with `setChunkDataU16(...)`. Keys are `(lod, t, z, y, x, priority)` sorted by priority (lower = more urgent, 0 = currently viewed). Cancellation is implicit: keys that leave the wanted set are no longer requested.
 
 ```javascript
 const pending = new Set();
@@ -199,31 +188,23 @@ requestAnimationFrame(frame);
 
 ## Differences from the Python API
 
-**Initialization:** `Viewer.new()` is async (returns a Promise) and takes a canvas element ID; Python's `Viewer()` is sync and initialization is a separate call.
+- **Initialization:** `Viewer.new()` is async and takes a canvas element ID; Python's `Viewer()` is sync, with a separate `initialize` call.
+- **`add*` methods:** JS has one method per visual type (`addImage()`, `addDirectVolume()`, etc.) since wasm-bindgen can't overload via `PyAny`; Python uses a single polymorphic `add()`.
+- **`wantedKeys()` return type:** JS returns a flat `Uint32Array` (6 ints per key); Python returns a list of tuples. Both are sorted by priority.
+- **Error handling:** JS methods return `Result<T, JsValue>` (thrown exception); Python returns `PyResult<T>` (Python exception).
+- **`getStats()` return type:** JS returns `number[]`; Python returns an `(int, int)` tuple.
+- **`setChunkDataU16` signature:** JS takes explicit `zShape, yShape, xShape` after the data array; Python infers them from the numpy array shape.
+- **Thread safety:** JS is single-threaded — `Rc<RefCell<>>` instead of `Arc<Mutex<>>`. No locking overhead, but the visual must only be touched from the main thread.
 
-**`add*` methods:** JavaScript has one distinct method per visual type (`addImage()`, `addDirectVolume()`, `addMipVolume()`, etc.) since wasm-bindgen doesn't support overloading via `PyAny`. Python uses a single polymorphic `add()`.
+## Binding structure
 
-**`wantedKeys()` return type:** JavaScript returns a flat `Uint32Array` (`[lod, t, z, y, x, priority, ...]`, 6 ints per key); Python returns a list of `(lod, t, z, y, x, priority)` tuples. Both are sorted by priority.
+The WASM bindings live in `src/wasm.rs`. As with Python, `#[visual_methods(VisualType)]` generates the downcast + error-mapping boilerplate for empty-body methods. `bindings_common.rs` provides `with_visual_ref` / `with_visual_mut` helpers that work with either `Arc<Mutex<>>` (native) or `Rc<RefCell<>>` (WASM) via a conditional type alias.
 
-**Error handling:** JavaScript methods return `Result<T, JsValue>` which becomes a thrown exception on error. Python methods return `PyResult<T>` which becomes a Python exception.
+## Browser requirements
 
-**`getStats()` return type:** JavaScript returns `number[]` (array); Python returns `(int, int)` tuple.
-
-**`setChunkDataU16` signature:** JavaScript takes explicit `zShape, yShape, xShape` parameters after the data array. Python infers dimensions from the numpy array shape.
-
-**Thread safety:** JavaScript is single-threaded — `Rc<RefCell<>>` instead of `Arc<Mutex<>>`. No locking overhead, but the visual must only be accessed from the main thread.
-
-## Binding Structure
-
-The WASM bindings live in `src/wasm.rs`. Like the Python bindings, the `#[visual_methods(VisualType)]` proc-macro generates the downcast + error-mapping boilerplate for empty-body methods.
-
-`bindings_common.rs` provides `with_visual_ref` and `with_visual_mut` helpers that work with either `Arc<Mutex<>>` (native) or `Rc<RefCell<>>` (WASM) via a conditional type alias.
-
-## Browser Requirements
-
-- Chrome 113+ or Edge 113+ (WebGPU enabled by default)
-- Safari 18+ (requires WebGPU feature flag in earlier versions)
+- Chrome 113+ or Edge 113+ (WebGPU on by default)
+- Safari 18+ (feature flag in earlier versions)
 - Firefox: behind `dom.webgpu.enabled` flag
-- Check browser support: [webgpureport.org](https://webgpureport.org/)
+- Check support: [webgpureport.org](https://webgpureport.org/)
 
-WebGPU is required; WebGL is not supported. If a user's browser lacks WebGPU, the examples display a fallback message.
+WebGPU is required; WebGL is not supported. Browsers lacking WebGPU see a fallback message in the examples.

@@ -174,7 +174,7 @@ pub struct VirtualTextureData {
     pub wanted: Wanted,
 
     /// Diagnostic snapshot of the most recent prepare. Read by the
-    /// example's render loop to print [perf] lines.
+    /// example's render loop to print `[perf]` lines.
     pub stats: PrepareStats,
 
     pub max_tiles: usize,
@@ -494,6 +494,35 @@ impl VirtualTextureData {
         };
         let atlas_texture = &self.atlas_textures[atlas_id as usize];
         let bpv = data.bytes_per_voxel() as usize;
+
+        // Defensive: reject a tile we can't safely upload, rather than panic.
+        // A bad shape can come from a caller that supplies the shape separately
+        // from the data (the WASM binding) — e.g. transposed axes. Two ways it
+        // bites, both of which would otherwise panic on an out-of-range slice
+        // (and in WASM a panic aborts the module and poisons the viewer for
+        // every later call):
+        //   1. byte count != z*y*x  → the source row read below overruns;
+        //   2. any extent > the slot → the padded *destination* row write
+        //      overruns, even when the byte count happens to match (e.g. axes
+        //      transposed to the same total). Boundary tiles are always <= the
+        //      slot, so a larger extent is by definition malformed.
+        // Native/Python derive the shape from the array and never hit either.
+        let expected = data.z_shape as usize
+            * data.y_shape as usize
+            * data.x_shape as usize
+            * bpv;
+        if data.data.len() != expected
+            || data.x_shape > tile_w
+            || data.y_shape > tile_h
+            || data.z_shape > tile_d
+        {
+            log::warn!(
+                "write_tile_to_atlas: skipping malformed tile — {} bytes, shape \
+                 z={} y={} x={} (expected {expected} bytes, slot {tile_d}x{tile_h}x{tile_w})",
+                data.data.len(), data.z_shape, data.y_shape, data.x_shape,
+            );
+            return;
+        }
 
         // Boundary tiles (z/y/x edge of the volume at this LOD) have
         // smaller extent than the slot. Without zero-padding, the
