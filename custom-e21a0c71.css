@@ -1,0 +1,231 @@
+/* Custom styles for the Bovista guide */
+
+/* ============================================================
+   Puffball theme — palette sampled from the header image
+   (Bovista colorata: golden caps on a warm pine-needle floor)
+     gold  #fed518   amber #ebb148   pale-gold #f6dd9b
+     tan   #bd9b5d   brown #624a1f   dark-brown #2a1c03
+   plus natural greens drawn from the forest floor:
+     moss  #6f7d2e   fern  #9fb15a   pine #3f4d1c
+   Two themes only — Light and Dark (coal). The theme picker is
+   trimmed to these in custom.js. Gold/amber is the primary accent
+   (links, sidebar, highlights); green is the secondary accent
+   (quotes, callouts).
+   ============================================================ */
+:root {
+    --puffball-gold: #fed518;
+    --puffball-amber: #ebb148;
+    --moss-green: #6f7d2e;
+    --fern-green: #9fb15a;
+    --pine-green: #3f4d1c;
+}
+
+/* Light — forest-green chrome on a green-cream page; gold pops as the accent */
+html.light {
+    --bg: #f6f8ec;
+    --links: #8c6500;
+    --sidebar-bg: #36441c;
+    --sidebar-fg: #e7ecca;
+    --sidebar-non-existant: #9aa877;
+    --sidebar-active: var(--puffball-gold);
+    --sidebar-spacer: #4a5a28;
+    --scrollbar: #6f7d2e;
+    --search-mark-bg: var(--puffball-gold);
+    --code-accent: var(--moss-green);
+    --quote-border: var(--moss-green);
+    --quote-bg: rgba(111, 125, 46, 0.10);
+    --table-header-bg: #e6ecc9;
+    --table-border-color: #cdd3a3;
+    --border-color: #cdd3a3;
+    --searchbar-border-color: #aab574;
+    --menu-bar-hover-bg: #e3ead0;
+    --inline-code-bg: rgba(111, 125, 46, 0.13);
+}
+
+/* Dark — pine-green chrome on a deep green-black page; gold pops as the accent */
+html.coal {
+    --bg: #14180c;
+    --fg: #e7ecca;
+    --links: #f0d175;
+    --sidebar-bg: #1b240f;
+    --sidebar-fg: #cdd6a0;
+    --sidebar-non-existant: #6a754a;
+    --sidebar-active: var(--puffball-gold);
+    --sidebar-spacer: #2e3a18;
+    --scrollbar: #4a5d23;
+    --search-mark-bg: var(--puffball-gold);
+    --code-accent: var(--fern-green);
+    --quote-border: var(--fern-green);
+    --quote-bg: rgba(159, 177, 90, 0.11);
+    --table-header-bg: #2b3514;
+    --table-border-color: #44521f;
+    --border-color: #3a471b;
+    --searchbar-border-color: #4a5d23;
+    --inline-code-bg: rgba(159, 177, 90, 0.13);
+}
+
+/* Live demo iframes — break out of the content column and fill the viewport height */
+.live-demo-container {
+    position: relative;
+    margin: 1.5em -3rem;
+    width: calc(100% + 6rem);
+}
+
+.live-demo-container iframe {
+    height: 75vh;
+    min-height: 500px;
+    width: 100%;
+    display: block;
+    border: none;
+    border-radius: 4px;
+}
+
+.live-demo-links {
+    margin-top: 0.5em;
+    font-size: 0.9em;
+}
+
+/* Expand / collapse button */
+.live-demo-expand-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+    padding: 4px 12px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.8em;
+    cursor: pointer;
+    line-height: 1.5;
+    transition: background 0.15s;
+}
+
+.live-demo-expand-btn:hover {
+    background: rgba(0, 0, 0, 0.82);
+}
+
+/* Fullscreen state */
+.live-demo-container.live-demo-fullscreen {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    margin: 0 !important;
+    z-index: 9999;
+    display: flex !important;
+    flex-direction: column !important;
+    background: #000;
+}
+
+.live-demo-container.live-demo-fullscreen iframe {
+    flex: 1 1 auto !important;
+    height: unset !important;
+    min-height: unset !important;
+    width: 100% !important;
+    border-radius: 0 !important;
+}
+
+.live-demo-container.live-demo-fullscreen .live-demo-links {
+    flex: 0 0 auto !important;
+    margin-top: 0 !important;
+    padding: 0.4em 1em !important;
+    background: var(--bg, #1d1f21) !important;
+}
+
+
+/* Better code block styling */
+pre {
+    border-left: 3px solid var(--code-accent, var(--links));
+    padding-left: 1em !important;
+}
+
+/* Highlight important sections */
+.warning, .important {
+    padding: 1em;
+    margin: 1em 0;
+    border-left: 4px solid var(--puffball-amber);
+    background-color: rgba(235, 177, 72, 0.12);
+}
+
+/* Better table styling */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+}
+
+table th {
+    background-color: var(--table-header-bg);
+    padding: 0.75em;
+    text-align: left;
+    font-weight: bold;
+}
+
+table td {
+    padding: 0.75em;
+    border-top: 1px solid var(--table-border-color);
+}
+
+/* Comparison tables */
+table th:first-child {
+    width: 20%;
+}
+
+/* Better spacing for lists */
+ul, ol {
+    margin: 0.5em 0;
+    padding-left: 2em;
+}
+
+li {
+    margin: 0.25em 0;
+}
+
+/* Checkmarks for benefits */
+li:has(> .checkmark)::marker {
+    content: "✅ ";
+}
+
+li:has(> .crossmark)::marker {
+    content: "❌ ";
+}
+
+/* Code inline highlights */
+code {
+    background-color: var(--inline-code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+/* Better heading spacing */
+h2 {
+    margin-top: 2em;
+    margin-bottom: 0.5em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--border-color);
+}
+
+h3 {
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+}
+
+/* Info boxes */
+.info-box {
+    padding: 1em;
+    margin: 1em 0;
+    border-radius: 4px;
+    background-color: var(--quote-bg);
+    border-left: 4px solid var(--quote-border);
+}
+
+/* Next chapter link styling */
+p:has(> strong:contains("Next")) {
+    margin-top: 2em;
+    padding-top: 1em;
+    border-top: 2px solid var(--border-color);
+    text-align: right;
+}

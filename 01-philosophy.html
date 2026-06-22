@@ -1,9 +1,9 @@
 <!DOCTYPE HTML>
-<html lang="en" class="rust sidebar-visible" dir="ltr">
+<html lang="en" class="light sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Design &amp; Virtual Textures - Bovista Architecture Guide</title>
+        <title>Virtual Textures - Bovista Architecture Guide</title>
 
 
         <!-- Custom HTML head -->
@@ -28,18 +28,18 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
-        <link rel="stylesheet" href="custom-681f4f87.css">
+        <link rel="stylesheet" href="custom-e21a0c71.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "rust";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6a6c8c20.js";
+            const default_light_theme = "light";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-ec0ef7b7.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5873499f.js"></script>
+        <script src="toc-17ace711.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -77,7 +77,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('rust')
+            html.classList.remove('light')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -178,234 +178,104 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="overview--design-philosophy"><a class="header" href="#overview--design-philosophy">Overview &amp; Design Philosophy</a></h1>
-<p>Bovista is designed around three core principles: <strong>handle massive datasets</strong>, <strong>work everywhere</strong>, and <strong>be fast</strong>. This chapter explains the design decisions that make this possible.</p>
-<h2 id="the-problem-massive-volumetric-data"><a class="header" href="#the-problem-massive-volumetric-data">The Problem: Massive Volumetric Data</a></h2>
-<p>Modern microscopy and medical imaging produce enormous datasets:</p>
+                        <h1 id="virtual-textures"><a class="header" href="#virtual-textures">Virtual Textures</a></h1>
+<p>Volumetric datasets routinely dwarf VRAM — light-sheet and whole-brain imaging reach tens of terabytes, and 4D time-series go further. Bovista renders them by streaming through a <strong>virtual texture</strong>: the volume is divided into tiles at multiple LOD levels, and only the visible ones — typically tens resident out of millions virtual — ever reach the GPU. VRAM stays fixed (a bounded atlas with LRU eviction) regardless of dataset size, so terabyte-scale data renders interactively straight from remote storage (S3 / Zarr / HTTP).</p>
+<p>This back-end (<code>src/visuals/virtual_texture.rs</code>) is shared by <code>Image</code> (slice rendering) and the volume visuals (<code>DirectVolume</code>, <code>MipVolume</code>, <code>MinipVolume</code>, <code>AverageVolume</code>, <code>IsosurfaceVolume</code>). <code>Points</code>, <code>Lines</code>, and <code>Custom</code> visuals don’t use it.</p>
+<h2 id="atlas-and-page-table"><a class="header" href="#atlas-and-page-table">Atlas and Page Table</a></h2>
+<p>The full volume is logically a grid of uniform tiles at each LOD, but only resident tiles live on the GPU. Two textures implement the indirection:</p>
 <ul>
-<li><strong>Light-sheet microscopy</strong>: 32,000 × 32,000 × 32,000 voxels (~32 TB uncompressed)</li>
-<li><strong>Whole-brain imaging</strong>: 50,000 × 40,000 × 10,000 voxels (~20 TB)</li>
-<li><strong>4D time-series</strong>: Multiple 3D volumes over time (100+ TB)</li>
+<li><strong>Atlas</strong> (<code>AtlasAllocator</code> + 3D <code>wgpu::Texture</code>) — a fixed-size 3D texture holding all resident tiles in a uniform grid of slots, sized at creation from <code>max_tiles</code> and the finest LOD’s tile size. When it fills, the least-recently-used slot is evicted.</li>
+<li><strong>Page table</strong> (<code>PageTable</code> + 2D-array <code>wgpu::Texture</code>; <code>src/visuals/page_table.rs</code>) — a small integer texture with one layer per LOD. Each texel holds an atlas slot index (resident) or a sentinel (absent). The shader reads it at runtime to locate a tile — or learn it’s absent and fall back to a coarser LOD.</li>
 </ul>
-<p><strong>Traditional approaches don’t work:</strong></p>
-<p>❌ <strong>Load entire volume</strong>: 32 TB won’t fit in 64 GB RAM
-❌ <strong>Downsample</strong>: Lose critical detail
-❌ <strong>Pre-slice</strong>: Can’t explore interactively
-❌ <strong>Server-side rendering</strong>: High latency, expensive infrastructure</p>
-<h2 id="bovistas-solution-virtual-texture-streaming"><a class="header" href="#bovistas-solution-virtual-texture-streaming">Bovista’s Solution: Virtual Texture Streaming</a></h2>
-<p>Instead, Bovista:</p>
-<p>✅ <strong>Divides volumes into tiles</strong> at multiple LOD resolutions
-✅ <strong>Loads only visible tiles</strong> (typically 10-50 resident out of millions virtual)
-✅ <strong>Streams from remote storage</strong> (S3, Zarr, HTTP)
-✅ <strong>Renders on the client</strong> (Python desktop or web browser) — slice or full DVR
-✅ <strong>Manages VRAM automatically</strong> (atlas LRU eviction when tile budget is exceeded)</p>
-<p><strong>Result</strong>: Interactive slice or volumetric rendering of terabyte-scale data with a fixed VRAM footprint (~500 MB - 1 GB for a typical atlas).</p>
-<h2 id="design-decision-why-wgpu"><a class="header" href="#design-decision-why-wgpu">Design Decision: Why WGPU?</a></h2>
-<p>Bovista needs to handle highly variable chunk sizes and data layouts. Why WGPU instead of OpenGL/WebGL?</p>
-<h3 id="cross-platform-requirements"><a class="header" href="#cross-platform-requirements">Cross-Platform Requirements</a></h3>
-<p>Bovista needs to work in:</p>
-<ul>
-<li><strong>Python desktop apps</strong> (Windows, macOS, Linux)</li>
-<li><strong>Web browsers</strong> (via WebAssembly)</li>
-<li><strong>Jupyter notebooks</strong> (future goal)</li>
-</ul>
-<p><strong>OpenGL</strong>: Would require separate OpenGL (desktop) and WebGL (browser) implementations
-<strong>WGPU</strong>: Single codebase targets native (Vulkan/Metal/DX12) and web (WebGPU)</p>
-<h3 id="type-safety--memory-safety"><a class="header" href="#type-safety--memory-safety">Type Safety &amp; Memory Safety</a></h3>
-<p>Volumetric visualization involves complex state:</p>
-<ul>
-<li>Dynamic geometry generation</li>
-<li>Async chunk loading</li>
-<li>Resource lifecycle management</li>
-</ul>
-<p><strong>OpenGL</strong>: Runtime errors, manual resource tracking, easy to leak memory
-<strong>WGPU + Rust</strong>: Compile-time validation, automatic resource cleanup, ownership prevents leaks</p>
-<h3 id="performance-for-streaming-rendering"><a class="header" href="#performance-for-streaming-rendering">Performance for Streaming Rendering</a></h3>
-<p>Bovista’s virtual texture streaming requires:</p>
-<ul>
-<li>Uploading tile data into the atlas texture each frame (<code>queue.write_texture</code>)</li>
-<li>Dynamic vertex buffer updates for slice geometry each frame</li>
-<li>Single draw call per visual — no per-tile state changes</li>
-</ul>
-<p><strong>WGPU advantages:</strong></p>
-<ul>
-<li>✅ <strong>Explicit resource lifecycle</strong>: Precise control over when the atlas and page-table memory are allocated and freed</li>
-<li>✅ <strong>Bind groups</strong>: Atlas texture, page table, and camera uniforms bundled once; no per-tile rebinding</li>
-<li>✅ <strong>Efficient pipelines</strong>: Pre-compiled; both slice and ray-march paths use one pipeline per visual</li>
-<li>✅ <strong>Queue</strong>: <code>write_texture</code> / <code>write_buffer</code> allow background threads to push tile data without blocking the render loop</li>
-</ul>
-<h2 id="architecture-layers"><a class="header" href="#architecture-layers">Architecture Layers</a></h2>
-<p>Bovista is organized into clear layers:</p>
-<pre><code>┌─────────────────────────────────────────────────────┐
-│  Application Layer (Python/JS)                      │
-│  - Load data from Zarr/S3                           │
-│  - Handle UI events                                 │
-│  - Call Bovista API                                 │
-└─────────────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────┐
-│  Bindings Layer (PyO3 / wasm-bindgen)               │
-│  - Type conversion (NumPy ↔ Rust)                   │
-│  - Callback handling                                │
-│  - Platform abstractions                            │
-└─────────────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────┐
-│  Visualization Layer (Bovista Core)                 │
-│  - Renderer: GPU management                         │
-│  - Scene: Visual organization                       │
-│  - Visuals: Points, Lines, ImageVisual, VolumeVisual │
-│  - Camera: Orbit controls                           │
-└─────────────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────┐
-│  GPU Layer (WGPU)                                   │
-│  - Resource management (buffers, textures)          │
-│  - Pipeline compilation                             │
-│  - Command encoding                                 │
-│  - Native/Web abstraction                           │
-└─────────────────────────────────────────────────────┘
+<pre><code>Virtual address:  (lod, z_tile, y_tile, x_tile)
+           ↓
+     page table lookup
+           ↓
+Atlas slot index → 3D atlas sample
 </code></pre>
-<h3 id="separation-of-concerns"><a class="header" href="#separation-of-concerns">Separation of Concerns</a></h3>
-<p><strong>Application Layer</strong> doesn’t know about:</p>
-<ul>
-<li>GPU resources</li>
-<li>Shader compilation</li>
-<li>Vertex layouts</li>
-</ul>
-<p><strong>Visualization Layer</strong> doesn’t know about:</p>
-<ul>
-<li>Zarr file format</li>
-<li>Network protocols</li>
-<li>Platform-specific UI</li>
-</ul>
-<p><strong>GPU Layer</strong> doesn’t know about:</p>
-<ul>
-<li>Volume chunking</li>
-<li>Data loading</li>
-<li>Coordinate systems</li>
-</ul>
-<p><strong>Benefit</strong>: Each layer can be developed and tested independently.</p>
-<h2 id="key-design-patterns"><a class="header" href="#key-design-patterns">Key Design Patterns</a></h2>
-<h3 id="1-the-visual-trait"><a class="header" href="#1-the-visual-trait">1. The Visual Trait</a></h3>
-<p>All renderable objects implement the <code>Visual</code> trait:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub trait Visual: Send + Sync {
-    fn prepare(&amp;mut self, device: &amp;Device, queue: &amp;Queue);
-    fn render(&amp;self, render_pass: &amp;mut RenderPass);
-    fn set_transform(&amp;mut self, transform: Transform);
-    // ...
+<p>Because the indirection is resolved in the shader, both <code>Image</code> and the volume visuals issue a <strong>single draw call per frame</strong> regardless of resident tile count — no per-tile state changes.</p>
+<h2 id="per-frame-streaming-loop"><a class="header" href="#per-frame-streaming-loop">Per-Frame Streaming Loop</a></h2>
+<p><code>VirtualTextureData::prepare()</code> runs every frame:</p>
+<ol>
+<li><strong>LOD selection</strong> — screen-space voxel error from the camera selects the ideal LOD (biased by <code>lod_bias</code>).</li>
+<li><strong>Tile visibility</strong> — finds which tile addresses at that LOD intersect the view (slice-plane footprint for <code>Image</code>, frustum for volumes).</li>
+<li><strong>Publish wanted tiles</strong> — adds each non-resident tile’s key <code>(lod, t, z, y, x)</code> to the published “wanted” set with a priority (lower = more urgent).</li>
+<li><strong>Upload arrived tiles</strong> — drains <code>PendingChunks</code> (tiles pushed since the last frame) into atlas slots and updates the page table.</li>
+</ol>
+<p>Loading is <strong>pull-based</strong>: the engine only publishes what it wants; the app polls that set and pushes tiles back, with no engine callback on the hot path and implicit cancellation (a tile that leaves the view simply drops out of the set). The poll-loop API — <code>wanted_keys()</code> / <code>wantedKeys()</code> and <code>set_chunk_data_u16()</code> / <code>setChunkDataU16()</code> — is covered in <a href="./12-python.html">Python Bindings</a> and <a href="./13-wasm.html">JavaScript Bindings</a>.</p>
+<h2 id="lod-selection-and-fallback"><a class="header" href="#lod-selection-and-fallback">LOD Selection and Fallback</a></h2>
+<p>A volume is described as an array of <code>LevelMetadata</code> (one per resolution level, level 0 finest; see the Bindings pages for the constructor). LOD selection is screen-space: Bovista picks the finest level whose voxel-to-pixel ratio at the current zoom is near 1:1.</p>
+<p>The page table records the LOD each tile was loaded at, so when a tile is absent at the ideal LOD the fragment shader climbs to the coarsest available ancestor:</p>
+<pre><code class="language-wgsl">// Simplified virtual texture lookup (virtual_tile.wgsl)
+var lod = ideal_lod;
+var slot = page_table_lookup(lod, tile_addr);
+while slot == ABSENT &amp;&amp; lod &lt; max_lod {
+    lod += 1u;
+    slot = page_table_lookup(lod, tile_addr &gt;&gt; lod_shift);
 }
-<span class="boring">}</span></code></pre>
-<p><strong>Why this works:</strong></p>
-<ul>
-<li><strong>Polymorphism</strong>: Scene renders any <code>Visual</code> without knowing its type</li>
-<li><strong>Encapsulation</strong>: Each visual manages its own GPU resources</li>
-<li><strong>Flexibility</strong>: Easy to add new visual types</li>
-</ul>
-<h3 id="2-callback-based-loading"><a class="header" href="#2-callback-based-loading">2. Callback-Based Loading</a></h3>
-<p>Data loading uses callbacks, not inheritance. The loader is called by the rendering engine each frame for tiles it needs; it returns a <code>ChunkStatus</code> immediately and pushes data back asynchronously via <code>set_chunk_data_u16()</code>:</p>
-<pre><code class="language-python">def request_tile(lod, z, y, x):
-    key = (lod, z, y, x)
-    if key in pending:
-        return bv.ChunkStatus.AlreadyPending
-    pending.add(key)
-    executor.submit(load_tile, key)
-    return bv.ChunkStatus.Accepted
-
-volume = bv.Volume(viewer, levels, max_tiles=2000, loader=request_tile)
+// sample atlas at slot
 </code></pre>
-<p><strong>Why this works:</strong></p>
+<p>Coarse tiles fill in immediately while finer ones stream, giving smooth progressive refinement.</p>
+<h2 id="memory-budget"><a class="header" href="#memory-budget">Memory Budget</a></h2>
+<p><code>max_tiles</code> at construction sets the atlas size, and therefore VRAM use. Each tile is <code>tile_d × tile_h × tile_w × 2</code> bytes (R16Float) — a 64³ tile is 524 KB, so ~2000 tiles ≈ 1 GB:</p>
+<pre><code class="language-python">image = bv.Image(viewer, levels, max_tiles=2000)
+</code></pre>
+<p>The web examples convert a GB budget into a tile count (<code>floor(budgetBytes * 0.8 / tileVram)</code>).</p>
+<h2 id="debug-modes"><a class="header" href="#debug-modes">Debug Modes</a></h2>
+<p>Both <code>Image</code> and the volume visuals support debug visualizations:</p>
 <ul>
-<li><strong>Flexibility</strong>: Any data source (Zarr, HDF5, HTTP, custom)</li>
-<li><strong>No subclassing</strong>: Simple function, not class hierarchy</li>
-<li><strong>Non-blocking</strong>: Rendering never stalls waiting for data</li>
-</ul>
-<h3 id="3-shared-bind-group-pattern"><a class="header" href="#3-shared-bind-group-pattern">3. Shared Bind Group Pattern</a></h3>
-<p>All visuals share the camera bind group:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Renderer sets once per frame
-render_pass.set_bind_group(0, &amp;camera_bind_group, &amp;[]);
-
-// Each visual provides its own resources
-impl Visual for MyVisual {
-    fn render(&amp;self, render_pass: &amp;mut RenderPass) {
-        render_pass.set_bind_group(1, &amp;self.bind_group, &amp;[]);
-        render_pass.draw(...);
-    }
-}
-<span class="boring">}</span></code></pre>
-<p><strong>Benefit</strong>: Camera updated once, all visuals use it automatically.</p>
-<h3 id="4-platform-abstractions"><a class="header" href="#4-platform-abstractions">4. Platform Abstractions</a></h3>
-<p>Rust code uses conditional compilation:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>#[cfg(not(target_arch = "wasm32"))]
-pub type VisualRef = Arc&lt;Mutex&lt;dyn Visual&gt;&gt;;  // Native: thread-safe
-
-#[cfg(target_arch = "wasm32")]
-pub type VisualRef = Rc&lt;RefCell&lt;dyn Visual&gt;&gt;;  // WASM: single-threaded
-<span class="boring">}</span></code></pre>
-<p><strong>Benefit</strong>: One codebase, optimal for each platform.</p>
-<h2 id="trade-offs--limitations"><a class="header" href="#trade-offs--limitations">Trade-offs &amp; Limitations</a></h2>
-<h3 id="what-bovista-is-good-at"><a class="header" href="#what-bovista-is-good-at">What Bovista Is Good At</a></h3>
-<p>✅ <strong>Slice rendering</strong>: Real-time, arbitrary orientations (<code>ImageVisual</code>)
-✅ <strong>Volume ray marching</strong>: Direct volume rendering with transfer functions (<code>VolumeVisual</code>)
-✅ <strong>Remote data</strong>: Efficient streaming from S3/Zarr via virtual textures
-✅ <strong>Large volumes</strong>: Terabyte-scale with atlas LRU eviction
-✅ <strong>Cross-platform</strong>: Native + web from one codebase</p>
-<h3 id="what-bovista-is-not-optimized-for"><a class="header" href="#what-bovista-is-not-optimized-for">What Bovista Is Not Optimized For</a></h3>
-<p>❌ <strong>Real-time editing</strong>: Read-only visualization
-❌ <strong>Small volumes</strong>: Virtual texture overhead unnecessary for &lt;1 GB
-❌ <strong>Non-volumetric data</strong>: Meshes, graphs need custom visuals</p>
-<h3 id="design-choices"><a class="header" href="#design-choices">Design Choices</a></h3>
-<p><strong>Virtual textures (atlas + page table) vs per-tile draw calls:</strong></p>
-<ul>
-<li>Chose virtual textures: Single draw call regardless of tile count; shader resolves indirection</li>
-<li>Per-tile draws: Simpler shader but O(n) state changes per frame</li>
-</ul>
-<p><strong>Slice rendering vs ray marching:</strong></p>
-<ul>
-<li>Bovista supports both; <code>ImageVisual</code> uses slice geometry for speed, <code>VolumeVisual</code> uses ray marching for full semi-transparent DVR</li>
-</ul>
-<p><strong>LRU atlas eviction vs fixed budget:</strong></p>
-<ul>
-<li>Chose LRU: Automatic, adapts to view changes</li>
-<li>Fixed budget: More predictable but less flexible</li>
-</ul>
-<p><strong>Callback-based loading vs async Rust:</strong></p>
-<ul>
-<li>Chose callbacks: Simpler Python/WASM integration; any async runtime can back it</li>
-<li>Async: More Rust-idiomatic but complex cross-language interop</li>
+<li><strong>LOD tint</strong> (<code>set_debug_mode(true)</code>) — colors tiles by loaded LOD (green = finest, red = coarsest).</li>
+<li><strong>Atlas debug</strong> (<code>set_atlas_debug_mode(true)</code>, volume only) — bypasses the page table to sample the raw atlas, showing tile packing.</li>
+<li><strong>Step count heatmap</strong> (<code>set_step_debug_mode(true)</code>, volume only) — colors pixels by ray-march step count.</li>
 </ul>
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
-<p>Bovista’s architecture is driven by its goal: <strong>write the core visualization once in Rust, run it anywhere</strong>.</p>
-<p><strong>Key decisions:</strong></p>
-<ol>
-<li><strong>WGPU</strong>: Cross-platform, type-safe, modern GPU API (Vulkan/Metal/DX12 + WebGPU)</li>
-<li><strong>Virtual textures</strong>: Atlas + page table; single draw call; only visible tiles resident</li>
-<li><strong>Visual trait</strong>: Polymorphic rendering system (slice, ray march, points, custom)</li>
-<li><strong>Callback loaders</strong>: Flexible data sources (thread pool, JS fetch, or anything else)</li>
-<li><strong>LRU atlas eviction</strong>: Automatic memory management regardless of dataset size</li>
-</ol>
-<p><strong>Result</strong>: View terabyte-scale volumes in Python or a web browser from a single Rust codebase.</p>
-<hr>
-<p><strong>Next</strong>: <a href="./04-visuals.html">Visual System →</a></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Component</th><th>Role</th></tr>
+</thead>
+<tbody>
+<tr><td><code>VirtualTextureData</code></td><td>Orchestrates streaming, atlas, page table, LOD selection</td></tr>
+<tr><td><code>AtlasAllocator</code></td><td>Slot assignment and LRU eviction in the 3D atlas texture</td></tr>
+<tr><td><code>PageTable</code></td><td>GPU indirection: maps <code>(lod, t, z, y, x)</code> → atlas slot</td></tr>
+<tr><td><code>PendingChunks</code></td><td>Lock-protected queue for tile data pushed from background threads</td></tr>
+<tr><td>Wanted set</td><td>Engine-published set of desired tiles; the loader polls it via <code>wanted_keys()</code></td></tr>
+<tr><td><code>set_chunk_data_u16()</code></td><td>Pushes arrived tile data into <code>PendingChunks</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="limits"><a class="header" href="#limits">Limits</a></h2>
+<p>Because tiles stream on demand, dataset size is bounded by addressing, not VRAM. The ceilings and where they come from:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Limit</th><th>Value</th><th>Source</th></tr>
+</thead>
+<tbody>
+<tr><td>Voxels per axis</td><td>2³² ≈ 4.3 billion</td><td><code>volume_size</code> is <code>u32</code> per axis</td></tr>
+<tr><td>Tiles in the finest LOD</td><td>≤ <code>max_texture_dimension_2d²</code> (~67M in-browser, ~268M desktop)</td><td>the page table is a single 2D texture; exceeding it fails at texture creation</td></tr>
+<tr><td>Resident tiles (working set)</td><td>4 atlases × 65,536 = 262,144</td><td>page-table texel packs a 16-bit slot index + 2-bit atlas id</td></tr>
+<tr><td>Timepoints (4D)</td><td>8,192</td><td>13-bit <code>t</code> field in the page-table texel</td></tr>
+<tr><td>LOD levels</td><td>16</td><td><code>VT_MAX_LODS</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>With the example loaders’ 64³ tiles, the finest-LOD cap works out to roughly a 26,000³ volume in the browser and ~41,000³ on desktop GPUs (~18–70 teravoxels).</p>
+<p>Two practical conditions matter more than the raw ceilings:</p>
+<ul>
+<li><strong>Multiscale pyramid.</strong> bovista renders large volumes by streaming coarse LODs and refining toward the view. Without coarse levels it’s forced onto the full-resolution grid, where the resident-tile budget runs out almost immediately. The “handles a ton of data” story is really “handles a ton of <em>well-pyramided</em> data.”</li>
+<li><strong>Tile/chunk size.</strong> Bigger tiles raise the per-image ceiling (fewer tiles for the same voxels) but shrink the resident slot count (bigger atlas slots) — and the atlas is itself a 3D texture bounded by <code>max_texture_dimension_3d</code>, which is why up to four atlases exist.</li>
+</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="examples-volume-renderer.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="05-rendering-pipeline.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="04-visuals.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="12-python.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -415,11 +285,11 @@ pub type VisualRef = Rc&lt;RefCell&lt;dyn Visual&gt;&gt;;  // WASM: single-threa
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="examples-volume-renderer.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="05-rendering-pipeline.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="04-visuals.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="12-python.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -448,7 +318,7 @@ pub type VisualRef = Rc&lt;RefCell&lt;dyn Visual&gt;&gt;;  // WASM: single-threa
         <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="custom-53791975.js"></script>
+        <script src="custom-10a296ff.js"></script>
 
 
 

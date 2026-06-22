@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["AverageVolume","DirectVolume","IsosurfaceVolume","MinipVolume","MipVolume","VolumeCore"]};

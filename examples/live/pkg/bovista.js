@@ -1,13 +1,13 @@
-export class JsAverageVolume {
+export class AverageVolume {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsAverageVolumeFinalization.unregister(this);
+        AverageVolumeFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsaveragevolume_free(ptr, 0);
+        wasm.__wbg_averagevolume_free(ptr, 0);
     }
     /**
      * Returns [loaded, visible] tile counts.
@@ -20,34 +20,37 @@ export class JsAverageVolume {
         return v1;
     }
     /**
-     * @param {JsViewer} viewer
-     * @param {JsLevelMetadata[]} levels
+     * @param {Viewer} viewer
+     * @param {LevelMetadata[]} levels
      * @param {number} max_chunks
      * @param {number | null} [atlas_count]
      */
     constructor(viewer, levels, max_chunks, atlas_count) {
-        _assertClass(viewer, JsViewer);
+        _assertClass(viewer, Viewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.jsaveragevolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
-        JsAverageVolumeFinalization.register(this, this.__wbg_ptr, this);
+        AverageVolumeFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
      * Provide uint16 tile data (stored as R16Float).
+     *
+     * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+     * when multi-channel support lands (same signature reshape as Image's variant).
      * @param {number} lod
      * @param {number} t
      * @param {number} z
      * @param {number} y
      * @param {number} x
      * @param {Uint16Array} data
-     * @param {number} width
-     * @param {number} height
-     * @param {number} depth
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
      */
-    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
-        wasm.jsaveragevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsaveragevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -99,18 +102,18 @@ export class JsAverageVolume {
         return ret;
     }
 }
-if (Symbol.dispose) JsAverageVolume.prototype[Symbol.dispose] = JsAverageVolume.prototype.free;
+if (Symbol.dispose) AverageVolume.prototype[Symbol.dispose] = AverageVolume.prototype.free;
 
-export class JsDirectVolume {
+export class DirectVolume {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsDirectVolumeFinalization.unregister(this);
+        DirectVolumeFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsdirectvolume_free(ptr, 0);
+        wasm.__wbg_directvolume_free(ptr, 0);
     }
     /**
      * Returns [loaded, visible] tile counts.
@@ -123,18 +126,18 @@ export class JsDirectVolume {
         return v1;
     }
     /**
-     * @param {JsViewer} viewer
-     * @param {JsLevelMetadata[]} levels
+     * @param {Viewer} viewer
+     * @param {LevelMetadata[]} levels
      * @param {number} max_chunks
      * @param {number | null} [atlas_count]
      */
     constructor(viewer, levels, max_chunks, atlas_count) {
-        _assertClass(viewer, JsViewer);
+        _assertClass(viewer, Viewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.jsdirectvolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
-        JsDirectVolumeFinalization.register(this, this.__wbg_ptr, this);
+        DirectVolumeFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
@@ -148,18 +151,21 @@ export class JsDirectVolume {
     }
     /**
      * Provide uint16 tile data (stored as R16Float).
+     *
+     * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+     * when multi-channel support lands (same signature reshape as Image's variant).
      * @param {number} lod
      * @param {number} t
      * @param {number} z
      * @param {number} y
      * @param {number} x
      * @param {Uint16Array} data
-     * @param {number} width
-     * @param {number} height
-     * @param {number} depth
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
      */
-    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
-        wasm.jsdirectvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsdirectvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -247,69 +253,73 @@ export class JsDirectVolume {
         return ret;
     }
 }
-if (Symbol.dispose) JsDirectVolume.prototype[Symbol.dispose] = JsDirectVolume.prototype.free;
+if (Symbol.dispose) DirectVolume.prototype[Symbol.dispose] = DirectVolume.prototype.free;
 
 /**
- * JavaScript wrapper for ImageVisual — single-draw-call multiscale rendering.
+ * JavaScript wrapper for Image — single-draw-call multiscale rendering.
  *
  * Tile data must be provided as uint16 via `setChunkDataU16`.
  */
-export class JsImageVisual {
+export class Image {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsImageVisualFinalization.unregister(this);
+        ImageFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsimagevisual_free(ptr, 0);
+        wasm.__wbg_image_free(ptr, 0);
     }
     /**
      * Returns [loaded, visible] tile counts.
      * @returns {Uint32Array}
      */
     getStats() {
-        const ret = wasm.jsimagevisual_getStats(this.__wbg_ptr);
+        const ret = wasm.jsimage_getStats(this.__wbg_ptr);
         var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
     }
     /**
-     * Create an ImageVisual.
+     * Create an Image.
      *
      * Pull-based: bovista publishes the set of tiles it wants each
      * frame via `wantedKeys()`. The caller (JS) polls this and pushes
      * data via `setChunkDataU16`. No callback flowing across the FFI
      * boundary on the hot path.
-     * @param {JsViewer} viewer
-     * @param {JsLevelMetadata[]} levels
+     * @param {Viewer} viewer
+     * @param {LevelMetadata[]} levels
      * @param {number} max_chunks
      * @param {number | null} [atlas_count]
      */
     constructor(viewer, levels, max_chunks, atlas_count) {
-        _assertClass(viewer, JsViewer);
+        _assertClass(viewer, Viewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.jsimagevisual_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
+        const ret = wasm.jsimage_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
-        JsImageVisualFinalization.register(this, this.__wbg_ptr, this);
+        ImageFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
      * Provide uint16 tile data (stored as R16Float).
+     *
+     * TODO: collapse the 9 positional args into `({ lod, t, z, y, x, shape, channel }, data)`
+     * when multi-channel support lands — the signature will need a channel index then,
+     * and that's a natural point to also switch to object-style "named args" in JS.
      * @param {number} lod
      * @param {number} t
      * @param {number} z
      * @param {number} y
      * @param {number} x
      * @param {Uint16Array} data
-     * @param {number} width
-     * @param {number} height
-     * @param {number} depth
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
      */
-    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
-        wasm.jsimagevisual_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsimage_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -317,7 +327,7 @@ export class JsImageVisual {
      * @param {Uint8Array} rgba
      */
     setColormap(rgba) {
-        const ret = wasm.jsimagevisual_setColormap(this.__wbg_ptr, rgba);
+        const ret = wasm.jsimage_setColormap(this.__wbg_ptr, rgba);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -328,7 +338,7 @@ export class JsImageVisual {
      * @param {number} max
      */
     setContrast(min, max) {
-        const ret = wasm.jsimagevisual_setContrast(this.__wbg_ptr, min, max);
+        const ret = wasm.jsimage_setContrast(this.__wbg_ptr, min, max);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -338,7 +348,7 @@ export class JsImageVisual {
      * @param {boolean} enabled
      */
     setDebugMode(enabled) {
-        const ret = wasm.jsimagevisual_setDebugMode(this.__wbg_ptr, enabled);
+        const ret = wasm.jsimage_setDebugMode(this.__wbg_ptr, enabled);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -348,7 +358,7 @@ export class JsImageVisual {
      * @param {number} bias
      */
     setLodBias(bias) {
-        const ret = wasm.jsimagevisual_setLodBias(this.__wbg_ptr, bias);
+        const ret = wasm.jsimage_setLodBias(this.__wbg_ptr, bias);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -363,7 +373,7 @@ export class JsImageVisual {
      * @param {number} nz
      */
     setSlicePlane(px, py, pz, nx, ny, nz) {
-        const ret = wasm.jsimagevisual_setSlicePlane(this.__wbg_ptr, px, py, pz, nx, ny, nz);
+        const ret = wasm.jsimage_setSlicePlane(this.__wbg_ptr, px, py, pz, nx, ny, nz);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -373,7 +383,7 @@ export class JsImageVisual {
      * @param {number} x
      */
     setSliceX(x) {
-        const ret = wasm.jsimagevisual_setSliceX(this.__wbg_ptr, x);
+        const ret = wasm.jsimage_setSliceX(this.__wbg_ptr, x);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -383,7 +393,7 @@ export class JsImageVisual {
      * @param {number} y
      */
     setSliceY(y) {
-        const ret = wasm.jsimagevisual_setSliceY(this.__wbg_ptr, y);
+        const ret = wasm.jsimage_setSliceY(this.__wbg_ptr, y);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -393,7 +403,7 @@ export class JsImageVisual {
      * @param {number} z
      */
     setSliceZ(z) {
-        const ret = wasm.jsimagevisual_setSliceZ(this.__wbg_ptr, z);
+        const ret = wasm.jsimage_setSliceZ(this.__wbg_ptr, z);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -405,22 +415,22 @@ export class JsImageVisual {
      * @returns {Uint32Array}
      */
     wantedKeys() {
-        const ret = wasm.jsimagevisual_wantedKeys(this.__wbg_ptr);
+        const ret = wasm.jsimage_wantedKeys(this.__wbg_ptr);
         return ret;
     }
 }
-if (Symbol.dispose) JsImageVisual.prototype[Symbol.dispose] = JsImageVisual.prototype.free;
+if (Symbol.dispose) Image.prototype[Symbol.dispose] = Image.prototype.free;
 
-export class JsIsosurfaceVolume {
+export class IsosurfaceVolume {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsIsosurfaceVolumeFinalization.unregister(this);
+        IsosurfaceVolumeFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsisosurfacevolume_free(ptr, 0);
+        wasm.__wbg_isosurfacevolume_free(ptr, 0);
     }
     /**
      * Returns [loaded, visible] tile counts.
@@ -433,34 +443,37 @@ export class JsIsosurfaceVolume {
         return v1;
     }
     /**
-     * @param {JsViewer} viewer
-     * @param {JsLevelMetadata[]} levels
+     * @param {Viewer} viewer
+     * @param {LevelMetadata[]} levels
      * @param {number} max_chunks
      * @param {number | null} [atlas_count]
      */
     constructor(viewer, levels, max_chunks, atlas_count) {
-        _assertClass(viewer, JsViewer);
+        _assertClass(viewer, Viewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.jsisosurfacevolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
-        JsIsosurfaceVolumeFinalization.register(this, this.__wbg_ptr, this);
+        IsosurfaceVolumeFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
      * Provide uint16 tile data (stored as R16Float).
+     *
+     * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+     * when multi-channel support lands (same signature reshape as Image's variant).
      * @param {number} lod
      * @param {number} t
      * @param {number} z
      * @param {number} y
      * @param {number} x
      * @param {Uint16Array} data
-     * @param {number} width
-     * @param {number} height
-     * @param {number} depth
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
      */
-    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
-        wasm.jsisosurfacevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsisosurfacevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -521,16 +534,16 @@ export class JsIsosurfaceVolume {
         return ret;
     }
 }
-if (Symbol.dispose) JsIsosurfaceVolume.prototype[Symbol.dispose] = JsIsosurfaceVolume.prototype.free;
+if (Symbol.dispose) IsosurfaceVolume.prototype[Symbol.dispose] = IsosurfaceVolume.prototype.free;
 
 /**
  * Level metadata for multi-resolution LOD images
  *
  * Describes a single LOD level in a chunked image.
  */
-export class JsLevelMetadata {
+export class LevelMetadata {
     static __unwrap(jsValue) {
-        if (!(jsValue instanceof JsLevelMetadata)) {
+        if (!(jsValue instanceof LevelMetadata)) {
             return 0;
         }
         return jsValue.__destroy_into_raw();
@@ -538,15 +551,15 @@ export class JsLevelMetadata {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsLevelMetadataFinalization.unregister(this);
+        LevelMetadataFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jslevelmetadata_free(ptr, 0);
+        wasm.__wbg_levelmetadata_free(ptr, 0);
     }
     /**
-     * Get chunk size as [depth, height, width]
+     * Chunk shape as `[z, y, x]` voxel counts.
      * @returns {Uint32Array}
      */
     get chunk_size() {
@@ -556,24 +569,38 @@ export class JsLevelMetadata {
         return v1;
     }
     /**
-     * @param {number} volume_width
-     * @param {number} volume_height
-     * @param {number} volume_depth
-     * @param {number} chunk_width
-     * @param {number} chunk_height
-     * @param {number} chunk_depth
-     * @param {number} voxel_width
-     * @param {number} voxel_height
-     * @param {number} voxel_depth
+     * Construct a level descriptor. Each array is `[z, y, x]` numpy order.
+     *
+     * ```js
+     * new LevelMetadata(
+     *   [1024, 1024, 1024],   // volume_shape: voxel counts along z, y, x
+     *   [64, 64, 64],         // chunk_shape:  tile voxel counts
+     *   [1.0, 1.0, 1.0],      // voxel_size:   world-space units per voxel
+     *   1.0,                  // scale_factor: relative to LOD 0
+     *   [0.0, 0.0, 0.0],      // translation:  world-space origin offset
+     * );
+     * ```
+     * @param {Uint32Array} volume_shape
+     * @param {Uint32Array} chunk_shape
+     * @param {Float32Array} voxel_size
      * @param {number} scale_factor
-     * @param {number} translation_x
-     * @param {number} translation_y
-     * @param {number} translation_z
+     * @param {Float32Array} translation
      */
-    constructor(volume_width, volume_height, volume_depth, chunk_width, chunk_height, chunk_depth, voxel_width, voxel_height, voxel_depth, scale_factor, translation_x, translation_y, translation_z) {
-        const ret = wasm.jslevelmetadata_new(volume_width, volume_height, volume_depth, chunk_width, chunk_height, chunk_depth, voxel_width, voxel_height, voxel_depth, scale_factor, translation_x, translation_y, translation_z);
-        this.__wbg_ptr = ret;
-        JsLevelMetadataFinalization.register(this, this.__wbg_ptr, this);
+    constructor(volume_shape, chunk_shape, voxel_size, scale_factor, translation) {
+        const ptr0 = passArray32ToWasm0(volume_shape, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(chunk_shape, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF32ToWasm0(voxel_size, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF32ToWasm0(translation, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.jslevelmetadata_new(ptr0, len0, ptr1, len1, ptr2, len2, scale_factor, ptr3, len3);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        LevelMetadataFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
@@ -585,7 +612,7 @@ export class JsLevelMetadata {
         return ret;
     }
     /**
-     * Get volume size as [depth, height, width]
+     * Volume shape as `[z, y, x]` voxel counts.
      * @returns {Uint32Array}
      */
     get volume_size() {
@@ -595,7 +622,7 @@ export class JsLevelMetadata {
         return v1;
     }
     /**
-     * Get voxel size as [depth, height, width]
+     * Voxel size as `[z, y, x]` world-space units per voxel.
      * @returns {Float32Array}
      */
     get voxel_size() {
@@ -605,81 +632,81 @@ export class JsLevelMetadata {
         return v1;
     }
 }
-if (Symbol.dispose) JsLevelMetadata.prototype[Symbol.dispose] = JsLevelMetadata.prototype.free;
+if (Symbol.dispose) LevelMetadata.prototype[Symbol.dispose] = LevelMetadata.prototype.free;
 
 /**
- * JavaScript wrapper for LinesVisual — line segments and wireframes.
+ * JavaScript wrapper for Lines — line segments and wireframes.
  */
-export class JsLinesVisual {
+export class Lines {
     static __wrap(ptr) {
-        const obj = Object.create(JsLinesVisual.prototype);
+        const obj = Object.create(Lines.prototype);
         obj.__wbg_ptr = ptr;
-        JsLinesVisualFinalization.register(obj, obj.__wbg_ptr, obj);
+        LinesFinalization.register(obj, obj.__wbg_ptr, obj);
         return obj;
     }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsLinesVisualFinalization.unregister(this);
+        LinesFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jslinesvisual_free(ptr, 0);
+        wasm.__wbg_lines_free(ptr, 0);
     }
     /**
      * Create a 3-axis helper (X=red, Y=green, Z=blue).
-     * @param {JsViewer} viewer
+     * @param {Viewer} viewer
      * @param {number} length
-     * @returns {JsLinesVisual}
+     * @returns {Lines}
      */
     static axisHelper(viewer, length) {
-        _assertClass(viewer, JsViewer);
-        const ret = wasm.jslinesvisual_axisHelper(viewer.__wbg_ptr, length);
-        return JsLinesVisual.__wrap(ret);
+        _assertClass(viewer, Viewer);
+        const ret = wasm.jslines_axisHelper(viewer.__wbg_ptr, length);
+        return Lines.__wrap(ret);
     }
     /**
      * Create a lines visual from flat Float32Arrays.
      *
      * Each consecutive pair of vertices defines one line segment.
      * `positions` and `colors` are flat arrays of length 3 × n_vertices.
-     * @param {JsViewer} viewer
+     * @param {Viewer} viewer
      * @param {Float32Array} positions
      * @param {Float32Array} colors
      */
     constructor(viewer, positions, colors) {
-        _assertClass(viewer, JsViewer);
-        const ret = wasm.jslinesvisual_new(viewer.__wbg_ptr, positions, colors);
+        _assertClass(viewer, Viewer);
+        const ret = wasm.jslines_new(viewer.__wbg_ptr, positions, colors);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
         this.__wbg_ptr = ret[0];
-        JsLinesVisualFinalization.register(this, this.__wbg_ptr, this);
+        LinesFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
      * Create a wireframe unit cube.
-     * @param {JsViewer} viewer
-     * @returns {JsLinesVisual}
+     * @param {Viewer} viewer
+     * @returns {Lines}
      */
     static testCube(viewer) {
-        _assertClass(viewer, JsViewer);
-        const ret = wasm.jslinesvisual_testCube(viewer.__wbg_ptr);
-        return JsLinesVisual.__wrap(ret);
+        _assertClass(viewer, Viewer);
+        const ret = wasm.jslines_testCube(viewer.__wbg_ptr);
+        return Lines.__wrap(ret);
     }
 }
-if (Symbol.dispose) JsLinesVisual.prototype[Symbol.dispose] = JsLinesVisual.prototype.free;
+if (Symbol.dispose) Lines.prototype[Symbol.dispose] = Lines.prototype.free;
 
-export class JsMinipVolume {
+export class MinipVolume {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsMinipVolumeFinalization.unregister(this);
+        MinipVolumeFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsminipvolume_free(ptr, 0);
+        wasm.__wbg_minipvolume_free(ptr, 0);
     }
     /**
      * Returns [loaded, visible] tile counts.
@@ -692,34 +719,37 @@ export class JsMinipVolume {
         return v1;
     }
     /**
-     * @param {JsViewer} viewer
-     * @param {JsLevelMetadata[]} levels
+     * @param {Viewer} viewer
+     * @param {LevelMetadata[]} levels
      * @param {number} max_chunks
      * @param {number | null} [atlas_count]
      */
     constructor(viewer, levels, max_chunks, atlas_count) {
-        _assertClass(viewer, JsViewer);
+        _assertClass(viewer, Viewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.jsminipvolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
-        JsMinipVolumeFinalization.register(this, this.__wbg_ptr, this);
+        MinipVolumeFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
      * Provide uint16 tile data (stored as R16Float).
+     *
+     * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+     * when multi-channel support lands (same signature reshape as Image's variant).
      * @param {number} lod
      * @param {number} t
      * @param {number} z
      * @param {number} y
      * @param {number} x
      * @param {Uint16Array} data
-     * @param {number} width
-     * @param {number} height
-     * @param {number} depth
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
      */
-    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
-        wasm.jsminipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsminipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -771,18 +801,18 @@ export class JsMinipVolume {
         return ret;
     }
 }
-if (Symbol.dispose) JsMinipVolume.prototype[Symbol.dispose] = JsMinipVolume.prototype.free;
+if (Symbol.dispose) MinipVolume.prototype[Symbol.dispose] = MinipVolume.prototype.free;
 
-export class JsMipVolume {
+export class MipVolume {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsMipVolumeFinalization.unregister(this);
+        MipVolumeFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsmipvolume_free(ptr, 0);
+        wasm.__wbg_mipvolume_free(ptr, 0);
     }
     /**
      * Returns [loaded, visible] tile counts.
@@ -795,18 +825,18 @@ export class JsMipVolume {
         return v1;
     }
     /**
-     * @param {JsViewer} viewer
-     * @param {JsLevelMetadata[]} levels
+     * @param {Viewer} viewer
+     * @param {LevelMetadata[]} levels
      * @param {number} max_chunks
      * @param {number | null} [atlas_count]
      */
     constructor(viewer, levels, max_chunks, atlas_count) {
-        _assertClass(viewer, JsViewer);
+        _assertClass(viewer, Viewer);
         const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.jsmipvolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
         this.__wbg_ptr = ret;
-        JsMipVolumeFinalization.register(this, this.__wbg_ptr, this);
+        MipVolumeFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
@@ -820,18 +850,21 @@ export class JsMipVolume {
     }
     /**
      * Provide uint16 tile data (stored as R16Float).
+     *
+     * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+     * when multi-channel support lands (same signature reshape as Image's variant).
      * @param {number} lod
      * @param {number} t
      * @param {number} z
      * @param {number} y
      * @param {number} x
      * @param {Uint16Array} data
-     * @param {number} width
-     * @param {number} height
-     * @param {number} depth
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
      */
-    setChunkDataU16(lod, t, z, y, x, data, width, height, depth) {
-        wasm.jsmipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, width, height, depth);
+    setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsmipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -883,66 +916,66 @@ export class JsMipVolume {
         return ret;
     }
 }
-if (Symbol.dispose) JsMipVolume.prototype[Symbol.dispose] = JsMipVolume.prototype.free;
+if (Symbol.dispose) MipVolume.prototype[Symbol.dispose] = MipVolume.prototype.free;
 
 /**
- * JavaScript wrapper for PointsVisual — colored point cloud.
+ * JavaScript wrapper for Points — colored point cloud.
  */
-export class JsPointsVisual {
+export class Points {
     static __wrap(ptr) {
-        const obj = Object.create(JsPointsVisual.prototype);
+        const obj = Object.create(Points.prototype);
         obj.__wbg_ptr = ptr;
-        JsPointsVisualFinalization.register(obj, obj.__wbg_ptr, obj);
+        PointsFinalization.register(obj, obj.__wbg_ptr, obj);
         return obj;
     }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsPointsVisualFinalization.unregister(this);
+        PointsFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jspointsvisual_free(ptr, 0);
+        wasm.__wbg_points_free(ptr, 0);
     }
     /**
      * Create a point cloud from flat Float32Arrays.
      *
      * `positions` is a flat array of XYZ triples; `colors` is a flat array of RGB triples
      * (values 0–1). Both must have length 3 × n_points.
-     * @param {JsViewer} viewer
+     * @param {Viewer} viewer
      * @param {Float32Array} positions
      * @param {Float32Array} colors
      */
     constructor(viewer, positions, colors) {
-        _assertClass(viewer, JsViewer);
-        const ret = wasm.jspointsvisual_new(viewer.__wbg_ptr, positions, colors);
+        _assertClass(viewer, Viewer);
+        const ret = wasm.jspoints_new(viewer.__wbg_ptr, positions, colors);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
         this.__wbg_ptr = ret[0];
-        JsPointsVisualFinalization.register(this, this.__wbg_ptr, this);
+        PointsFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
     /**
      * Create a test cube of points.
-     * @param {JsViewer} viewer
+     * @param {Viewer} viewer
      * @param {number} size
-     * @returns {JsPointsVisual}
+     * @returns {Points}
      */
     static testCube(viewer, size) {
-        _assertClass(viewer, JsViewer);
-        const ret = wasm.jspointsvisual_testCube(viewer.__wbg_ptr, size);
-        return JsPointsVisual.__wrap(ret);
+        _assertClass(viewer, Viewer);
+        const ret = wasm.jspoints_testCube(viewer.__wbg_ptr, size);
+        return Points.__wrap(ret);
     }
 }
-if (Symbol.dispose) JsPointsVisual.prototype[Symbol.dispose] = JsPointsVisual.prototype.free;
+if (Symbol.dispose) Points.prototype[Symbol.dispose] = Points.prototype.free;
 
 /**
  * Camera projection mode
  * @enum {0 | 1}
  */
-export const JsProjectionMode = Object.freeze({
+export const ProjectionMode = Object.freeze({
     /**
      * Perspective projection with field of view
      */
@@ -956,95 +989,95 @@ export const JsProjectionMode = Object.freeze({
 /**
  * JavaScript viewer for Bovista
  */
-export class JsViewer {
+export class Viewer {
     static __wrap(ptr) {
-        const obj = Object.create(JsViewer.prototype);
+        const obj = Object.create(Viewer.prototype);
         obj.__wbg_ptr = ptr;
-        JsViewerFinalization.register(obj, obj.__wbg_ptr, obj);
+        ViewerFinalization.register(obj, obj.__wbg_ptr, obj);
         return obj;
     }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
-        JsViewerFinalization.unregister(this);
+        ViewerFinalization.unregister(this);
         return ptr;
     }
     free() {
         const ptr = this.__destroy_into_raw();
-        wasm.__wbg_jsviewer_free(ptr, 0);
+        wasm.__wbg_viewer_free(ptr, 0);
     }
     /**
-     * @param {JsAverageVolume} visual
+     * @param {AverageVolume} visual
      * @returns {number}
      */
     addAverageVolume(visual) {
-        _assertClass(visual, JsAverageVolume);
+        _assertClass(visual, AverageVolume);
         const ret = wasm.jsviewer_addAverageVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
-     * @param {JsDirectVolume} visual
+     * @param {DirectVolume} visual
      * @returns {number}
      */
     addDirectVolume(visual) {
-        _assertClass(visual, JsDirectVolume);
+        _assertClass(visual, DirectVolume);
         const ret = wasm.jsviewer_addDirectVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
      * Add an image visual to the scene
-     * @param {JsImageVisual} visual
+     * @param {Image} visual
      * @returns {number}
      */
     addImage(visual) {
-        _assertClass(visual, JsImageVisual);
+        _assertClass(visual, Image);
         const ret = wasm.jsviewer_addImage(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
-     * @param {JsIsosurfaceVolume} visual
+     * @param {IsosurfaceVolume} visual
      * @returns {number}
      */
     addIsosurfaceVolume(visual) {
-        _assertClass(visual, JsIsosurfaceVolume);
+        _assertClass(visual, IsosurfaceVolume);
         const ret = wasm.jsviewer_addIsosurfaceVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
      * Add a lines visual to the scene
-     * @param {JsLinesVisual} visual
+     * @param {Lines} visual
      * @returns {number}
      */
     addLines(visual) {
-        _assertClass(visual, JsLinesVisual);
+        _assertClass(visual, Lines);
         const ret = wasm.jsviewer_addLines(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
-     * @param {JsMinipVolume} visual
+     * @param {MinipVolume} visual
      * @returns {number}
      */
     addMinipVolume(visual) {
-        _assertClass(visual, JsMinipVolume);
+        _assertClass(visual, MinipVolume);
         const ret = wasm.jsviewer_addMinipVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
-     * @param {JsMipVolume} visual
+     * @param {MipVolume} visual
      * @returns {number}
      */
     addMipVolume(visual) {
-        _assertClass(visual, JsMipVolume);
+        _assertClass(visual, MipVolume);
         const ret = wasm.jsviewer_addMipVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
      * Add a points visual to the scene
-     * @param {JsPointsVisual} visual
+     * @param {Points} visual
      * @returns {number}
      */
     addPoints(visual) {
-        _assertClass(visual, JsPointsVisual);
+        _assertClass(visual, Points);
         const ret = wasm.jsviewer_addPoints(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
@@ -1066,7 +1099,7 @@ export class JsViewer {
         return ret;
     }
     /**
-     * @returns {JsProjectionMode}
+     * @returns {ProjectionMode}
      */
     getCameraProjectionMode() {
         const ret = wasm.jsviewer_getCameraProjectionMode(this.__wbg_ptr);
@@ -1077,7 +1110,7 @@ export class JsViewer {
      *
      * This will initialize WebGPU and set up the render context
      * @param {string} canvas_id
-     * @returns {Promise<JsViewer>}
+     * @returns {Promise<Viewer>}
      */
     static new(canvas_id) {
         const ptr0 = passStringToWasm0(canvas_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1138,7 +1171,7 @@ export class JsViewer {
         wasm.jsviewer_setCameraPosition(this.__wbg_ptr, x, y, z);
     }
     /**
-     * @param {JsProjectionMode} mode
+     * @param {ProjectionMode} mode
      */
     setCameraProjectionMode(mode) {
         wasm.jsviewer_setCameraProjectionMode(this.__wbg_ptr, mode);
@@ -1173,7 +1206,7 @@ export class JsViewer {
         wasm.jsviewer_zoomCamera(this.__wbg_ptr, delta);
     }
 }
-if (Symbol.dispose) JsViewer.prototype[Symbol.dispose] = JsViewer.prototype.free;
+if (Symbol.dispose) Viewer.prototype[Symbol.dispose] = Viewer.prototype.free;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -1373,14 +1406,6 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
-        __wbg_jslevelmetadata_unwrap: function(arg0) {
-            const ret = JsLevelMetadata.__unwrap(arg0);
-            return ret;
-        },
-        __wbg_jsviewer_new: function(arg0) {
-            const ret = JsViewer.__wrap(arg0);
-            return ret;
-        },
         __wbg_label_84abde6506fa15b7: function(arg0, arg1) {
             const ret = arg1.label;
             const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1398,6 +1423,10 @@ function __wbg_get_imports() {
         },
         __wbg_length_56fcd3e2b7e0299d: function(arg0) {
             const ret = arg0.length;
+            return ret;
+        },
+        __wbg_levelmetadata_unwrap: function(arg0) {
+            const ret = LevelMetadata.__unwrap(arg0);
             return ret;
         },
         __wbg_limits_a80585efb442d985: function(arg0) {
@@ -2173,6 +2202,13 @@ function __wbg_get_imports() {
         __wbg_unmap_50b3be4aaf23fa39: function(arg0) {
             arg0.unmap();
         },
+        __wbg_viewer_new: function(arg0) {
+            const ret = Viewer.__wrap(arg0);
+            return ret;
+        },
+        __wbg_warn_c4e0780980765a86: function(arg0) {
+            console.warn(arg0);
+        },
         __wbg_width_e987166926c3367c: function(arg0) {
             const ret = arg0.width;
             return ret;
@@ -2304,36 +2340,36 @@ const __wbindgen_enum_GpuVertexFormat = ["uint8", "uint8x2", "uint8x4", "sint8",
 
 
 const __wbindgen_enum_GpuVertexStepMode = ["vertex", "instance"];
-const JsAverageVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+const AverageVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsaveragevolume_free(ptr, 1));
-const JsDirectVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_averagevolume_free(ptr, 1));
+const DirectVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsdirectvolume_free(ptr, 1));
-const JsImageVisualFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_directvolume_free(ptr, 1));
+const ImageFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsimagevisual_free(ptr, 1));
-const JsIsosurfaceVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_image_free(ptr, 1));
+const IsosurfaceVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsisosurfacevolume_free(ptr, 1));
-const JsLevelMetadataFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_isosurfacevolume_free(ptr, 1));
+const LevelMetadataFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jslevelmetadata_free(ptr, 1));
-const JsLinesVisualFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_levelmetadata_free(ptr, 1));
+const LinesFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jslinesvisual_free(ptr, 1));
-const JsMinipVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_lines_free(ptr, 1));
+const MinipVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsminipvolume_free(ptr, 1));
-const JsMipVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_minipvolume_free(ptr, 1));
+const MipVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsmipvolume_free(ptr, 1));
-const JsPointsVisualFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_mipvolume_free(ptr, 1));
+const PointsFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jspointsvisual_free(ptr, 1));
-const JsViewerFinalization = (typeof FinalizationRegistry === 'undefined')
+    : new FinalizationRegistry(ptr => wasm.__wbg_points_free(ptr, 1));
+const ViewerFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_jsviewer_free(ptr, 1));
+    : new FinalizationRegistry(ptr => wasm.__wbg_viewer_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
@@ -2519,6 +2555,20 @@ function makeMutClosure(arg0, arg1, f) {
     };
     CLOSURE_DTORS.register(real, state, state);
     return real;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArrayJsValueToWasm0(array, malloc) {

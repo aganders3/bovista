@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["bovista",[["impl Zeroable for <a class=\"struct\" href=\"bovista/renderer/struct.CameraUniforms.html\" title=\"struct bovista::renderer::CameraUniforms\">CameraUniforms</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/gpu_structs/struct.TileUniforms.html\" title=\"struct bovista::visuals::gpu_structs::TileUniforms\">TileUniforms</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/gpu_structs/struct.TileVertex.html\" title=\"struct bovista::visuals::gpu_structs::TileVertex\">TileVertex</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/gpu_structs/struct.VTLodInfo.html\" title=\"struct bovista::visuals::gpu_structs::VTLodInfo\">VTLodInfo</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/gpu_structs/struct.VTUniforms.html\" title=\"struct bovista::visuals::gpu_structs::VTUniforms\">VTUniforms</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/gpu_structs/struct.VolumeUniforms.html\" title=\"struct bovista::visuals::gpu_structs::VolumeUniforms\">VolumeUniforms</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/gpu_structs/struct.VolumeVertex.html\" title=\"struct bovista::visuals::gpu_structs::VolumeVertex\">VolumeVertex</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/lines/struct.LineVertex.html\" title=\"struct bovista::visuals::lines::LineVertex\">LineVertex</a>",0],["impl Zeroable for <a class=\"struct\" href=\"bovista/visuals/points/struct.PointVertex.html\" title=\"struct bovista::visuals::points::PointVertex\">PointVertex</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1606]}

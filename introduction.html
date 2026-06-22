@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="rust sidebar-visible" dir="ltr">
+<html lang="en" class="light sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -28,18 +28,18 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
-        <link rel="stylesheet" href="custom-681f4f87.css">
+        <link rel="stylesheet" href="custom-e21a0c71.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "rust";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6a6c8c20.js";
+            const default_light_theme = "light";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-ec0ef7b7.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5873499f.js"></script>
+        <script src="toc-17ace711.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -77,7 +77,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('rust')
+            html.classList.remove('light')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -178,167 +178,51 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>Welcome to the <strong>Bovista Architecture Guide</strong>. This guide explains how Bovista works under the hood: how it renders massive volumetric datasets interactively, how the virtual texture system streams tiles on demand, and how the same Rust core runs in Python and in a browser.</p>
-<h2 id="what-is-bovista"><a class="header" href="#what-is-bovista">What is Bovista?</a></h2>
-<p>Bovista is a visualization library for large 3D imaging datasets. Its thesis is that the core rendering engine should be written once in Rust and run anywhere — as a Python extension, as a WebAssembly module in the browser, or as a native binary.</p>
-<p>Concretely, it provides:</p>
+                        <figure>
+  <img src="./images/golden_puffball_banner.jpg" alt="Golden puffballs (Bovista colorata) on a pine-needle forest floor" style="width:100%;border-radius:6px">
+  <figcaption style="font-size:0.85em;color:#888;margin-top:0.4em">
+    <em>Golden Puffball</em> (<em>Bovista colorata</em>) by
+    <a href="https://www.flickr.com/photos/7147684@N03/1034884099">Jason Hollinger</a> —
+    cropped from the <a href="https://commons.wikimedia.org/wiki/File:Golden_Puffball.jpg">original</a>,
+    licensed under <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>.
+  </figcaption>
+</figure>
+<h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p>Bovista is a visualization library for large 3D imaging datasets. The thesis: write the rendering engine once in Rust and run it anywhere — as a Python extension, a WebAssembly module in the browser, or a native binary.</p>
+<p>It provides:</p>
 <ul>
-<li><strong>Slice rendering</strong> — arbitrary-orientation plane intersections through 3D volumes, rendered via 3D texture sampling</li>
-<li><strong>Volume ray marching</strong> — direct volume rendering (DVR) with per-pixel ray casting and transfer function compositing</li>
-<li><strong>Virtual texture streaming</strong> — an atlas + page table architecture that keeps only the visible tiles resident in VRAM, regardless of dataset size</li>
-<li><strong>Multi-resolution LOD</strong> — coarse-to-fine pyramid; LOD selection is based on screen-space voxel error</li>
-<li><strong>Remote OME-Zarr</strong> — tiles are fetched from S3/HTTP by a user-supplied async callback; Zarr chunking maps directly to atlas tiles</li>
-<li><strong>Points, lines, custom visuals</strong> — for annotations and user-defined shaders</li>
+<li><strong>Slice rendering</strong> — arbitrary-orientation plane intersections through 3D volumes, via 3D texture sampling</li>
+<li><strong>Volume rendering</strong> — different modes (<code>DirectVolume</code> / <code>MipVolume</code> / <code>MinipVolume</code> / <code>AverageVolume</code> / <code>IsosurfaceVolume</code>) via GPU ray casting</li>
+<li><strong>Virtual texture streaming</strong> — keeps only the visible tiles resident in VRAM, used in both slice
+and volume rendering</li>
+<li><strong>Multi-resolution LOD</strong> — coarse-to-fine pyramid; LOD selection by screen-space voxel error</li>
+<li><strong>Remote OME-Zarr</strong> — pull-based loading; Zarr chunking maps directly to atlas tiles</li>
+<li><strong>Points, lines, custom visuals</strong> — simple annotations and visuals with user-defined shaders</li>
 </ul>
-<h3 id="real-world-use-cases"><a class="header" href="#real-world-use-cases">Real-World Use Cases</a></h3>
-<ul>
-<li><strong>Microscopy</strong>: Exploring 32,000³ voxel images from light-sheet or electron microscopes</li>
-<li><strong>Medical Imaging</strong>: Navigating CT/MRI volumes without loading the full dataset</li>
-<li><strong>Scientific Visualization</strong>: Analyzing simulation data stored in remote Zarr stores</li>
-<li><strong>Browser Sharing</strong>: Viewing multi-gigabyte datasets directly in Chrome or Safari without installing software</li>
-</ul>
-<h2 id="architecture-at-a-glance"><a class="header" href="#architecture-at-a-glance">Architecture at a Glance</a></h2>
-<pre><code>┌─────────────────────────────────────────────────────────┐
-│                     Bovista Library                      │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  Bindings                                                │
-│  ├─ Python (PyO3 — Viewer, Image, Volume, Lines, ...)   │
-│  └─ WebAssembly (wasm-bindgen — JsViewer, ...)          │
-│                                                          │
-│  Rendering Engine                                        │
-│  ├─ Renderer: wgpu device/queue, render pass            │
-│  ├─ Scene: visual list, per-frame prepare + render       │
-│  └─ Camera: orbit controls, projection, frustum          │
-│                                                          │
-│  Visual Types                                            │
-│  ├─ ImageVisual: slice-plane rendering                  │
-│  ├─ VolumeVisual: ray marching DVR                      │
-│  ├─ PointsVisual / LinesVisual                          │
-│  └─ CustomVisual: user-defined WGSL shaders             │
-│                                                          │
-│  Virtual Texture System (shared by Image + Volume)       │
-│  ├─ VirtualTextureData: LOD selection, tile requests    │
-│  ├─ AtlasAllocator: 3D texture atlas (LRU eviction)     │
-│  └─ PageTable: 2D-array indirection texture             │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                    wgpu-rs                               │
-├─────────────────────────────────────────────────────────┤
-│  Cross-platform GPU abstraction                         │
-│  ├─ Native: Vulkan, Metal, DirectX 12                  │
-│  └─ Web: WebGPU                                         │
-└─────────────────────────────────────────────────────────┘
-</code></pre>
 <h2 id="key-concepts"><a class="header" href="#key-concepts">Key Concepts</a></h2>
-<h3 id="virtual-texture-streaming"><a class="header" href="#virtual-texture-streaming">Virtual Texture Streaming</a></h3>
-<p>Both <code>ImageVisual</code> and <code>VolumeVisual</code> share the same streaming back-end. The volume is divided into uniformly-sized tiles. A 3D texture <strong>atlas</strong> holds the physically resident tiles. A <strong>page table</strong> (a small 2D-array texture indexed by LOD + tile grid coordinates) maps each virtual tile address to its atlas slot. The fragment shader looks up the page table at runtime to find each tile’s atlas location; if a tile is missing it falls back to the nearest loaded coarser LOD.</p>
-<p>This means the entire volume can be rendered in a <strong>single draw call</strong> — no per-tile state changes.</p>
-<h3 id="callback-based-loading"><a class="header" href="#callback-based-loading">Callback-Based Loading</a></h3>
-<p>Data loading is decoupled from rendering via a callback:</p>
-<pre><code class="language-python">def request(lod, z, y, x):
-    # Submit async load; call volume.set_chunk_data_u16() when done
-    return bv.ChunkStatus.Accepted
-</code></pre>
-<p>The rendering engine calls <code>request()</code> each frame for tiles it needs. The implementation can use Python thread pools, <code>asyncio</code>, JS <code>fetch()</code>, or any other mechanism. Arrived data is pushed back via <code>set_chunk_data_u16()</code>, which queues it for upload on the next <code>prepare()</code> pass.</p>
 <h3 id="one-codebase-multiple-targets"><a class="header" href="#one-codebase-multiple-targets">One Codebase, Multiple Targets</a></h3>
-<p>The core library has no Python or browser dependencies. Target-specific code lives in <code>src/python.rs</code> and <code>src/wasm.rs</code>, which are thin wrappers around <code>src/bindings_common.rs</code>. Conditional compilation (<code>#[cfg(feature = "python")]</code>, <code>#[cfg(target_arch = "wasm32")]</code>) keeps them isolated.</p>
-<h2 id="project-structure"><a class="header" href="#project-structure">Project Structure</a></h2>
-<pre><code>src/
-  lib.rs                    — crate root, public API
-  renderer.rs               — wgpu device/queue, render pass
-  camera.rs                 — orbit controls, frustum, projection
-  scene.rs                  — visual list
-  visual.rs                 — Visual trait
-  bindings_common.rs        — shared Python/WASM logic
-  visuals/
-    image.rs                — ImageVisual (slice rendering)
-    volume.rs               — VolumeVisual (ray marching)
-    virtual_texture.rs      — VirtualTextureData: atlas, page table, LOD
-    atlas.rs                — AtlasAllocator
-    page_table.rs           — PageTable
-    tile.rs                 — TileKey, TileData, uniforms
-    points.rs               — PointsVisual
-    lines.rs                — LinesVisual
-    custom.rs               — CustomVisual
-  shaders/
-    virtual_tile.wgsl       — slice shader
-    volume_raymarch.wgsl    — ray marching shader
-    point_cloud.wgsl
-    lines.wgsl
-  python.rs                 — PyO3 bindings
-  wasm.rs                   — wasm-bindgen bindings
-examples/
-  slice_viewer/
-    python/                 — PyQt6 + ThreadPoolExecutor
-    web/                    — browser + WebAssembly
-    rust/                   — stub
-  volume_renderer/
-    python/                 — PyQt6 + ThreadPoolExecutor
-    web/                    — browser + WebAssembly
-    rust/                   — stub
-  pkg/                      — WASM build output (generated, not committed)
-kiln-render/                — standalone WebGPU browser DVR renderer (TypeScript)
+<p>The core library has no Python or browser dependencies. Target-specific code lives in <code>src/python.rs</code> and <code>src/wasm.rs</code>, which are intended to be thin wrappers.</p>
+<h3 id="pull-based-loading"><a class="header" href="#pull-based-loading">Pull-Based Loading</a></h3>
+<p>Loading is decoupled from rendering. Bovista visuals publish a <strong>wanted</strong> set — the tiles it needs, sorted by priority. The app polls that set and pushes arrived tiles back:</p>
+<pre><code class="language-python"># poll what's wanted, then load and push back.
+for lod, t, z, y, x, priority in volume.wanted_keys():
+    # priority: lower = more urgent, 0 = currently viewed
+    data = load_tile(lod, t, z, y, x)          # however you like
+    volume.set_chunk_data_u16(lod, t, z, y, x, data)
 </code></pre>
-<h2 id="example-volume-ray-marching"><a class="header" href="#example-volume-ray-marching">Example: Volume Ray Marching</a></h2>
-<pre><code class="language-python">import bovista as bv
-import zarr
-import numpy as np
-from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
-
-store = zarr.open_group("https://s3.../dataset.ome.zarr", mode="r")
-
-# Build LevelMetadata for each LOD in the OME-Zarr pyramid
-lod_levels = [
-    bv.LevelMetadata(
-        volume_size=(depth, height, width),
-        chunk_size=(cz, cy, cx),
-        voxel_size=(sz, sy, sx),
-        scale_factor=2.0**i,
-        translation=(0.0, 0.0, 0.0),
-    )
-    for i, (depth, height, width, cz, cy, cx, sz, sy, sx) in enumerate(...)
-]
-
-executor = ThreadPoolExecutor(max_workers=8)
-pending = {}
-lock = Lock()
-
-def request(lod, z, y, x):
-    key = (lod, z, y, x)
-    with lock:
-        if key in pending:
-            return bv.ChunkStatus.AlreadyPending
-        future = executor.submit(load_tile, lod, z, y, x)
-        future.add_done_callback(lambda f: volume.set_chunk_data_u16(lod, z, y, x, f.result()))
-        pending[key] = future
-    return bv.ChunkStatus.Accepted
-
-viewer = bv.Viewer(800, 600)
-viewer.initialize_with_window(window_handle, 800, 600)
-
-volume = bv.Volume(viewer, lod_levels, max_tiles=2000, loader=request)
-volume.set_contrast(0.0, 1.0)
-volume.set_density_scale(0.01)
-viewer.add(volume)
-
-# In render loop:
-viewer.render_frame()
-</code></pre>
-<hr>
-<p><strong>Start here</strong>: <a href="./12-python.html">Python API →</a> · <a href="./13-wasm.html">WebAssembly / Browser →</a> · <a href="./01-philosophy.html">Architecture →</a></p>
+<p><code>wanted_keys()</code> returns <code>(lod, t, z, y, x, priority)</code> tuples sorted by priority — tile keys carry a timepoint <code>t</code>. Load them however you like (thread pools, <code>asyncio</code>, JS <code>fetch()</code>) and push results back via <code>set_chunk_data_u16()</code>, which queues the GPU upload for the next <code>prepare()</code>. Cancellation is implicit: tiles no longer needed simply drop out of the <code>wanted</code> set.</p>
+<p>In WASM the same set is <code>volume.wantedKeys()</code>, returning a flat <code>Uint32Array</code> of <code>[lod, t, z, y, x, priority, ...]</code> (6 ints per key); tiles go back via <code>volume.setChunkDataU16(lod, t, z, y, x, u16, zShape, yShape, xShape)</code>.</p>
+<p>This relies an assumption of TCZYX dimensions, though only single-channel data is currently supported.</p>
+<h3 id="virtual-texture-streaming"><a class="header" href="#virtual-texture-streaming">Virtual Texture Streaming</a></h3>
+<p>The <code>Image</code> and volume visuals share one streaming back-end. The volume is divided into uniform tiles. A 3D texture <strong>atlas</strong> holds the resident tiles; a <strong>page table</strong> (a small 2D-array texture indexed by LOD + tile grid coordinates) maps each virtual tile address to its atlas slot. The fragment shader looks up the page table at runtime; if a tile is missing it falls back to the nearest loaded coarser LOD. The entire volume renders in a <strong>single draw call</strong> — no per-tile state changes.</p>
+<p>Because only the visible tiles are ever resident, the addressable dataset is bounded by indexing rather than memory: up to ~4 billion voxels per axis and many teravoxels overall — ballpark a ~26,000³ volume in the browser and larger on desktop GPUs. This assumes the dataset ships a proper multiscale pyramid and sane chunking — bovista renders large volumes by streaming coarse LODs, so the coarse levels are what make it tractable. In practice you’ll hit your storage and network long before bovista’s limits; see <a href="./01-philosophy.html#limits">Virtual Textures</a> for the specifics.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
 
-                            <a rel="next prefetch" href="12-python.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="examples.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -349,7 +233,7 @@ viewer.render_frame()
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
 
-                    <a rel="next prefetch" href="12-python.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="examples.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -378,7 +262,7 @@ viewer.render_frame()
         <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="custom-53791975.js"></script>
+        <script src="custom-10a296ff.js"></script>
 
 
 

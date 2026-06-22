@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["with_visual_mut","with_visual_ref"],"type":["VisualRef"]};

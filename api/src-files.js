@@ -1,0 +1,2 @@
+createSrcSidebar('[["bovista",["",[["visuals",[],["atlas.rs","custom.rs","gpu_structs.rs","image.rs","lines.rs","mod.rs","page_table.rs","points.rs","virtual_texture.rs","volume.rs"]]],["bindings_common.rs","camera.rs","lib.rs","renderer.rs","scene.rs","spatial.rs","visual.rs"]]]]');
+//{"start":19,"fragment_lengths":[261]}

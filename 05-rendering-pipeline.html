@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="rust sidebar-visible" dir="ltr">
+<html lang="en" class="light sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -28,18 +28,18 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
-        <link rel="stylesheet" href="custom-681f4f87.css">
+        <link rel="stylesheet" href="custom-e21a0c71.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "rust";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6a6c8c20.js";
+            const default_light_theme = "light";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-ec0ef7b7.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5873499f.js"></script>
+        <script src="toc-17ace711.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -77,7 +77,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('rust')
+            html.classList.remove('light')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -179,68 +179,10 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-wgpu-rendering-pipeline"><a class="header" href="#the-wgpu-rendering-pipeline">The wgpu Rendering Pipeline</a></h1>
-<p>This chapter is a ground-up walkthrough of how Bovista actually draws pixels — from GPU initialization through shader execution. If you’re new to wgpu or WebGPU, start here.</p>
-<ul>
-<li><a href="#what-wgpu-is-and-isnt">What wgpu Is (and Isn’t)</a></li>
-<li><a href="#core-concepts-before-we-start">Core Concepts Before We Start</a>
-<ul>
-<li><a href="#the-gpu-rendering-model">The GPU Rendering Model</a></li>
-<li><a href="#bind-groups">Bind Groups</a></li>
-<li><a href="#buffers-vs-textures">Buffers vs Textures</a></li>
-</ul>
-</li>
-<li><a href="#the-renderer-setting-up-the-gpu">The Renderer: Setting Up the GPU</a>
-<ul>
-<li><a href="#device-and-queue">Device and Queue</a></li>
-<li><a href="#camera-uniform-buffer">Camera Uniform Buffer</a></li>
-<li><a href="#the-depth-buffer">The Depth Buffer</a></li>
-<li><a href="#the-render-loop">The Render Loop</a></li>
-</ul>
-</li>
-<li><a href="#simple-visuals-points-and-lines">Simple Visuals: Points and Lines</a>
-<ul>
-<li><a href="#vertex-layout">Vertex Layout</a></li>
-<li><a href="#pipeline-creation">Pipeline Creation</a></li>
-<li><a href="#shader-point_cloudwgsl">Shader: point_cloud.wgsl</a></li>
-<li><a href="#the-prepare--render-split">The <code>prepare</code> / <code>render</code> Split</a></li>
-</ul>
-</li>
-<li><a href="#the-slice-pipeline-imagevisual">The Slice Pipeline: ImageVisual</a>
-<ul>
-<li><a href="#how-it-works-overview">How It Works (Overview)</a></li>
-<li><a href="#vertex-layout-tilevertex">Vertex Layout: TileVertex</a></li>
-<li><a href="#geometry-plane-aabb-intersection">Geometry: Plane-AABB Intersection</a></li>
-<li><a href="#bind-group-layout-groups-1-and-2">Bind Group Layout (Groups 1 and 2)</a></li>
-<li><a href="#shader-virtual_tilewgsl">Shader: virtual_tile.wgsl</a></li>
-<li><a href="#virtual-texture-lookup-sample_vvt">Virtual Texture Lookup: sample_vvt</a></li>
-<li><a href="#the-render-call">The Render Call</a></li>
-</ul>
-</li>
-<li><a href="#the-volume-pipeline-volumevisual">The Volume Pipeline: VolumeVisual</a>
-<ul>
-<li><a href="#the-box-geometry-trick">The Box Geometry Trick</a></li>
-<li><a href="#ray-marching-the-fragment-shader">Ray Marching: The Fragment Shader</a></li>
-<li><a href="#lod-adaptive-step-size">LOD-Adaptive Step Size</a></li>
-<li><a href="#blending-pre-multiplied-alpha">Blending: Pre-multiplied Alpha</a></li>
-<li><a href="#depth-write-disabled">Depth Write Disabled</a></li>
-</ul>
-</li>
-<li><a href="#vt-uniforms-the-cpu-gpu-contract">VT Uniforms: The CPU-GPU Contract</a></li>
-<li><a href="#shader-selection-summary">Shader Selection Summary</a></li>
-<li><a href="#putting-it-all-together">Putting It All Together</a></li>
-</ul>
+<p>A ground-up walkthrough of how Bovista draws pixels, from GPU initialization through shader execution. If you’re new to wgpu or WebGPU, start here.</p>
 <hr>
-<h2 id="what-wgpu-is-and-isnt"><a class="header" href="#what-wgpu-is-and-isnt">What wgpu Is (and Isn’t)</a></h2>
-<p>wgpu is a Rust library that exposes the <strong>WebGPU API</strong>, a modern, explicit graphics API. “Explicit” means you, the programmer, are responsible for:</p>
-<ul>
-<li>Describing memory layouts to the GPU in advance</li>
-<li>Binding resources (textures, buffers) before drawing</li>
-<li>Specifying exactly how vertices flow into fragments</li>
-</ul>
-<p>You get a lot of control — and a lot of upfront setup. In exchange you get predictable performance and the same code running on Vulkan, Metal, DirectX 12, and WebGPU in the browser.</p>
-<hr>
-<h2 id="core-concepts-before-we-start"><a class="header" href="#core-concepts-before-we-start">Core Concepts Before We Start</a></h2>
-<h3 id="the-gpu-rendering-model"><a class="header" href="#the-gpu-rendering-model">The GPU Rendering Model</a></h3>
+<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
+<p>wgpu is a Rust library exposing the <strong>WebGPU API</strong>, a modern, explicit graphics API. “Explicit” means you describe memory layouts in advance, bind resources before drawing, and specify exactly how vertices flow into fragments. The cost is upfront setup; the payoff is predictable performance and one codebase running on Vulkan, Metal, DirectX 12, and WebGPU in the browser.</p>
 <p>The GPU executes a <strong>render pipeline</strong> for each draw call:</p>
 <pre><code>CPU uploads vertex data + uniforms
         │
@@ -256,10 +198,8 @@
         ▼
   [ Output Merging ]    ← depth test, blending, write to texture
 </code></pre>
-<p>Shaders are small programs written in WGSL (WebGPU Shading Language) that run on the GPU. Each pipeline has one vertex shader and one fragment shader.</p>
-<h3 id="bind-groups"><a class="header" href="#bind-groups">Bind Groups</a></h3>
-<p>Rather than setting individual texture or buffer pointers before every draw, wgpu groups related resources into <strong>bind groups</strong>. A bind group is a bundle of GPU resources (buffers, textures, samplers) with a fixed layout that you attach to the pipeline once.</p>
-<p>Bovista uses a consistent three-group layout across all its visual pipelines:</p>
+<p>Shaders are small programs written in WGSL (WebGPU Shading Language). Each pipeline has one vertex shader and one fragment shader.</p>
+<p>Rather than setting individual resource pointers before every draw, wgpu groups related resources into <strong>bind groups</strong> — a bundle of buffers, textures, and samplers with a fixed layout attached to the pipeline once. Bovista uses a consistent three-group layout across all visual pipelines:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -273,16 +213,10 @@
 </table>
 </div>
 <p>Simple visuals (points, lines) only use group 0.</p>
-<h3 id="buffers-vs-textures"><a class="header" href="#buffers-vs-textures">Buffers vs Textures</a></h3>
-<ul>
-<li><strong>Buffer</strong>: raw bytes. Used for vertex data, index data, and uniform structs.</li>
-<li><strong>Texture</strong>: sampled image data with filtering support. Used for the atlas, the page table, and the colormap LUT.</li>
-<li><strong>Sampler</strong>: describes how to filter a texture (bilinear? clamp to edge?). Bound alongside textures.</li>
-</ul>
+<p>The resources themselves are <strong>buffers</strong> (raw bytes: vertex data, index data, uniform structs), <strong>textures</strong> (sampled image data with filtering: atlas, page table, colormap LUT), and <strong>samplers</strong> (which describe how to filter a texture and are bound alongside it).</p>
 <hr>
 <h2 id="the-renderer-setting-up-the-gpu"><a class="header" href="#the-renderer-setting-up-the-gpu">The Renderer: Setting Up the GPU</a></h2>
-<p><code>src/renderer.rs</code> owns the GPU device, queue, and the shared camera bind group.</p>
-<h3 id="device-and-queue"><a class="header" href="#device-and-queue">Device and Queue</a></h3>
+<p><code>src/renderer.rs</code> owns the GPU device, queue, and the shared camera bind group. <code>Device</code> creates GPU objects; <code>Queue</code> sends data and commands to the GPU.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// In practice, these come from wgpu surface setup (not shown here).
@@ -294,9 +228,7 @@ pub struct Renderer {
     ...
 }
 <span class="boring">}</span></code></pre>
-<p><code>Device</code> creates GPU objects; <code>Queue</code> sends data and commands to the GPU.</p>
-<h3 id="camera-uniform-buffer"><a class="header" href="#camera-uniform-buffer">Camera Uniform Buffer</a></h3>
-<p>Every shader needs to transform vertices from world space to screen space. The renderer creates a 64-byte uniform buffer that holds a single 4×4 matrix and updates it every frame:</p>
+<p>Every shader transforms vertices from world space to screen space. The renderer creates a 64-byte uniform buffer holding a single 4×4 matrix and updates it every frame. <code>UNIFORM</code> means the shader can read it; <code>COPY_DST</code> means the CPU can write to it via <code>queue.write_buffer</code>:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let camera_uniform_buffer = device.create_buffer(&amp;wgpu::BufferDescriptor {
@@ -305,8 +237,7 @@ pub struct Renderer {
     ...
 });
 <span class="boring">}</span></code></pre>
-<p><code>UNIFORM</code> means the shader can read it. <code>COPY_DST</code> means the CPU can write to it each frame via <code>queue.write_buffer</code>.</p>
-<p>The bind group layout tells the GPU “binding 0 is a uniform buffer, visible only in the vertex stage”:</p>
+<p>The bind group layout declares “binding 0 is a uniform buffer, visible only in the vertex stage”, matching the WGSL declaration:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>wgpu::BindGroupLayoutEntry {
@@ -319,7 +250,6 @@ pub struct Renderer {
     ...
 }
 <span class="boring">}</span></code></pre>
-<p>The matching WGSL declaration:</p>
 <pre><code class="language-wgsl">// virtual_tile.wgsl, group 0
 struct CameraUniforms {
     view_proj: mat4x4&lt;f32&gt;,
@@ -327,7 +257,7 @@ struct CameraUniforms {
 @group(0) @binding(0)
 var&lt;uniform&gt; camera: CameraUniforms;
 </code></pre>
-<p>Every frame, <code>Renderer::update_camera</code> computes the view-projection matrix and sends it to the GPU:</p>
+<p>Each frame, <code>Renderer::update_camera</code> computes the view-projection matrix and sends it to the GPU. <code>bytemuck::cast_slice</code> safely reinterprets the Rust struct as raw bytes:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub fn update_camera(&amp;self, camera: &amp;Camera) {
@@ -338,9 +268,7 @@ var&lt;uniform&gt; camera: CameraUniforms;
         bytemuck::cast_slice(&amp;[uniforms]));
 }
 <span class="boring">}</span></code></pre>
-<p><code>bytemuck::cast_slice</code> safely reinterprets the Rust struct as raw bytes for the GPU.</p>
-<h3 id="the-depth-buffer"><a class="header" href="#the-depth-buffer">The Depth Buffer</a></h3>
-<p>Bovista creates a depth texture at startup and recreates it on resize:</p>
+<p>Bovista also creates a depth texture at startup and recreates it on resize. The depth buffer stores the depth of the closest fragment at each pixel; an arriving fragment further away is discarded (the depth test). This makes closer objects correctly occlude farther ones without sorting draw calls.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let depth_texture = device.create_texture(&amp;wgpu::TextureDescriptor {
@@ -349,16 +277,7 @@ var&lt;uniform&gt; camera: CameraUniforms;
     ...
 });
 <span class="boring">}</span></code></pre>
-<p>The depth buffer stores the depth of the closest fragment seen so far at each pixel. When a new fragment arrives, it’s compared against the stored depth — if it’s further away, it’s discarded (the depth test). This is what makes closer objects correctly occlude farther ones without sorting draw calls.</p>
-<h3 id="the-render-loop"><a class="header" href="#the-render-loop">The Render Loop</a></h3>
-<p>Each frame, <code>Renderer::render</code>:</p>
-<ol>
-<li>Creates a <strong>command encoder</strong> — a recorder for GPU commands</li>
-<li>Begins a <strong>render pass</strong> — declares what texture to draw into and how to clear it</li>
-<li>Sets the camera bind group at <code>@group(0)</code> <strong>once</strong>, for all visuals</li>
-<li>Calls <code>scene.render()</code> which iterates each visible <code>impl Visual</code> and calls its <code>render()</code></li>
-<li>Finishes and submits the command buffer to the queue</li>
-</ol>
+<p>Each frame, <code>Renderer::render</code> creates a <strong>command encoder</strong> (a recorder for GPU commands), begins a <strong>render pass</strong> (declaring the target texture and clear behavior), sets the camera bind group at <code>@group(0)</code> <strong>once</strong> for all visuals, calls <code>scene.render()</code> (which iterates each visible <code>impl Visual</code> and calls its <code>render()</code>), then finishes and submits the command buffer:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// From renderer.rs
@@ -376,9 +295,7 @@ scene.render(&amp;mut render_pass);  // each visual sets groups 1, 2 and draws
 <span class="boring">}</span></code></pre>
 <hr>
 <h2 id="simple-visuals-points-and-lines"><a class="header" href="#simple-visuals-points-and-lines">Simple Visuals: Points and Lines</a></h2>
-<p><code>src/visuals/points.rs</code> and <code>src/visuals/lines.rs</code> show the minimal pipeline pattern.</p>
-<h3 id="vertex-layout"><a class="header" href="#vertex-layout">Vertex Layout</a></h3>
-<p>A point has a world-space position and an RGB color:</p>
+<p><code>src/visuals/points.rs</code> and <code>src/visuals/lines.rs</code> show the minimal pipeline pattern. A point has a world-space position and an RGB color:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>#[repr(C)]
@@ -388,7 +305,7 @@ pub struct PointVertex {
     pub color:    [f32; 3],  // 12 bytes — total: 24 bytes/vertex
 }
 <span class="boring">}</span></code></pre>
-<p>The <code>wgpu::VertexBufferLayout</code> tells the pipeline what this struct looks like:</p>
+<p>The <code>wgpu::VertexBufferLayout</code> tells the pipeline what this struct looks like. The attribute numbers (<code>0 =&gt;</code>, <code>1 =&gt;</code>) match the <code>@location(0)</code> and <code>@location(1)</code> annotations in the WGSL vertex input struct:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>wgpu::VertexBufferLayout {
@@ -400,8 +317,6 @@ pub struct PointVertex {
     ],
 }
 <span class="boring">}</span></code></pre>
-<p>The numbers here (<code>0 =&gt;</code>, <code>1 =&gt;</code>) match the <code>@location(0)</code> and <code>@location(1)</code> annotations in the WGSL vertex input struct.</p>
-<h3 id="pipeline-creation"><a class="header" href="#pipeline-creation">Pipeline Creation</a></h3>
 <p><code>device.create_render_pipeline</code> is the big upfront declaration:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -438,8 +353,8 @@ pub struct PointVertex {
     }),
 })
 <span class="boring">}</span></code></pre>
-<p>A pipeline is <strong>immutable</strong> once created. The topology, shader, and vertex layout are all baked in. This is intentional — the GPU driver compiles the pipeline to native GPU code at creation time, making draw calls very fast.</p>
-<h3 id="shader-point_cloudwgsl"><a class="header" href="#shader-point_cloudwgsl">Shader: point_cloud.wgsl</a></h3>
+<p>A pipeline is <strong>immutable</strong> once created — topology, shader, and vertex layout are all baked in. This is intentional: the driver compiles the pipeline to native GPU code at creation time, making draw calls fast.</p>
+<p>The shader, <code>point_cloud.wgsl</code>:</p>
 <pre><code class="language-wgsl">struct Uniforms { view_proj: mat4x4&lt;f32&gt; }
 @group(0) @binding(0) var&lt;uniform&gt; uniforms: Uniforms;
 
@@ -466,25 +381,11 @@ fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     return vec4&lt;f32&gt;(input.color, 1.0);  // RGBA; alpha=1 = opaque
 }
 </code></pre>
-<p><code>@builtin(position)</code> is a special output understood by the rasterizer as the clip-space position. The other outputs (like <code>color</code>) are interpolated across the triangle/point by the hardware and handed to the fragment shader.</p>
-<h3 id="the-prepare--render-split"><a class="header" href="#the-prepare--render-split">The <code>prepare</code> / <code>render</code> Split</a></h3>
-<p>The <code>Visual</code> trait separates work into two phases:</p>
-<ul>
-<li><strong><code>prepare()</code></strong> — called before the render pass begins. Can write to GPU buffers (<code>queue.write_buffer</code>), create new textures, compute geometry. For points and lines this is a no-op because vertex data never changes.</li>
-<li><strong><code>render()</code></strong> — called inside the render pass. Can only issue draw commands (<code>set_pipeline</code>, <code>set_bind_group</code>, <code>draw</code>). No CPU work here.</li>
-</ul>
-<p>This split exists because <code>queue.write_buffer</code> and render pass recording are incompatible — you can’t upload data mid-pass.</p>
+<p><code>@builtin(position)</code> is understood by the rasterizer as the clip-space position. Other outputs (like <code>color</code>) are interpolated across the primitive by the hardware and handed to the fragment shader.</p>
+<p>The <code>Visual</code> trait splits work into two phases. <strong><code>prepare()</code></strong> runs before the render pass and can write GPU buffers (<code>queue.write_buffer</code>), create textures, and compute geometry — for points and lines it’s a no-op since vertex data never changes. <strong><code>render()</code></strong> runs inside the render pass and can only issue draw commands (<code>set_pipeline</code>, <code>set_bind_group</code>, <code>draw</code>). The split exists because <code>queue.write_buffer</code> and render pass recording are incompatible — you can’t upload data mid-pass.</p>
 <hr>
-<h2 id="the-slice-pipeline-imagevisual"><a class="header" href="#the-slice-pipeline-imagevisual">The Slice Pipeline: ImageVisual</a></h2>
-<p><code>src/visuals/image.rs</code> renders a planar cross-section through a 3D volume using the virtual texture system.</p>
-<h3 id="how-it-works-overview"><a class="header" href="#how-it-works-overview">How It Works (Overview)</a></h3>
-<ol>
-<li>Each frame, <code>prepare()</code> computes where the slice plane intersects the volume AABB and generates a polygon mesh for that cross-section (3–6 vertices, depending on the slice angle).</li>
-<li>Each vertex carries a <strong>3D volume UV</strong> (<code>texcoord: vec3&lt;f32&gt;</code>) — the normalized position within the volume at that point.</li>
-<li>In the fragment shader, those UVs are used to look up the voxel value via the virtual texture page table.</li>
-<li>The voxel value is passed through a contrast window and then into a colormap LUT to produce the final color.</li>
-</ol>
-<h3 id="vertex-layout-tilevertex"><a class="header" href="#vertex-layout-tilevertex">Vertex Layout: TileVertex</a></h3>
+<h2 id="the-slice-pipeline-image"><a class="header" href="#the-slice-pipeline-image">The Slice Pipeline: Image</a></h2>
+<p><code>src/visuals/image.rs</code> renders a planar cross-section through a 3D volume using the virtual texture system. Each frame, <code>prepare()</code> computes where the slice plane intersects the volume AABB and generates a polygon mesh (3–6 vertices, depending on slice angle). Each vertex carries a <strong>3D volume UV</strong> (<code>texcoord: vec3&lt;f32&gt;</code>), the normalized position within the volume. The fragment shader uses those UVs to look up the voxel value via the page table, then passes it through a contrast window and a colormap LUT to produce the final color.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>#[repr(C)]
@@ -493,12 +394,11 @@ pub struct TileVertex {
     pub texcoord: [f32; 3],   // volume UV in [0,1]^3
 }
 <span class="boring">}</span></code></pre>
-<p>The hardware interpolates <code>texcoord</code> across the polygon — every fragment knows where in the volume it sits.</p>
-<h3 id="geometry-plane-aabb-intersection"><a class="header" href="#geometry-plane-aabb-intersection">Geometry: Plane-AABB Intersection</a></h3>
-<p><code>compute_plane_aabb_intersection</code> (in <code>src/visuals/tile.rs</code>) tests the slice plane against all 12 edges of the volume bounding box. Each edge that the plane intersects yields one vertex. The result is a convex polygon with 3–6 vertices, triangulated as a fan and uploaded to the GPU as a fresh vertex/index buffer every frame:</p>
+<p>The hardware interpolates <code>texcoord</code> across the polygon, so every fragment knows where in the volume it sits.</p>
+<p><code>compute_plane_aabb_intersection</code> (in <code>src/visuals/tile.rs</code>) tests the slice plane against all 12 edges of the volume bounding box. Each intersected edge yields one vertex, giving a convex polygon of 3–6 vertices, triangulated as a fan and uploaded fresh every frame:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>// From ImageVisual::prepare()
+</span>// From Image::prepare()
 if let Some((vertices, indices)) =
     compute_plane_aabb_intersection(&amp;tile_plane, &amp;vol_aabb)
 {
@@ -510,8 +410,7 @@ if let Some((vertices, indices)) =
     // ... also creates index buffer
 }
 <span class="boring">}</span></code></pre>
-<h3 id="bind-group-layout-groups-1-and-2"><a class="header" href="#bind-group-layout-groups-1-and-2">Bind Group Layout (Groups 1 and 2)</a></h3>
-<p>Group 1 (VT resources) is declared in <code>ImageVisual::new</code> with four entries:</p>
+<p>Group 1 (VT resources), declared in <code>Image::new</code>, has four entries:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -539,7 +438,7 @@ wgpu::BindGroupLayoutEntry {
     ...
 }
 <span class="boring">}</span></code></pre>
-<p>The page table is a <code>texture_2d_array</code> where each array layer is one LOD level. Using <code>TextureSampleType::Uint</code> instead of <code>Float</code> means you read raw 32-bit integers with <code>textureLoad</code> (no filtering — you want exact values, not interpolated ones).</p>
+<p>The page table is a <code>texture_2d_array</code> with one array layer per LOD level. <code>TextureSampleType::Uint</code> means you read raw 32-bit integers with <code>textureLoad</code> — no filtering, since you want exact values, not interpolated ones.</p>
 <p>Group 2 (colormap) has two entries:</p>
 <div class="table-wrapper">
 <table>
@@ -552,8 +451,7 @@ wgpu::BindGroupLayoutEntry {
 </tbody>
 </table>
 </div>
-<h3 id="shader-virtual_tilewgsl"><a class="header" href="#shader-virtual_tilewgsl">Shader: virtual_tile.wgsl</a></h3>
-<p><strong>Vertex stage</strong> is trivial — multiply world position by view-projection:</p>
+<p>In <code>virtual_tile.wgsl</code>, the vertex stage is trivial — multiply world position by view-projection and pass the UV through:</p>
 <pre><code class="language-wgsl">@vertex
 fn vs_main(input: VertexInput) -&gt; VertexOutput {
     var out: VertexOutput;
@@ -562,7 +460,7 @@ fn vs_main(input: VertexInput) -&gt; VertexOutput {
     return out;
 }
 </code></pre>
-<p><strong>Fragment stage</strong> is where the work happens. For each pixel:</p>
+<p>The fragment stage does the work — sample, contrast, colormap:</p>
 <pre><code class="language-wgsl">@fragment
 fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     // 1. Find the best resident tile for this volume UV
@@ -582,8 +480,7 @@ fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     return encode_srgb(color);  // manual sRGB encoding for linear-format surfaces
 }
 </code></pre>
-<h3 id="virtual-texture-lookup-sample_vvt"><a class="header" href="#virtual-texture-lookup-sample_vvt">Virtual Texture Lookup: sample_vvt</a></h3>
-<p>The key function is <code>sample_vvt(vol_uv)</code>. It walks the LOD pyramid looking for a resident tile:</p>
+<p>The key function <code>sample_vvt(vol_uv)</code> walks the LOD pyramid for a resident tile — from the ideal LOD up to coarsest (normal fallback while tiles load), then finer than ideal (stale fine data beats black):</p>
 <pre><code class="language-wgsl">fn sample_vvt(vol_uv: vec3f) -&gt; vec2f {
     let ideal_lod = i32(vt.target_lod);  // CPU-computed based on camera distance
     let max_lod   = i32(vt.lod_count) - 1;
@@ -601,7 +498,7 @@ fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     return vec2f(0.0, -1.0);  // nothing resident
 }
 </code></pre>
-<p>And <code>try_lod</code> maps from volume UV → page table address → atlas slot → texture sample:</p>
+<p><code>try_lod</code> maps volume UV → page table address → atlas slot → texture sample:</p>
 <pre><code class="language-wgsl">fn try_lod(vol_uv: vec3f, lod: i32) -&gt; vec2f {
     // 1. Which tile grid cell does this UV fall in?
     let grid = vt.lods[lod].grid_dims;
@@ -636,11 +533,11 @@ fn fs_main(input: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
                  f32(lod));
 }
 </code></pre>
-<p><code>tile_scale</code> is <code>tile_size / volume_size</code> per axis — it tells you what fraction of the full volume UV one tile spans. <code>data_scale</code> handles the case where a coarser LOD tile has fewer voxels than the atlas slot is sized for (the extra space in the slot is unused padding; <code>data_scale</code> clamps sampling to the populated region).</p>
-<h3 id="the-render-call"><a class="header" href="#the-render-call">The Render Call</a></h3>
+<p><code>tile_scale</code> is <code>tile_size / volume_size</code> per axis — what fraction of the full volume UV one tile spans. <code>data_scale</code> handles coarser LOD tiles that have fewer voxels than the atlas slot is sized for (the extra space is unused padding; <code>data_scale</code> clamps sampling to the populated region).</p>
+<p><code>Image::render</code> issues the draw. <code>draw_indexed</code> draws triangles using a u16 index buffer, reusing vertices across triangles (the fan triangulation):</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>// From ImageVisual::render()
+</span>// From Image::render()
 fn render(&amp;self, render_pass: &amp;mut RenderPass) {
     if self.vt_index_count == 0 { return; }  // slice missed the volume
     if let (Some(vb), Some(ib)) = (&amp;self.vt_vertex_buffer, &amp;self.vt_index_buffer) {
@@ -654,18 +551,10 @@ fn render(&amp;self, render_pass: &amp;mut RenderPass) {
     }
 }
 <span class="boring">}</span></code></pre>
-<p><code>draw_indexed</code> draws triangles using the index buffer. The index buffer contains u16 offsets into the vertex buffer — this lets you reuse vertices across triangles (important for the fan triangulation of the polygon).</p>
 <hr>
-<h2 id="the-volume-pipeline-volumevisual"><a class="header" href="#the-volume-pipeline-volumevisual">The Volume Pipeline: VolumeVisual</a></h2>
-<p><code>src/visuals/volume.rs</code> renders the entire 3D volume via GPU ray marching. The virtual texture back-end (atlas, page table, LOD streaming) is identical to <code>ImageVisual</code>.</p>
-<h3 id="the-box-geometry-trick"><a class="header" href="#the-box-geometry-trick">The Box Geometry Trick</a></h3>
-<p>Instead of rasterizing every voxel, the volume is rendered using a <strong>proxy geometry</strong> approach:</p>
-<ol>
-<li>Draw the back faces of a unit cube that covers the volume AABB</li>
-<li>In the fragment shader, reconstruct the ray from the camera through each fragment’s world-space position</li>
-<li>March that ray through the volume, sampling voxels front-to-back</li>
-</ol>
-<p>Why back faces? The rasterizer fires a fragment for each pixel where the cube’s surface is visible. Using back faces means a fragment fires for every pixel that the volume occupies in screen space, even when the camera is inside the volume (at which point the front faces would be clipped by the near plane):</p>
+<h2 id="the-volume-pipeline-directvolume"><a class="header" href="#the-volume-pipeline-directvolume">The Volume Pipeline: DirectVolume</a></h2>
+<p><code>src/visuals/volume.rs</code> renders the entire 3D volume via GPU ray marching. Five volume classes share this back-end — <code>DirectVolume</code> (default DVR), <code>MipVolume</code>, <code>MinipVolume</code>, <code>AverageVolume</code>, and <code>IsosurfaceVolume</code>. The virtual texture back-end (atlas, page table, LOD streaming) is identical to <code>Image</code>.</p>
+<p>Instead of rasterizing every voxel, the volume uses <strong>proxy geometry</strong>: draw the back faces of a unit cube covering the volume AABB, reconstruct the camera ray through each fragment’s world-space position, and march that ray through the volume sampling voxels front-to-back. Back faces are used because the rasterizer then fires a fragment for every pixel the volume occupies in screen space, even when the camera is inside the volume (where front faces would be clipped by the near plane):</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// Volume box: 12 triangles, CW winding = inward-facing normals
@@ -676,7 +565,7 @@ primitive: wgpu::PrimitiveState {
     ...
 }
 <span class="boring">}</span></code></pre>
-<p>The volume shader’s vertex stage positions the cube:</p>
+<p>The vertex stage positions the cube and passes world position for ray reconstruction:</p>
 <pre><code class="language-wgsl">@vertex
 fn vs_main(in: VertexInput) -&gt; VertexOutput {
     // BOX_VERTICES are in [0,1]^3; scale them to the actual AABB in world space.
@@ -686,8 +575,7 @@ fn vs_main(in: VertexInput) -&gt; VertexOutput {
     return out;
 }
 </code></pre>
-<h3 id="ray-marching-the-fragment-shader"><a class="header" href="#ray-marching-the-fragment-shader">Ray Marching: The Fragment Shader</a></h3>
-<p>The fragment shader (<code>volume_raymarch.wgsl</code>) does the heavy lifting:</p>
+<p>The fragment shader (<code>volume_raymarch.wgsl</code>) does the heavy lifting. It reconstructs the ray, runs an AABB slab test to find entry/exit, then steps along the ray accumulating color front-to-back (<strong>alpha compositing</strong>):</p>
 <pre><code class="language-wgsl">@fragment
 fn fs_main(in: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     // Ray from camera through this fragment's world position (on the back face of the box)
@@ -706,7 +594,6 @@ fn fs_main(in: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     if t_exit &lt;= max(t_enter, 0.0) { discard; }  // ray misses or is behind camera
     ...
 </code></pre>
-<p>Then it steps along the ray, accumulating color front-to-back (a technique called <strong>alpha compositing</strong>):</p>
 <pre><code class="language-wgsl">    var accum_color = vec3f(0.0);
     var accum_alpha = 0.0;
     var t = max(t_enter, 0.0);
@@ -739,9 +626,7 @@ fn fs_main(in: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
         t += advance;  // advance is LOD-adaptive (larger steps in coarser regions)
     }
 </code></pre>
-<p>The early-out <code>accum_alpha &gt;= 0.95</code> is an optimization — once the ray is 95% opaque, continuing adds less than 5% contribution to the final color.</p>
-<h3 id="lod-adaptive-step-size"><a class="header" href="#lod-adaptive-step-size">LOD-Adaptive Step Size</a></h3>
-<p>In unloaded regions, the shader jumps to the next tile boundary instead of crawling one LOD-0 voxel at a time:</p>
+<p>The <code>accum_alpha &gt;= 0.95</code> early-out stops once the ray is 95% opaque, since further samples add under 5% to the final color. The step size is LOD-adaptive: in unloaded regions the shader jumps to the next tile boundary instead of crawling one LOD-0 voxel at a time:</p>
 <pre><code class="language-wgsl">if lod_f &gt;= 0.0 {
     // Resident tile: step size proportional to the LOD scale ratio
     advance = step_size * vt.lods[lod_i].tile_scale.x / vt.lods[0].tile_scale.x;
@@ -752,9 +637,8 @@ fn fs_main(in: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     advance = max(min(dt_to_bound.x, min(dt_to_bound.y, dt_to_bound.z)), step_size);
 }
 </code></pre>
-<h3 id="blending-pre-multiplied-alpha"><a class="header" href="#blending-pre-multiplied-alpha">Blending: Pre-multiplied Alpha</a></h3>
-<p><code>VolumeVisual</code> uses <code>wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING</code> (not the simple alpha blending used by <code>ImageVisual</code>). The ray marcher outputs pre-multiplied alpha: <code>out = (accum_color * accum_alpha, accum_alpha)</code>. Pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices are rendered together.</p>
-<h3 id="depth-write-disabled"><a class="header" href="#depth-write-disabled">Depth Write Disabled</a></h3>
+<p>Volume visuals use <code>wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING</code> (not the simple alpha blending used by <code>Image</code>). The ray marcher outputs <code>out = (accum_color * accum_alpha, accum_alpha)</code>; pre-multiplied alpha composes correctly when multiple transparent layers overlap, which matters when volumes and slices render together.</p>
+<p>Volume depth writes are disabled. The volume reads the depth buffer (so opaque geometry occludes it) but doesn’t write — otherwise its back-face fragments would block any geometry behind the volume:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>depth_stencil: Some(wgpu::DepthStencilState {
@@ -763,10 +647,9 @@ fn fs_main(in: VertexOutput) -&gt; @location(0) vec4&lt;f32&gt; {
     ...
 })
 <span class="boring">}</span></code></pre>
-<p>The volume reads the depth buffer (so it’s occluded by opaque geometry) but doesn’t write to it. If it wrote, its back-face fragments would prevent any geometry behind the volume from rendering.</p>
 <hr>
 <h2 id="vt-uniforms-the-cpu-gpu-contract"><a class="header" href="#vt-uniforms-the-cpu-gpu-contract">VT Uniforms: The CPU-GPU Contract</a></h2>
-<p><code>VTUniforms</code> (defined in <code>src/visuals/tile.rs</code>) is the main data structure shared between the CPU and the VT shaders. Every field must match between Rust and WGSL exactly, including padding:</p>
+<p><code>VTUniforms</code> (in <code>src/visuals/tile.rs</code>) is the main structure shared between CPU and VT shaders. Every field must match between Rust and WGSL exactly, including padding:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>#[repr(C)]  // C-compatible layout — field order is preserved
@@ -787,7 +670,7 @@ pub struct VTUniforms {
     pub lods: [VTLodInfo; 16],  // per-LOD data (grid dims, tile scale, data scale)
 }
 <span class="boring">}</span></code></pre>
-<p>WGSL uniform structs require 16-byte alignment for sub-structs (<code>VTLodInfo</code>). The <code>_pad_c</code> field ensures <code>lods</code> starts at offset 48 (a multiple of 16). Getting this wrong produces subtle visual corruption with no error message — the GPU silently reads the wrong bytes.</p>
+<p>WGSL uniform structs require 16-byte alignment for sub-structs (<code>VTLodInfo</code>). The <code>_pad_c</code> field ensures <code>lods</code> starts at offset 48. Getting this wrong produces subtle visual corruption with no error — the GPU silently reads the wrong bytes.</p>
 <hr>
 <h2 id="shader-selection-summary"><a class="header" href="#shader-selection-summary">Shader Selection Summary</a></h2>
 <div class="table-wrapper">
@@ -796,34 +679,32 @@ pub struct VTUniforms {
 <tr><th>Visual</th><th>Shader</th><th>Topology</th><th>Cull mode</th><th>Depth write</th><th>Blend</th></tr>
 </thead>
 <tbody>
-<tr><td><code>PointsVisual</code></td><td><code>point_cloud.wgsl</code></td><td>PointList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
-<tr><td><code>LinesVisual</code></td><td><code>lines.wgsl</code></td><td>LineList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
-<tr><td><code>ImageVisual</code></td><td><code>virtual_tile.wgsl</code></td><td>TriangleList</td><td>None</td><td>Yes</td><td>Alpha</td></tr>
-<tr><td><code>VolumeVisual</code></td><td><code>volume_raymarch.wgsl</code></td><td>TriangleList</td><td>Front</td><td>No</td><td>Pre-multiplied Alpha</td></tr>
+<tr><td><code>Points</code></td><td><code>point_cloud.wgsl</code></td><td>PointList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
+<tr><td><code>Lines</code></td><td><code>lines.wgsl</code></td><td>LineList</td><td>None</td><td>Yes</td><td>Replace</td></tr>
+<tr><td><code>Image</code></td><td><code>virtual_tile.wgsl</code></td><td>TriangleList</td><td>None</td><td>Yes</td><td>Alpha</td></tr>
+<tr><td><code>DirectVolume</code> (and siblings)</td><td><code>volume_raymarch.wgsl</code></td><td>TriangleList</td><td>Front</td><td>No</td><td>Pre-multiplied Alpha</td></tr>
 </tbody>
 </table>
 </div>
-<hr>
-<h2 id="putting-it-all-together"><a class="header" href="#putting-it-all-together">Putting It All Together</a></h2>
 <p>One frame, step by step:</p>
 <pre><code>1. CPU: camera.view_projection_matrix() → queue.write_buffer(camera_uniform)
 
 2. CPU (each visual's prepare()):
-   - ImageVisual: recompute slice polygon geometry, upload vertex/index buffers,
-                  write VTUniforms to vt_uniform_buffer
-   - VolumeVisual: write VTUniforms + VolumeUniforms to GPU buffers
-   - PointsVisual: no-op (geometry is static)
+   - Image: recompute slice polygon geometry, upload vertex/index buffers,
+            write VTUniforms to vt_uniform_buffer
+   - DirectVolume: write VTUniforms + VolumeUniforms to GPU buffers
+   - Points: no-op (geometry is static)
 
 3. GPU: begin_render_pass (clears color and depth)
    render_pass.set_bind_group(0, camera_bind_group)  ← once for all visuals
 
 4. GPU (each visual's render()):
-   - PointsVisual:
+   - Points:
        set_pipeline(point_pipeline)
        set_vertex_buffer(point_vb)
        draw(0..N)
 
-   - ImageVisual:
+   - Image:
        set_pipeline(vt_pipeline)
        set_bind_group(1, vt_bind_group)    ← atlas, page table, uniforms
        set_bind_group(2, colormap_bind_group)
@@ -831,7 +712,7 @@ pub struct VTUniforms {
        set_index_buffer(slice_polygon_ib)
        draw_indexed(0..index_count)
 
-   - VolumeVisual:
+   - DirectVolume:
        set_pipeline(volume_pipeline)
        set_bind_group(1, vt_bind_group)
        set_bind_group(2, vol_bind_group)   ← vol uniforms + colormap
@@ -842,8 +723,6 @@ pub struct VTUniforms {
 5. GPU: end render pass → submit → present to screen
 </code></pre>
 <p>The entire visible result — slice planes, volume, overlaid point clouds — comes from this single render pass.</p>
-<hr>
-<p><strong>Next</strong>: <a href="./07-chunked-rendering.html">Chunked Rendering →</a></p>
 
                     </main>
 
@@ -853,7 +732,7 @@ pub struct VTUniforms {
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="07-chunked-rendering.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="01-philosophy.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -867,7 +746,7 @@ pub struct VTUniforms {
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="07-chunked-rendering.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="01-philosophy.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -896,7 +775,7 @@ pub struct VTUniforms {
         <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="custom-53791975.js"></script>
+        <script src="custom-10a296ff.js"></script>
 
 
 

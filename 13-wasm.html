@@ -1,9 +1,9 @@
 <!DOCTYPE HTML>
-<html lang="en" class="rust sidebar-visible" dir="ltr">
+<html lang="en" class="light sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>WebAssembly / Browser - Bovista Architecture Guide</title>
+        <title>JavaScript Bindings - Bovista Architecture Guide</title>
 
 
         <!-- Custom HTML head -->
@@ -28,18 +28,18 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
-        <link rel="stylesheet" href="custom-681f4f87.css">
+        <link rel="stylesheet" href="custom-e21a0c71.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "rust";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6a6c8c20.js";
+            const default_light_theme = "light";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-ec0ef7b7.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5873499f.js"></script>
+        <script src="toc-17ace711.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -77,7 +77,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('rust')
+            html.classList.remove('light')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -178,57 +178,47 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="webassembly--browser"><a class="header" href="#webassembly--browser">WebAssembly &amp; Browser</a></h1>
-<p>Bovista compiles to WebAssembly via <a href="https://rustwasm.github.io/wasm-bindgen/">wasm-bindgen</a>. The resulting module loads directly in any browser with WebGPU support (Chrome 113+, Edge 113+, Safari 18+) with no server-side component.</p>
-<ul>
-<li><a href="#building">Building</a></li>
-<li><a href="#javascript-api">JavaScript API</a></li>
-<li><a href="#jsviewer"><code>JsViewer</code></a></li>
-<li><a href="#jslevelmetadata"><code>JsLevelMetadata</code></a></li>
-<li><a href="#jsimagevisual"><code>JsImageVisual</code></a></li>
-<li><a href="#jsvolumevisual"><code>JsVolumeVisual</code></a></li>
-<li><a href="#loader-pattern-full-example">Loader Pattern (full example)</a></li>
-<li><a href="#differences-from-the-python-api">Differences from the Python API</a></li>
-<li><a href="#binding-structure">Binding Structure</a></li>
-<li><a href="#browser-requirements">Browser Requirements</a></li>
-</ul>
+                        <h1 id="javascript-bindings"><a class="header" href="#javascript-bindings">JavaScript Bindings</a></h1>
+<p>Bovista compiles to WebAssembly via <a href="https://rustwasm.github.io/wasm-bindgen/">wasm-bindgen</a>. The module loads directly in any browser with WebGPU support (Chrome 113+, Edge 113+, Safari 18+), with no server-side component.</p>
 <h2 id="building"><a class="header" href="#building">Building</a></h2>
 <pre><code class="language-bash">./build_wasm.sh       # compiles Rust → WASM, generates JS bindings to examples/pkg/
 </code></pre>
-<p>The script installs <code>wasm32-unknown-unknown</code> if needed and invokes <code>wasm-bindgen</code>.</p>
-<p>To serve locally:</p>
+<p>The script installs <code>wasm32-unknown-unknown</code> if needed and invokes <code>wasm-bindgen</code>. To serve locally:</p>
 <pre><code class="language-bash">python3 -m http.server 8000 --directory examples
 # open http://localhost:8000/slice_viewer/
 </code></pre>
 <h2 id="javascript-api"><a class="header" href="#javascript-api">JavaScript API</a></h2>
-<p>The WASM module exposes camelCase JavaScript names. The correspondence to the Python API is intentional:</p>
+<p>The WASM module exposes camelCase names that mirror the Python API:</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Python</th><th>JavaScript</th></tr>
 </thead>
 <tbody>
-<tr><td><code>bv.Viewer(w, h)</code></td><td><code>await JsViewer.new("canvas-id")</code></td></tr>
-<tr><td><code>bv.Image(viewer, ...)</code></td><td><code>new JsImageVisual(viewer, ...)</code></td></tr>
-<tr><td><code>bv.Volume(viewer, ...)</code></td><td><code>new JsVolumeVisual(viewer, ...)</code></td></tr>
-<tr><td><code>bv.LevelMetadata(...)</code></td><td><code>new JsLevelMetadata(...)</code></td></tr>
-<tr><td><code>bv.ChunkStatus</code></td><td><code>JsChunkStatus</code></td></tr>
+<tr><td><code>bv.Viewer(w, h)</code></td><td><code>await Viewer.new("canvas-id")</code></td></tr>
+<tr><td><code>bv.Image(viewer, ...)</code></td><td><code>new Image(viewer, ...)</code></td></tr>
+<tr><td><code>bv.DirectVolume(viewer, ...)</code></td><td><code>new DirectVolume(viewer, ...)</code></td></tr>
+<tr><td><code>bv.MipVolume(viewer, ...)</code></td><td><code>new MipVolume(viewer, ...)</code></td></tr>
+<tr><td><code>bv.IsosurfaceVolume(viewer, ...)</code></td><td><code>new IsosurfaceVolume(viewer, ...)</code></td></tr>
+<tr><td><code>bv.LevelMetadata(...)</code></td><td><code>new LevelMetadata(...)</code></td></tr>
 <tr><td><code>viewer.add(image)</code></td><td><code>viewer.addImage(image)</code></td></tr>
-<tr><td><code>viewer.add(volume)</code></td><td><code>viewer.addVolume(volume)</code></td></tr>
+<tr><td><code>viewer.add(volume)</code></td><td><code>viewer.addDirectVolume(volume)</code></td></tr>
 <tr><td><code>viewer.add(points)</code></td><td><code>viewer.addPoints(points)</code></td></tr>
 <tr><td><code>viewer.add(lines)</code></td><td><code>viewer.addLines(lines)</code></td></tr>
 <tr><td><code>viewer.render_frame()</code></td><td><code>viewer.renderFrame()</code></td></tr>
+<tr><td><code>visual.wanted_keys()</code></td><td><code>visual.wantedKeys()</code></td></tr>
 <tr><td><code>visual.set_contrast(...)</code></td><td><code>visual.setContrast(...)</code></td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="jsviewer"><a class="header" href="#jsviewer"><code>JsViewer</code></a></h2>
-<pre><code class="language-javascript">import init, { JsViewer, JsImageVisual, JsVolumeVisual,
-               JsLevelMetadata, JsChunkStatus } from './pkg/bovista.js';
+<h2 id="viewer"><a class="header" href="#viewer"><code>Viewer</code></a></h2>
+<pre><code class="language-javascript">import init, { Viewer, Image, DirectVolume, MipVolume, MinipVolume,
+               AverageVolume, IsosurfaceVolume, Points, Lines,
+               LevelMetadata, ProjectionMode } from './bovista.js';
 
 await init();
 
-const viewer = await JsViewer.new('canvas');  // canvas element ID
+const viewer = await Viewer.new('canvas');  // canvas element ID
 
 // Camera
 viewer.setCameraPosition(x, y, z);
@@ -238,14 +228,17 @@ viewer.orbitCamera(dx, dy);
 viewer.panCamera(dx, dy);
 viewer.zoomCamera(delta);
 viewer.setCameraClipPlanes(near, far);
-viewer.setCameraProjectionMode(JsProjectionMode.Perspective);
+viewer.setCameraProjectionMode(ProjectionMode.Perspective);
 viewer.setCameraOrthoHeight(h);
 viewer.getCameraOrthoHeight();
 viewer.getCameraDistance();
 
 // Scene
-viewer.addImage(imageVisual);   // returns index
-viewer.addVolume(volumeVisual);
+viewer.addImage(image);            // returns index
+viewer.addDirectVolume(volume);    // one add* per volume mode:
+viewer.addMipVolume(volume);       //   addMipVolume / addMinipVolume /
+viewer.addAverageVolume(volume);   //   addAverageVolume / addIsosurfaceVolume
+viewer.addIsosurfaceVolume(volume);
 viewer.clearScene();
 viewer.visualCount();
 
@@ -253,27 +246,27 @@ viewer.visualCount();
 viewer.renderFrame();
 viewer.resize(w, h);            // call on canvas resize
 </code></pre>
-<h2 id="jslevelmetadata"><a class="header" href="#jslevelmetadata"><code>JsLevelMetadata</code></a></h2>
-<pre><code class="language-javascript">const level = new JsLevelMetadata(
-    width, height, depth,        // volume dimensions at this LOD
-    chunkW, chunkH, chunkD,      // tile size
-    voxelW, voxelH, voxelD,      // physical voxel size
-    scaleFactor,                  // relative to level 0
-    translateX, translateY, translateZ
+<h2 id="levelmetadata"><a class="header" href="#levelmetadata"><code>LevelMetadata</code></a></h2>
+<pre><code class="language-javascript">const level = new LevelMetadata(
+    [depth, height, width],          // volume_size [z,y,x] at this LOD
+    [chunkD, chunkH, chunkW],        // chunk_size  [z,y,x]
+    [voxelD, voxelH, voxelW],        // voxel_size  [z,y,x]
+    scaleFactor,                     // number, relative to level 0
+    [translateD, translateH, translateW]  // translation [z,y,x]
 );
 </code></pre>
-<p>Note: the constructor takes individual numbers (no objects). Getters return arrays:</p>
+<p>The first three arguments are <code>[z, y, x]</code> arrays (numpy order); <code>scaleFactor</code> is a single number. Getters return arrays:</p>
 <pre><code class="language-javascript">level.volume_size  // [depth, height, width]
 level.chunk_size   // [depth, height, width]
 level.voxel_size   // [depth, height, width]
 level.scale_factor // number
 </code></pre>
-<p>For anisotropic datasets (e.g. 2× downsampling in XY but not Z), pass <code>Math.max(vxI/vx0, vyI/vy0, vzI/vz0)</code> as <code>scaleFactor</code> — the largest downsampling factor across any axis. See the Python API docs for details.</p>
-<h2 id="jsimagevisual"><a class="header" href="#jsimagevisual"><code>JsImageVisual</code></a></h2>
-<pre><code class="language-javascript">const image = new JsImageVisual(viewer, levels, maxTiles, chunkLoader);
-// levels:      Array&lt;JsLevelMetadata&gt;
-// maxTiles:    number
-// chunkLoader: (lod, z, y, x) =&gt; JsChunkStatus
+<p>For anisotropic datasets (e.g. 2× downsampling in XY but not Z), pass <code>Math.max(vxI/vx0, vyI/vy0, vzI/vz0)</code> as <code>scaleFactor</code> — the largest factor across any axis. See the Python docs for details.</p>
+<h2 id="image"><a class="header" href="#image"><code>Image</code></a></h2>
+<pre><code class="language-javascript">const image = new Image(viewer, levels, maxChunks, atlasCount);
+// levels:     Array&lt;LevelMetadata&gt;
+// maxChunks:  number
+// atlasCount: number (optional, default 1)
 
 viewer.addImage(image);
 
@@ -292,69 +285,82 @@ image.setLodBias(bias);
 image.setDebugMode(true);
 image.getStats();                  // [loaded, visible]
 
-// Push tile data
-image.setChunkDataU16(lod, z, y, x, uint16Array, width, height, depth);
+// Pull-based tile loading
+image.wantedKeys();                // Uint32Array [lod,t,z,y,x,prio, ...] (6 ints/key)
+image.setChunkDataU16(lod, t, z, y, x, uint16Array, zShape, yShape, xShape);
 </code></pre>
-<h2 id="jsvolumevisual"><a class="header" href="#jsvolumevisual"><code>JsVolumeVisual</code></a></h2>
-<pre><code class="language-javascript">const volume = new JsVolumeVisual(viewer, levels, maxTiles, chunkLoader);
-viewer.addVolume(volume);
+<h2 id="volume-directvolume-mipvolume-minipvolume-averagevolume-isosurfacevolume"><a class="header" href="#volume-directvolume-mipvolume-minipvolume-averagevolume-isosurfacevolume">Volume (<code>DirectVolume</code>, <code>MipVolume</code>, <code>MinipVolume</code>, <code>AverageVolume</code>, <code>IsosurfaceVolume</code>)</a></h2>
+<p>Five classes, each constructed the same way and each exposing only the parameters that apply to it. <code>DirectVolume</code> is the default (front-to-back alpha-compositing DVR).</p>
+<pre><code class="language-javascript">const volume = new DirectVolume(viewer, levels, maxChunks, atlasCount);
+viewer.addDirectVolume(volume);
 
+// Shared by all five volume classes
 volume.setContrast(min, max);
 volume.setColormap(uint8Array);
-volume.setDensityScale(scale);
 volume.setRelativeStepSize(step);   // 1.0 = Nyquist
 volume.setLodBias(bias);
+volume.getStats();                  // [loaded, visible]
 
-// Debug
+// Pull-based tile loading
+volume.wantedKeys();                // Uint32Array [lod,t,z,y,x,prio, ...] (6 ints/key)
+volume.setChunkDataU16(lod, t, z, y, x, uint16Array, zShape, yShape, xShape);
+
+// DirectVolume extras
+volume.setDensityScale(scale);
+volume.setEarlyExitAlpha(alpha);
 volume.setDebugMode(true);          // LOD tint
 volume.setAtlasDebugMode(true);     // raw atlas
 volume.setStepDebugMode(true);      // step count heatmap
 
-volume.getStats();                  // [loaded, visible]
-volume.setChunkDataU16(lod, z, y, x, uint16Array, width, height, depth);
+// MipVolume extra:        mip.setAttenuation(attenuation);   // &gt;0 = attenuated MIP
+// IsosurfaceVolume extra: iso.setIsoThreshold(threshold);
+// MinipVolume / AverageVolume: no extras
 </code></pre>
-<h2 id="loader-pattern-full-example"><a class="header" href="#loader-pattern-full-example">Loader Pattern (full example)</a></h2>
+<h2 id="tile-loading-pull-based"><a class="header" href="#tile-loading-pull-based">Tile loading (pull-based)</a></h2>
+<p>There is no loader callback. Bovista publishes a “wanted” set every prepare/frame; the app polls it with <code>wantedKeys()</code>, fetches the tiles, and pushes data back with <code>setChunkDataU16(...)</code>. Keys are <code>(lod, t, z, y, x, priority)</code> sorted by priority (lower = more urgent, 0 = currently viewed). Cancellation is implicit: keys that leave the wanted set are no longer requested.</p>
 <pre><code class="language-javascript">const pending = new Set();
-const cache = new Map();
 
-function requestTile(lod, z, y, x) {
-    const key = `${lod}_${z}_${y}_${x}`;
-    if (pending.has(key)) return JsChunkStatus.AlreadyPending;
-    pending.add(key);
-
-    fetchZarrChunk(lod, z, y, x).then(({ data, w, h, d }) =&gt; {
-        image.setChunkDataU16(lod, z, y, x, data, w, h, d);
-        pending.delete(key);
-    }).catch(() =&gt; pending.delete(key));
-
-    return JsChunkStatus.Accepted;
+function pollTiles() {
+    const w = volume.wantedKeys();   // flat Uint32Array, 6 ints per key
+    for (let i = 0; i &lt; w.length; i += 6) {
+        const [lod, t, z, y, x, prio] = w.slice(i, i + 6);
+        const key = `${lod}_${t}_${z}_${y}_${x}`;
+        if (pending.has(key)) continue;   // already in flight
+        pending.add(key);
+        fetchTile(lod, t, z, y, x).then(({ data, zShape, yShape, xShape }) =&gt; {
+            volume.setChunkDataU16(lod, t, z, y, x, data, zShape, yShape, xShape);
+        }).finally(() =&gt; pending.delete(key));
+    }
 }
 
 // Render loop
 function frame() {
+    pollTiles();
     viewer.renderFrame();
     requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 </code></pre>
 <h2 id="differences-from-the-python-api"><a class="header" href="#differences-from-the-python-api">Differences from the Python API</a></h2>
-<p><strong>Initialization:</strong> <code>JsViewer.new()</code> is async (returns a Promise) and takes a canvas element ID; Python’s <code>Viewer()</code> is sync and initialization is a separate call.</p>
-<p><strong><code>add*</code> methods:</strong> JavaScript has <code>addImage()</code> and <code>addVolume()</code> as distinct methods since wasm-bindgen doesn’t support overloading via <code>PyAny</code>. Python uses a single polymorphic <code>add()</code>.</p>
-<p><strong>Error handling:</strong> JavaScript methods return <code>Result&lt;T, JsValue&gt;</code> which becomes a thrown exception on error. Python methods return <code>PyResult&lt;T&gt;</code> which becomes a Python exception.</p>
-<p><strong><code>getStats()</code> return type:</strong> JavaScript returns <code>number[]</code> (array); Python returns <code>(int, int)</code> tuple.</p>
-<p><strong><code>setChunkDataU16</code> signature:</strong> JavaScript takes explicit <code>width, height, depth</code> parameters after the data array. Python infers dimensions from the numpy array shape.</p>
-<p><strong>Thread safety:</strong> JavaScript is single-threaded — <code>Rc&lt;RefCell&lt;&gt;&gt;</code> instead of <code>Arc&lt;Mutex&lt;&gt;&gt;</code>. No locking overhead, but the visual must only be accessed from the main thread.</p>
-<h2 id="binding-structure"><a class="header" href="#binding-structure">Binding Structure</a></h2>
-<p>The WASM bindings live in <code>src/wasm.rs</code>. Like the Python bindings, the <code>#[visual_methods(VisualType)]</code> proc-macro generates the downcast + error-mapping boilerplate for empty-body methods.</p>
-<p><code>bindings_common.rs</code> provides <code>with_visual_ref</code> and <code>with_visual_mut</code> helpers that work with either <code>Arc&lt;Mutex&lt;&gt;&gt;</code> (native) or <code>Rc&lt;RefCell&lt;&gt;&gt;</code> (WASM) via a conditional type alias.</p>
-<h2 id="browser-requirements"><a class="header" href="#browser-requirements">Browser Requirements</a></h2>
 <ul>
-<li>Chrome 113+ or Edge 113+ (WebGPU enabled by default)</li>
-<li>Safari 18+ (requires WebGPU feature flag in earlier versions)</li>
-<li>Firefox: behind <code>dom.webgpu.enabled</code> flag</li>
-<li>Check browser support: <a href="https://webgpureport.org/">webgpureport.org</a></li>
+<li><strong>Initialization:</strong> <code>Viewer.new()</code> is async and takes a canvas element ID; Python’s <code>Viewer()</code> is sync, with a separate <code>initialize</code> call.</li>
+<li><strong><code>add*</code> methods:</strong> JS has one method per visual type (<code>addImage()</code>, <code>addDirectVolume()</code>, etc.) since wasm-bindgen can’t overload via <code>PyAny</code>; Python uses a single polymorphic <code>add()</code>.</li>
+<li><strong><code>wantedKeys()</code> return type:</strong> JS returns a flat <code>Uint32Array</code> (6 ints per key); Python returns a list of tuples. Both are sorted by priority.</li>
+<li><strong>Error handling:</strong> JS methods return <code>Result&lt;T, JsValue&gt;</code> (thrown exception); Python returns <code>PyResult&lt;T&gt;</code> (Python exception).</li>
+<li><strong><code>getStats()</code> return type:</strong> JS returns <code>number[]</code>; Python returns an <code>(int, int)</code> tuple.</li>
+<li><strong><code>setChunkDataU16</code> signature:</strong> JS takes explicit <code>zShape, yShape, xShape</code> after the data array; Python infers them from the numpy array shape.</li>
+<li><strong>Thread safety:</strong> JS is single-threaded — <code>Rc&lt;RefCell&lt;&gt;&gt;</code> instead of <code>Arc&lt;Mutex&lt;&gt;&gt;</code>. No locking overhead, but the visual must only be touched from the main thread.</li>
 </ul>
-<p>WebGPU is required; WebGL is not supported. If a user’s browser lacks WebGPU, the examples display a fallback message.</p>
+<h2 id="binding-structure"><a class="header" href="#binding-structure">Binding structure</a></h2>
+<p>The WASM bindings live in <code>src/wasm.rs</code>. As with Python, <code>#[visual_methods(VisualType)]</code> generates the downcast + error-mapping boilerplate for empty-body methods. <code>bindings_common.rs</code> provides <code>with_visual_ref</code> / <code>with_visual_mut</code> helpers that work with either <code>Arc&lt;Mutex&lt;&gt;&gt;</code> (native) or <code>Rc&lt;RefCell&lt;&gt;&gt;</code> (WASM) via a conditional type alias.</p>
+<h2 id="browser-requirements"><a class="header" href="#browser-requirements">Browser requirements</a></h2>
+<ul>
+<li>Chrome 113+ or Edge 113+ (WebGPU on by default)</li>
+<li>Safari 18+ (feature flag in earlier versions)</li>
+<li>Firefox: behind <code>dom.webgpu.enabled</code> flag</li>
+<li>Check support: <a href="https://webgpureport.org/">webgpureport.org</a></li>
+</ul>
+<p>WebGPU is required; WebGL is not supported. Browsers lacking WebGPU see a fallback message in the examples.</p>
 
                     </main>
 
@@ -364,7 +370,7 @@ requestAnimationFrame(frame);
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="examples-slice-viewer.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="api/bovista/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -378,7 +384,7 @@ requestAnimationFrame(frame);
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="examples-slice-viewer.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="api/bovista/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -407,7 +413,7 @@ requestAnimationFrame(frame);
         <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="custom-53791975.js"></script>
+        <script src="custom-10a296ff.js"></script>
 
 
 

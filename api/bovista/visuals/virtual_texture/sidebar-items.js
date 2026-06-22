@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_ATLAS_COUNT"],"fn":["wanted_sorted"],"struct":["LodLevelConfig","PrepareStats","VirtualTextureData"],"type":["PendingChunks","Wanted"]};

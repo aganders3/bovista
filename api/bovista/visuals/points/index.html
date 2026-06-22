@@ -1,0 +1,50 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Point cloud rendering for 3D scatter plots and particle systems."><title>bovista::visuals::points - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="bovista" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0 (ac68faa20 2026-05-25)" data-channel="1.96.0" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module points</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../bovista/index.html">bovista</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module points</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#examples" title="Examples">Examples</a><ul><li><a href="#creating-a-point-cloud-from-vertices" title="Creating a Point Cloud from Vertices">Creating a Point Cloud from Vertices</a></li><li><a href="#live-demo" title="Live Demo">Live Demo</a></li><li><a href="#python-usage" title="Python Usage">Python Usage</a></li><li><a href="#local-examples" title="Local Examples">Local Examples</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="../index.html">In bovista::<wbr>visuals</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">bovista</a>::<wbr><a href="../index.html">visuals</a></div><h1>Module <span>points</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/bovista/visuals/points.rs.html#1-412">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Point cloud rendering for 3D scatter plots and particle systems.</p>
+<p>This module provides <a href="struct.Points.html" title="struct bovista::visuals::points::Points"><code>Points</code></a> for rendering collections of colored points in 3D space.
+Each point has a position and RGB color, making it ideal for:</p>
+<ul>
+<li>Scientific data visualization (scatter plots)</li>
+<li>Particle systems</li>
+<li>Point cloud data from sensors (LiDAR, photogrammetry)</li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2><h3 id="creating-a-point-cloud-from-vertices"><a class="doc-anchor" href="#creating-a-point-cloud-from-vertices">§</a>Creating a Point Cloud from Vertices</h3>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>bovista::{Points, Renderer};
+<span class="kw">use </span>bovista::visuals::points::PointVertex;
+
+<span class="comment">// Create colored vertices
+</span><span class="kw">let </span>vertices = <span class="macro">vec!</span>[
+    PointVertex { position: [<span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>], color: [<span class="number">1.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>] }, <span class="comment">// Red
+    </span>PointVertex { position: [<span class="number">1.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>], color: [<span class="number">0.0</span>, <span class="number">1.0</span>, <span class="number">0.0</span>] }, <span class="comment">// Green
+    </span>PointVertex { position: [<span class="number">0.0</span>, <span class="number">1.0</span>, <span class="number">0.0</span>], color: [<span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">1.0</span>] }, <span class="comment">// Blue
+</span>];
+
+<span class="kw">let </span>points = Points::new(
+    renderer.device(),
+    renderer.surface_format(),
+    renderer.camera_bind_group_layout(),
+    vertices
+);</code></pre></div><h3 id="live-demo"><a class="doc-anchor" href="#live-demo">§</a>Live Demo</h3>
+<p><strong><a href="https://yourdomain.com/bovista/examples/point_cloud.html">🌐 Try it in your browser →</a></strong></p>
+<p>Runs directly in any browser with WebGPU support (Chrome 113+, Safari 18+).
+No installation required!</p>
+<h3 id="python-usage"><a class="doc-anchor" href="#python-usage">§</a>Python Usage</h3><div class="example-wrap"><pre class="language-python"><code>import bovista as bv
+import numpy as np
+
+viewer = bv.PyViewer(800, 600)
+viewer.initialize()
+
+# Generate random point cloud
+n_points = 10000
+positions = np.random.randn(n_points, 1, 3).astype(np.float32) * 2.0
+colors = np.random.rand(n_points, 1, 3).astype(np.float32)
+
+points = bv.PyPoints.from_numpy(viewer, positions, colors)
+viewer.add_points(points)
+viewer.run()  # Opens interactive window</code></pre></div><h3 id="local-examples"><a class="doc-anchor" href="#local-examples">§</a>Local Examples</h3><h4 id="desktop-rust"><a class="doc-anchor" href="#desktop-rust">§</a>Desktop (Rust)</h4><div class="example-wrap"><pre class="language-bash"><code>cargo run --example point_cloud</code></pre></div><h4 id="browser-wasm"><a class="doc-anchor" href="#browser-wasm">§</a>Browser (WASM)</h4><div class="example-wrap"><pre class="language-bash"><code>./build_wasm.sh wasm_point_cloud
+python3 -m http.server 8000 --directory web
+# Open http://localhost:8000</code></pre></div><h4 id="controls"><a class="doc-anchor" href="#controls">§</a>Controls</h4>
+<ul>
+<li><strong>Left-drag</strong>: Orbit camera</li>
+<li><strong>Scroll</strong>: Zoom in/out</li>
+<li><strong>Close</strong>: Exit</li>
+</ul>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.PointVertex.html" title="struct bovista::visuals::points::PointVertex">Point<wbr>Vertex</a></dt><dd>A vertex in a point cloud with position and RGB color.</dd><dt><a class="struct" href="struct.Points.html" title="struct bovista::visuals::points::Points">Points</a></dt><dd>Visual for rendering point clouds in 3D space.</dd></dl></section></div></main></body></html>

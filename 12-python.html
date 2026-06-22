@@ -1,9 +1,9 @@
 <!DOCTYPE HTML>
-<html lang="en" class="rust sidebar-visible" dir="ltr">
+<html lang="en" class="light sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Python API - Bovista Architecture Guide</title>
+        <title>Python Bindings - Bovista Architecture Guide</title>
 
 
         <!-- Custom HTML head -->
@@ -28,18 +28,18 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
-        <link rel="stylesheet" href="custom-681f4f87.css">
+        <link rel="stylesheet" href="custom-e21a0c71.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "rust";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6a6c8c20.js";
+            const default_light_theme = "light";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-ec0ef7b7.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-5873499f.js"></script>
+        <script src="toc-17ace711.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -77,7 +77,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('rust')
+            html.classList.remove('light')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -179,41 +179,26 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="python-bindings"><a class="header" href="#python-bindings">Python Bindings</a></h1>
-<p>Bovista exposes a Python API via <a href="https://pyo3.rs/">PyO3</a>. The binding layer is thin: it translates Python types to Rust types, bridges the async chunk-loading pattern, and otherwise delegates directly to the core library.</p>
-<ul>
-<li><a href="#installation">Installation</a></li>
-<li><a href="#viewer"><code>Viewer</code></a></li>
-<li><a href="#levelmetadata"><code>LevelMetadata</code></a></li>
-<li><a href="#image"><code>Image</code></a></li>
-<li><a href="#volume"><code>Volume</code></a></li>
-<li><a href="#points"><code>Points</code></a></li>
-<li><a href="#lines"><code>Lines</code></a></li>
-<li><a href="#custom"><code>Custom</code></a></li>
-<li><a href="#chunkstatus"><code>ChunkStatus</code></a></li>
-<li><a href="#projectionmode"><code>ProjectionMode</code></a></li>
-<li><a href="#loader-pattern-full-example">Loader Pattern (full example)</a></li>
-<li><a href="#binding-structure">Binding Structure</a></li>
-</ul>
+<p>Bovista exposes a Python API via <a href="https://pyo3.rs/">PyO3</a>. The binding layer is thin: it converts Python types to Rust, exposes the pull-based tile-loading API, and delegates to the core library.</p>
 <h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
 <pre><code class="language-bash">uv sync   # builds the Rust extension and installs Python dependencies
 </code></pre>
 <p>or with maturin directly:</p>
 <pre><code class="language-bash">maturin develop --features python --release
 </code></pre>
-<p>Import as:</p>
 <pre><code class="language-python">import bovista as bv
 </code></pre>
 <h2 id="viewer"><a class="header" href="#viewer"><code>Viewer</code></a></h2>
-<p>The top-level object that owns the GPU device, renderer, camera, and scene.</p>
+<p>The top-level object owns the GPU device, renderer, camera, and scene.</p>
 <pre><code class="language-python">viewer = bv.Viewer(width=800, height=600)
 </code></pre>
-<p><strong>Initialization:</strong></p>
+<p>Initialization:</p>
 <ul>
-<li><code>viewer.initialize()</code> — headless / offscreen initialization (no window)</li>
-<li><code>viewer.initialize_with_window(handle, width, height)</code> — attach to an existing native window handle (NSView on macOS, HWND on Windows, X11 Window on Linux); used when embedding in Qt or other GUI toolkits</li>
+<li><code>viewer.initialize()</code> — headless / offscreen (no window)</li>
+<li><code>viewer.initialize_with_window(handle, width, height)</code> — attach to a native window handle (NSView / HWND / X11 Window) for embedding in Qt or other toolkits</li>
 <li><code>viewer.run()</code> — open a standalone winit window and block until closed</li>
 </ul>
-<p><strong>Camera:</strong></p>
+<p>Camera:</p>
 <pre><code class="language-python">viewer.set_camera_position(x, y, z)
 viewer.set_camera_target(x, y, z)
 viewer.set_camera_up(x, y, z)
@@ -227,12 +212,12 @@ viewer.set_camera_ortho_height(height)
 viewer.get_camera_ortho_height() -&gt; float
 viewer.get_camera_distance() -&gt; float
 </code></pre>
-<p><strong>Scene management:</strong></p>
+<p>Scene management:</p>
 <pre><code class="language-python">idx = viewer.add(visual)          # add any visual; returns index
 viewer.clear_visuals()            # remove all
 viewer.visual_count() -&gt; int
 </code></pre>
-<p><strong>Render loop (embedded mode):</strong></p>
+<p>Render loop (embedded mode):</p>
 <pre><code class="language-python">viewer.render_frame()   # render one frame to the attached window surface
 viewer.resize(w, h)     # call when the window is resized
 </code></pre>
@@ -247,84 +232,94 @@ viewer.resize(w, h)     # call when the window is resized
 )
 </code></pre>
 <p>All sizes use <code>(depth/z, height/y, width/x)</code> ordering to match OME-Zarr / NumPy convention.</p>
-<p><strong><code>scale_factor</code> for anisotropic datasets:</strong> <code>scale_factor</code> is a single scalar used by the LOD
-selection to estimate how many screen pixels a voxel covers at this level. For isotropic 2×
-downsampling use <code>2.0</code>, <code>4.0</code>, etc. For anisotropic downsampling (e.g. 2× in XY but not Z), use
-<code>max(vz_i/vz_0, vy_i/vy_0, vx_i/vx_0)</code> — the largest downsampling factor across any axis. This is
-a conservative approximation: it biases toward finer LODs, which is correct for a viewer where the
-user can rotate freely. A future improvement would make LOD selection view-direction-aware so the
-relevant axis is weighted automatically.</p>
+<p><code>scale_factor</code> is a scalar the LOD selector uses to estimate how many screen pixels a voxel covers at this level. For isotropic 2× downsampling use <code>2.0</code>, <code>4.0</code>, etc. For anisotropic downsampling (e.g. 2× in XY but not Z), use <code>max(vz_i/vz_0, vy_i/vy_0, vx_i/vx_0)</code> — the largest factor across any axis. This biases toward finer LODs, which is correct for a freely-rotating viewer. A future improvement would make LOD selection view-direction-aware.</p>
 <h2 id="image"><a class="header" href="#image"><code>Image</code></a></h2>
 <p>Renders arbitrary-orientation slice planes through a multi-resolution volume.</p>
 <pre><code class="language-python">image = bv.Image(
     viewer,           # must be initialized first
     levels,           # list[LevelMetadata], finest first
     max_tiles=500,    # VRAM budget in tiles
-    loader=request,   # callback: (lod, z, y, x) -&gt; ChunkStatus
+    atlas_count=1,    # optional; number of atlas pages
 )
 viewer.add(image)
 </code></pre>
-<p><strong>Slice control:</strong></p>
+<p>Slice control:</p>
 <pre><code class="language-python">image.set_slice_z(z)                              # axis-aligned Z slice
 image.set_slice_y(y)
 image.set_slice_x(x)
 image.set_slice_plane(px, py, pz, nx, ny, nz)     # arbitrary plane
 </code></pre>
-<p><strong>Appearance:</strong></p>
+<p>Appearance:</p>
 <pre><code class="language-python">image.set_contrast(min_val, max_val)              # 0.0–1.0 normalized
 image.set_colormap(rgba_array)                    # numpy (256, 4) uint8; None = grayscale
 image.set_lod_bias(bias)                          # positive = finer LOD
 </code></pre>
-<p><strong>Diagnostics:</strong></p>
+<p>Diagnostics:</p>
 <pre><code class="language-python">image.set_debug_mode(True)                        # LOD tint visualization
 loaded, visible = image.get_stats()               # tile counts
 </code></pre>
-<p><strong>Push tile data</strong> (called from loader background thread):</p>
-<pre><code class="language-python">image.set_chunk_data_u16(lod, z, y, x, array)    # numpy uint16 array
+<p>Tile streaming (pull-based; see <a href="#tile-loading-pull-based">Tile loading</a>):</p>
+<pre><code class="language-python">for lod, t, z, y, x, priority in image.wanted_keys():
+    ...                                           # fetch + push
+image.set_chunk_data_u16(lod, t, z, y, x, array)  # numpy uint16 array
 </code></pre>
-<h2 id="volume"><a class="header" href="#volume"><code>Volume</code></a></h2>
-<p>Direct volume rendering via GPU ray marching. Shares the same virtual-texture back-end as <code>Image</code>.</p>
-<pre><code class="language-python">volume = bv.Volume(
+<h2 id="volume-classes"><a class="header" href="#volume-classes">Volume classes</a></h2>
+<p>Direct volume rendering via GPU ray marching, sharing the same virtual-texture back-end as <code>Image</code>. There are five classes — one per ray-marching mode. They share an identical constructor and the common controls below; each adds the parameters relevant to its mode.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Class</th><th>Mode</th><th>Mode-specific params</th></tr>
+</thead>
+<tbody>
+<tr><td><code>bv.DirectVolume</code></td><td>Front-to-back alpha compositing (default DVR)</td><td><code>set_density_scale</code>, <code>set_early_exit_alpha</code>, <code>set_debug_mode</code>, <code>set_atlas_debug_mode</code>, <code>set_step_debug_mode</code></td></tr>
+<tr><td><code>bv.MipVolume</code></td><td>Maximum intensity projection (<code>set_attenuation &gt; 0</code> → napari-style attenuated MIP)</td><td><code>set_attenuation</code></td></tr>
+<tr><td><code>bv.MinipVolume</code></td><td>Minimum intensity projection</td><td>—</td></tr>
+<tr><td><code>bv.AverageVolume</code></td><td>Mean intensity along the ray</td><td>—</td></tr>
+<tr><td><code>bv.IsosurfaceVolume</code></td><td>First-hit isosurface with Phong shading</td><td><code>set_iso_threshold</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-python">volume = bv.DirectVolume(
     viewer,
     levels,
     max_tiles=2000,
-    loader=request,
+    atlas_count=1,    # optional
 )
 viewer.add(volume)
 </code></pre>
-<p><strong>Controls:</strong></p>
+<p>Common controls (all five classes):</p>
 <pre><code class="language-python">volume.set_contrast(min_val, max_val)
 volume.set_colormap(rgba_array)
-volume.set_density_scale(scale)          # opacity multiplier per step
 volume.set_relative_step_size(step)      # 1.0 = Nyquist; larger = faster, coarser
 volume.set_lod_bias(bias)
 </code></pre>
-<p><strong>Debug modes:</strong></p>
-<pre><code class="language-python">volume.set_debug_mode(True)              # LOD tint (mode 1)
+<p><code>DirectVolume</code> extras:</p>
+<pre><code class="language-python">volume.set_density_scale(scale)          # opacity multiplier per step
+volume.set_early_exit_alpha(alpha)       # terminate ray when opacity saturates
+volume.set_debug_mode(True)              # LOD tint (mode 1)
 volume.set_atlas_debug_mode(True)        # raw atlas visualization (mode 2)
 volume.set_step_debug_mode(True)         # ray-march step count heatmap (mode 3)
 </code></pre>
-<p><strong>Stats / data:</strong></p>
+<p><code>MipVolume</code> extra: <code>volume.set_attenuation(strength)</code> — <code>0</code> is plain MIP; <code>&gt; 0</code> attenuates.
+<code>IsosurfaceVolume</code> extra: <code>volume.set_iso_threshold(t)</code> — normalized 0–1 first-hit level.</p>
+<p>Stats / tile data (common to all):</p>
 <pre><code class="language-python">loaded, visible = volume.get_stats()
-volume.set_chunk_data_u16(lod, z, y, x, array)
+for lod, t, z, y, x, priority in volume.wanted_keys():
+    ...
+volume.set_chunk_data_u16(lod, t, z, y, x, array)
 </code></pre>
-<h2 id="points"><a class="header" href="#points"><code>Points</code></a></h2>
-<p>Point cloud rendering. Static geometry — no streaming.</p>
+<h2 id="points-lines-custom"><a class="header" href="#points-lines-custom"><code>Points</code>, <code>Lines</code>, <code>Custom</code></a></h2>
+<p><code>Points</code> renders a point cloud; <code>Lines</code> renders segments (each vertex pair is one segment). Both are static geometry — no streaming.</p>
 <pre><code class="language-python">points = bv.Points.from_numpy(viewer, positions, colors)
 # positions: numpy (N, 1, 3) float32
 # colors:    numpy (N, 1, 3) float32  (RGB 0-1)
 viewer.add(points)
+viewer.add(bv.Points.test_cube(viewer, size=10))       # quick test shape
 
-# or a quick test shape:
-viewer.add(bv.Points.test_cube(viewer, size=10))
-</code></pre>
-<h2 id="lines"><a class="header" href="#lines"><code>Lines</code></a></h2>
-<p>Line segment rendering. Each pair of vertices forms one segment.</p>
-<pre><code class="language-python">viewer.add(bv.Lines.axis_helper(viewer, length=1.0))   # RGB axis gizmo
+viewer.add(bv.Lines.axis_helper(viewer, length=1.0))   # RGB axis gizmo
 viewer.add(bv.Lines.test_cube(viewer))
 </code></pre>
-<h2 id="custom"><a class="header" href="#custom"><code>Custom</code></a></h2>
-<p>User-defined WGSL shader. The shader must expose <code>vs_main</code> / <code>fs_main</code> entry points and declare the camera uniforms at <code>@group(0) @binding(0)</code>.</p>
+<p><code>Custom</code> runs a user-defined WGSL shader. It must expose <code>vs_main</code> / <code>fs_main</code> entry points and declare the camera uniforms at <code>@group(0) @binding(0)</code>.</p>
 <pre><code class="language-python">shader = """
 struct Uniforms { view_proj: mat4x4&lt;f32&gt; }
 @group(0) @binding(0) var&lt;uniform&gt; uniforms: Uniforms;
@@ -345,53 +340,73 @@ layout = bv.VertexBufferLayout(
 custom = bv.Custom.new(viewer, shader, vertices.tobytes(), layout, "triangle_list")
 viewer.add(custom)
 </code></pre>
-<h2 id="chunkstatus"><a class="header" href="#chunkstatus"><code>ChunkStatus</code></a></h2>
-<p>Returned by loader callbacks:</p>
-<pre><code class="language-python">bv.ChunkStatus.Accepted       # load started; data will arrive via set_chunk_data_u16
-bv.ChunkStatus.AlreadyPending # already loading; skip
-bv.ChunkStatus.Rejected       # can't accept; Bovista will retry next frame
+<h2 id="tile-loading-pull-based"><a class="header" href="#tile-loading-pull-based">Tile loading (pull-based)</a></h2>
+<p>Bovista uses a <strong>pull</strong> model: each frame it publishes the tiles it wants, sorted by priority, and the application polls that set and pushes data back. There is no loader callback and no hot-path FFI; cancellation is implicit, since keys that leave the wanted set are never re-fetched.</p>
+<ul>
+<li><code>image.wanted_keys()</code> (identical on every volume class) returns a list of <code>(lod, t, z, y, x, priority)</code> tuples sorted by priority (lower = more urgent; <code>0</code> = currently viewed). <code>t</code> is the timepoint.</li>
+<li><code>image.set_chunk_data_u16(lod, t, z, y, x, array)</code> pushes a fetched tile back in. <code>array</code> is a NumPy <code>uint16</code> array shaped <code>(z, y, x)</code>.</li>
+</ul>
+<pre><code class="language-python">import numpy as np
+
+def poll_tiles():
+    for lod, t, z, y, x, priority in image.wanted_keys():
+        level = zarr_levels[lod]
+        cd, ch, cw = level.chunks
+        data = level[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw]
+        image.set_chunk_data_u16(lod, t, z, y, x, np.asarray(data, dtype=np.uint16))
 </code></pre>
-<h2 id="projectionmode"><a class="header" href="#projectionmode"><code>ProjectionMode</code></a></h2>
-<pre><code class="language-python">bv.ProjectionMode.Perspective
-bv.ProjectionMode.Orthographic
-</code></pre>
-<h2 id="loader-pattern-full-example"><a class="header" href="#loader-pattern-full-example">Loader Pattern (full example)</a></h2>
+<p><code>ProjectionMode</code> values are <code>bv.ProjectionMode.Perspective</code> and <code>bv.ProjectionMode.Orthographic</code>.</p>
+<h3 id="loader-pattern-full-example"><a class="header" href="#loader-pattern-full-example">Loader pattern (full example)</a></h3>
+<p>A background thread polls <code>wanted_keys()</code> and dispatches fetches via a thread pool; results are pushed back through <code>set_chunk_data_u16</code>. The loop tracks what is in flight to avoid double-fetching; keys that leave the wanted set are never re-submitted.</p>
 <pre><code class="language-python">from concurrent.futures import ThreadPoolExecutor
 import threading
 import numpy as np
 
 executor = ThreadPoolExecutor(max_workers=8)
-_pending = set()
-_lock = threading.Lock()
 
-def request_tile(lod, z, y, x):
-    key = (lod, z, y, x)
-    with _lock:
-        if key in _pending:
-            return bv.ChunkStatus.AlreadyPending
-        _pending.add(key)
+def start_loader(volume):
+    in_flight = set()
+    lock = threading.Lock()
+    stop = threading.Event()
 
-    executor.submit(_load, key)
-    return bv.ChunkStatus.Accepted
+    def load(lod, t, z, y, x):
+        level = zarr_levels[lod]
+        cd, ch, cw = level.chunks
+        return np.asarray(
+            level[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw],
+            dtype=np.uint16,
+        )
 
-def _load(key):
-    lod, z, y, x = key
-    level = zarr_levels[lod]
-    cd, ch, cw = level.chunks
-    data = level[z*cd:(z+1)*cd, y*ch:(y+1)*ch, x*cw:(x+1)*cw]
-    image.set_chunk_data_u16(lod, z, y, x, np.asarray(data, dtype=np.uint16))
-    with _lock:
-        _pending.discard(key)
+    def on_loaded(key, future):
+        with lock:
+            in_flight.discard(key)
+        data = future.result()
+        if data is not None:
+            volume.set_chunk_data_u16(*key, data)
+
+    def poll():
+        while not stop.is_set():
+            for lod, t, z, y, x, _priority in volume.wanted_keys():
+                key = (lod, t, z, y, x)
+                with lock:
+                    if key in in_flight or len(in_flight) &gt;= 8:
+                        continue
+                    in_flight.add(key)
+                future = executor.submit(load, *key)
+                future.add_done_callback(lambda f, k=key: on_loaded(k, f))
+            stop.wait(0.02)
+
+    threading.Thread(target=poll, daemon=True).start()
 </code></pre>
-<h2 id="binding-structure"><a class="header" href="#binding-structure">Binding Structure</a></h2>
-<p>The Python bindings live in <code>src/python.rs</code>. The <code>#[visual_methods(VisualType)]</code> procedural macro (in <code>bovista-codegen/</code>) generates the boilerplate downcast + error mapping for methods with empty bodies — keeping the binding file focused on constructors and type-conversion logic.</p>
-<p>The <code>Arc&lt;Mutex&lt;dyn Visual&gt;&gt;</code> reference type (<code>VisualRef</code>) is shared between the Python wrapper and the <code>Scene</code>, so the viewer can call <code>prepare()</code> and <code>render()</code> on visuals without the Python wrapper holding the lock.</p>
+<h2 id="binding-structure"><a class="header" href="#binding-structure">Binding structure</a></h2>
+<p>The Python bindings live in <code>src/python.rs</code>. The <code>#[visual_methods(VisualType)]</code> proc-macro (in <code>bovista-codegen/</code>) generates the downcast + error-mapping boilerplate for empty-body methods, keeping the binding file focused on constructors and type conversion.</p>
+<p>The <code>Arc&lt;Mutex&lt;dyn Visual&gt;&gt;</code> reference type (<code>VisualRef</code>) is shared between the Python wrapper and the <code>Scene</code>, so the viewer can call <code>prepare()</code> and <code>render()</code> without the wrapper holding the lock.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="01-philosophy.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -405,7 +420,7 @@ def _load(key):
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="01-philosophy.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
@@ -438,7 +453,7 @@ def _load(key):
         <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="custom-53791975.js"></script>
+        <script src="custom-10a296ff.js"></script>
 
 
 
