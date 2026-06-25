@@ -1,9 +1,9 @@
 // Force recompilation when any shader file changes.
 const _SHADER_HASH: &str = env!("SHADER_HASH");
 
-use crate::visual::{Transform, Visual};
+use crate::visual::{BlendMode, Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
-use crate::visuals::gpu_structs::{VolumeVertex, VolumeUniforms, VTUniforms, VTLodInfo, VT_MAX_LODS};
+use crate::visuals::gpu_structs::{ADDITIVE_BLENDING, VolumeVertex, VolumeUniforms, VTUniforms, VTLodInfo, VT_MAX_LODS};
 use wgpu::RenderPass;
 
 // ── Internal: rendering modes (one pipeline per mode) ───────────────────────
@@ -109,11 +109,15 @@ pub struct VolumeCore {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
 
-    /// Pipeline for this visual's mode; fixed at construction.
-    pipeline: wgpu::RenderPipeline,
+    /// Pipelines for this visual's mode; the two variants differ only in blend
+    /// state. `blend_mode` selects which `render()` binds.
+    pipeline_normal: wgpu::RenderPipeline,
+    pipeline_additive: wgpu::RenderPipeline,
 
     contrast_limits: (f32, f32),
     relative_step_size: f32,
+    blend_mode: BlendMode,
+    opacity: f32,
     frame_number: u64,
 
     transform: Transform,
@@ -330,45 +334,57 @@ impl VolumeCore {
             bind_group_layouts: &[camera_bind_group_layout, &vt_bgl, &colormap_bgl],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Volume Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[VolumeVertex::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some(mode.fragment_entry()),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Front),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
-            multiview: None,
-            cache: None,
-        });
+        // Two pipeline variants differing only in blend state (both keep
+        // depth-write off — volumes never wrote depth). Normal: premultiplied
+        // alpha; Additive: src+dst on the (already premultiplied) output, for
+        // order-independent multi-channel compositing.
+        let make_pipeline = |label: &str, blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[VolumeVertex::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(mode.fragment_entry()),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Front),
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth24PlusStencil8,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+                multiview: None,
+                cache: None,
+            })
+        };
+        let pipeline_normal = make_pipeline(
+            "Volume Render Pipeline (normal)",
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        );
+        let pipeline_additive =
+            make_pipeline("Volume Render Pipeline (additive)", ADDITIVE_BLENDING);
 
         let default_name = match mode {
             VolumeRenderMode::Translucent   => "DirectVolume",
@@ -388,9 +404,12 @@ impl VolumeCore {
             vol_uniform_buffer,
             vertex_buffer,
             index_buffer,
-            pipeline,
+            pipeline_normal,
+            pipeline_additive,
             contrast_limits: (0.0, 1.0),
             relative_step_size: 1.0,
+            blend_mode: BlendMode::Normal,
+            opacity: 1.0,
             frame_number: 0,
             transform: Transform::identity(),
             visible: true,
@@ -472,6 +491,13 @@ impl VolumeCore {
             page_table_width: vt.page_table.width,
             target_lod: vt.cached_ideal_lod as u32,
             desired_t: vt.desired_t(),
+            // Volumes apply opacity via VolumeUniforms.opacity (the raymarch
+            // shader reads `vol.opacity`); this field is unused by the volume
+            // shader but kept consistent.
+            opacity: self.opacity,
+            _pad_op0: 0.0,
+            _pad_op1: 0.0,
+            _pad_op2: 0.0,
             lods,
         };
 
@@ -494,7 +520,7 @@ impl VolumeCore {
             debug_mode: extras.debug_mode,
             iso_threshold: extras.iso_threshold,
             attenuation: extras.attenuation,
-            _pad0: 0.0,
+            opacity: self.opacity,
             _pad1: 0.0,
         };
 
@@ -503,7 +529,11 @@ impl VolumeCore {
     }
 
     fn render(&self, render_pass: &mut RenderPass) {
-        render_pass.set_pipeline(&self.pipeline);
+        let pipeline = match self.blend_mode {
+            BlendMode::Normal => &self.pipeline_normal,
+            BlendMode::Additive => &self.pipeline_additive,
+        };
+        render_pass.set_pipeline(pipeline);
         // @group(0) is the renderer's camera bind group, bound by Scene::render.
         render_pass.set_bind_group(1, &self.vt_bind_group, &[]);
         render_pass.set_bind_group(2, &self.colormap_bind_group, &[]);
@@ -517,6 +547,10 @@ impl VolumeCore {
     pub fn set_name(&mut self, name: String) { self.name = name; }
     pub fn set_relative_step_size(&mut self, step: f32) { self.relative_step_size = step; }
     pub fn set_contrast_limits(&mut self, min: f32, max: f32) { self.contrast_limits = (min, max); }
+    pub fn set_blend_mode(&mut self, mode: BlendMode) { self.blend_mode = mode; }
+    pub fn blend_mode(&self) -> BlendMode { self.blend_mode }
+    pub fn set_opacity(&mut self, opacity: f32) { self.opacity = opacity.clamp(0.0, 1.0); }
+    pub fn opacity(&self) -> f32 { self.opacity }
 
     /// Upload a 256-entry RGBA colormap (1024 bytes, values 0–255).
     /// An empty or wrong-length slice resets to the default grayscale.
@@ -575,6 +609,10 @@ macro_rules! impl_volume_visual {
             fn transform(&self) -> &Transform { &self.core.transform }
             fn is_visible(&self) -> bool { self.core.visible }
             fn set_visible(&mut self, visible: bool) { self.core.visible = visible; }
+            fn set_blend_mode(&mut self, mode: BlendMode) { self.core.set_blend_mode(mode); }
+            fn blend_mode(&self) -> BlendMode { self.core.blend_mode() }
+            fn set_opacity(&mut self, opacity: f32) { self.core.set_opacity(opacity); }
+            fn opacity(&self) -> f32 { self.core.opacity() }
             fn name(&self) -> &str { &self.core.name }
         }
     };

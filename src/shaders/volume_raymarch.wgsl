@@ -47,6 +47,11 @@ struct VTUniforms {
     page_table_width: u32,
     target_lod: u32,
     desired_t: u32,
+    // Mirror of the Rust VTUniforms: opacity + 3 pad keep `lods` 16-byte aligned.
+    opacity: f32,
+    _pad_op0: f32,
+    _pad_op1: f32,
+    _pad_op2: f32,
     lods: array<VTLodInfo, 16>,
 }
 
@@ -73,7 +78,8 @@ struct VolumeUniforms {
     iso_threshold: f32,
     /// Attenuated-MIP falloff per accumulated normalised density. fs_mip.
     attenuation: f32,
-    _pad0: f32,
+    /// Per-visual opacity multiplier in [0, 1], applied to the final output.
+    opacity: f32,
     _pad1: f32,
 }
 
@@ -361,10 +367,11 @@ fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
             clamp(1.0 - abs(s_norm * 2.0 - 1.0), 0.0, 1.0),
             clamp(1.0 - s_norm * 2.0, 0.0, 1.0),
         );
-        return vec4f(heat, 1.0);
+        return vec4f(heat * vol.opacity, vol.opacity);
     }
 
-    return encode_srgb(vec4f(accum_color, accum_alpha));
+    // accum_color is already premultiplied; scale both by per-visual opacity.
+    return encode_srgb(vec4f(accum_color * vol.opacity, accum_alpha * vol.opacity));
 }
 
 // ── Mode: attenuated MIP ─────────────────────────────────────────────────────
@@ -415,7 +422,7 @@ fn fs_mip(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if !any_hit { discard; }
     let cs = sample_colormap(contrast_normalise(maxval));
-    return encode_srgb(vec4f(cs.rgb, 1.0));
+    return encode_srgb(vec4f(cs.rgb * vol.opacity, vol.opacity));
 }
 
 // ── Mode: minIP ──────────────────────────────────────────────────────────────
@@ -447,7 +454,7 @@ fn fs_minip(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if !any_hit { discard; }
     let cs = sample_colormap(contrast_normalise(min_val));
-    return encode_srgb(vec4f(cs.rgb, 1.0));
+    return encode_srgb(vec4f(cs.rgb * vol.opacity, vol.opacity));
 }
 
 // ── Mode: average ────────────────────────────────────────────────────────────
@@ -481,7 +488,7 @@ fn fs_average(in: VertexOutput) -> @location(0) vec4<f32> {
     if n == 0u { discard; }
     let mean = sum / f32(n);
     let cs = sample_colormap(contrast_normalise(mean));
-    return encode_srgb(vec4f(cs.rgb, 1.0));
+    return encode_srgb(vec4f(cs.rgb * vol.opacity, vol.opacity));
 }
 
 // ── Mode: isosurface ─────────────────────────────────────────────────────────
@@ -614,5 +621,5 @@ fn fs_iso(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient  = 0.2 * base;
     let diffuse  = 0.7 * ndotl * base;
     let specular = 0.3 * spec * vec3f(1.0);
-    return encode_srgb(vec4f(ambient + diffuse + specular, 1.0));
+    return encode_srgb(vec4f((ambient + diffuse + specular) * vol.opacity, vol.opacity));
 }

@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, Custom, Image, Lines, Points, Renderer, Scene, SlicePlane,
+    BlendMode, Camera, Custom, Image, Lines, Points, Renderer, Scene, SlicePlane,
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
-    VertexBufferLayout,
+    VertexBufferLayout, Visual,
 };
 use bovista_codegen::{camera_methods, visual_methods};
 
@@ -44,6 +44,33 @@ impl From<crate::ProjectionMode> for PyProjectionMode {
         match mode {
             crate::ProjectionMode::Perspective => PyProjectionMode::Perspective,
             crate::ProjectionMode::Orthographic => PyProjectionMode::Orthographic,
+        }
+    }
+}
+
+/// How a visual composites with the framebuffer. `Additive` (order-independent)
+/// is the basis for multi-channel compositing.
+#[pyclass(name = "BlendMode", eq, eq_int)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PyBlendMode {
+    Normal = 0,
+    Additive = 1,
+}
+
+impl From<PyBlendMode> for BlendMode {
+    fn from(mode: PyBlendMode) -> Self {
+        match mode {
+            PyBlendMode::Normal => BlendMode::Normal,
+            PyBlendMode::Additive => BlendMode::Additive,
+        }
+    }
+}
+
+impl From<BlendMode> for PyBlendMode {
+    fn from(mode: BlendMode) -> Self {
+        match mode {
+            BlendMode::Normal => PyBlendMode::Normal,
+            BlendMode::Additive => PyBlendMode::Additive,
         }
     }
 }
@@ -809,6 +836,19 @@ macro_rules! py_vt_visual {
             /// LOD bias: positive = prefer finer LOD, negative = prefer coarser.
             fn set_lod_bias(&self, bias: f32) -> PyResult<()> {}
 
+            /// Set the blend mode (Normal or Additive). Additive enables
+            /// order-independent multi-channel compositing.
+            fn set_blend_mode(&self, mode: PyBlendMode) -> PyResult<()> {
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(&self.inner, |v| v.set_blend_mode(mode.into()))
+                    .map_err(pyo3::exceptions::PyTypeError::new_err)
+            }
+
+            /// Set per-visual opacity in [0, 1].
+            fn set_opacity(&self, opacity: f32) -> PyResult<()> {
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(&self.inner, |v| v.set_opacity(opacity))
+                    .map_err(pyo3::exceptions::PyTypeError::new_err)
+            }
+
             /// Provide uint16 tile data (full u16 range maps to [0, 1]).
             fn set_chunk_data_u16(
                 &self,
@@ -937,5 +977,6 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCustom>()?;
     m.add_class::<PyVertexBufferLayout>()?;
     m.add_class::<PyProjectionMode>()?;
+    m.add_class::<PyBlendMode>()?;
     Ok(())
 }

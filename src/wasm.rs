@@ -32,6 +32,33 @@ impl From<crate::ProjectionMode> for JsProjectionMode {
     }
 }
 
+/// How a visual composites with the framebuffer. `Additive` (order-independent)
+/// is the basis for multi-channel compositing.
+#[wasm_bindgen(js_name = "BlendMode")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsBlendMode {
+    Normal = 0,
+    Additive = 1,
+}
+
+impl From<JsBlendMode> for BlendMode {
+    fn from(mode: JsBlendMode) -> Self {
+        match mode {
+            JsBlendMode::Normal => BlendMode::Normal,
+            JsBlendMode::Additive => BlendMode::Additive,
+        }
+    }
+}
+
+impl From<BlendMode> for JsBlendMode {
+    fn from(mode: BlendMode) -> Self {
+        match mode {
+            BlendMode::Normal => JsBlendMode::Normal,
+            BlendMode::Additive => JsBlendMode::Additive,
+        }
+    }
+}
+
 use std::rc::Rc;
 use std::cell::RefCell;
 use js_sys::Uint8Array;
@@ -39,7 +66,7 @@ use web_sys::console;
 
 use crate::{
     bindings_common::{self, VisualRef},
-    Camera, Image, Lines, Points, Renderer, Scene, SlicePlane,
+    BlendMode, Camera, Image, Lines, Points, Renderer, Scene, SlicePlane, Visual,
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::gpu_structs::TileKey,
@@ -510,6 +537,23 @@ macro_rules! js_vt_visual {
             pub fn set_contrast(&self, min: f32, max: f32) -> Result<(), JsValue> {
                 bindings_common::with_visual_mut::<$rust_ty, _, _>(
                     &self.inner, |v| v.set_contrast_limits(min, max)
+                ).map_err(|e| JsValue::from_str(&e))
+            }
+
+            /// Set the blend mode (Normal or Additive). Additive enables
+            /// order-independent multi-channel compositing.
+            #[wasm_bindgen(js_name = setBlendMode)]
+            pub fn set_blend_mode(&self, mode: JsBlendMode) -> Result<(), JsValue> {
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(
+                    &self.inner, |v| v.set_blend_mode(mode.into())
+                ).map_err(|e| JsValue::from_str(&e))
+            }
+
+            /// Set per-visual opacity in [0, 1].
+            #[wasm_bindgen(js_name = setOpacity)]
+            pub fn set_opacity(&self, opacity: f32) -> Result<(), JsValue> {
+                bindings_common::with_visual_mut::<$rust_ty, _, _>(
+                    &self.inner, |v| v.set_opacity(opacity)
                 ).map_err(|e| JsValue::from_str(&e))
             }
 

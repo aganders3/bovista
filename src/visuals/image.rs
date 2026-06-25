@@ -1,9 +1,9 @@
 // Force recompilation when any shader file changes.
 const _SHADER_HASH: &str = env!("SHADER_HASH");
 
-use crate::visual::{Transform, Visual};
+use crate::visual::{BlendMode, Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
-use crate::visuals::gpu_structs::{TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
+use crate::visuals::gpu_structs::{ADDITIVE_BLENDING, TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
 use wgpu::RenderPass;
 
 /// Slice plane defined by position and normal vector
@@ -92,8 +92,10 @@ pub struct Image {
     colormap_bind_group_layout: wgpu::BindGroupLayout,
     pending_colormap: Option<Vec<u8>>,
 
-    // Virtual-texture pipeline resources
-    vt_render_pipeline: wgpu::RenderPipeline,
+    // Virtual-texture pipeline resources. Two pipeline variants differing only
+    // in blend state (+ depth-write); `blend_mode` selects which `render()` uses.
+    vt_pipeline_normal: wgpu::RenderPipeline,
+    vt_pipeline_additive: wgpu::RenderPipeline,
     vt_bind_group: wgpu::BindGroup,
     vt_uniform_buffer: wgpu::Buffer,
     vt_vertex_buffer: Option<wgpu::Buffer>,
@@ -103,6 +105,8 @@ pub struct Image {
     slice_plane: SlicePlane,
     contrast_limits: (f32, f32),
     debug_mode: bool,
+    blend_mode: BlendMode,
+    opacity: f32,
     frame_number: u64,
 
     transform: Transform,
@@ -297,49 +301,63 @@ impl Image {
             push_constant_ranges: &[],
         });
 
-        let vt_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("VT Render Pipeline"),
-            layout: Some(&vt_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &vt_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[TileVertex::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &vt_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-            cache: None,
-        });
+        // Two pipeline variants differing only in blend state + depth-write.
+        // Normal: premultiplied-alpha (the fragment shader outputs premultiplied
+        // color), depth-write on — visually identical to the old ALPHA_BLENDING.
+        // Additive: src+dst, depth-write OFF so coplanar additive layers (e.g.
+        // multi-channel) never depth-reject or occlude each other.
+        let make_pipeline = |label: &str, blend: wgpu::BlendState, depth_write: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&vt_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &vt_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[TileVertex::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &vt_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth24PlusStencil8,
+                    depth_write_enabled: depth_write,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+                cache: None,
+            })
+        };
+        let vt_pipeline_normal = make_pipeline(
+            "VT Render Pipeline (normal)",
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            true,
+        );
+        let vt_pipeline_additive =
+            make_pipeline("VT Render Pipeline (additive)", ADDITIVE_BLENDING, false);
 
         let slice_plane = SlicePlane::xy((depth as f32) / 2.0);
 
@@ -349,7 +367,8 @@ impl Image {
             colormap_bind_group,
             colormap_bind_group_layout,
             pending_colormap: None,
-            vt_render_pipeline,
+            vt_pipeline_normal,
+            vt_pipeline_additive,
             vt_bind_group,
             vt_uniform_buffer,
             vt_vertex_buffer: None,
@@ -358,6 +377,8 @@ impl Image {
             slice_plane,
             contrast_limits: (0.0, 1.0),
             debug_mode: false,
+            blend_mode: BlendMode::Normal,
+            opacity: 1.0,
             frame_number: 0,
             transform: Transform::identity(),
             visible: true,
@@ -561,6 +582,10 @@ impl Visual for Image {
             page_table_width: vt.page_table.width,
             target_lod: vt.cached_ideal_lod as u32,
             desired_t: vt.desired_t(),
+            opacity: self.opacity,
+            _pad_op0: 0.0,
+            _pad_op1: 0.0,
+            _pad_op2: 0.0,
             lods,
         };
         queue.write_buffer(&self.vt_uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
@@ -612,7 +637,11 @@ impl Visual for Image {
             return;
         }
         if let (Some(vb), Some(ib)) = (&self.vt_vertex_buffer, &self.vt_index_buffer) {
-            render_pass.set_pipeline(&self.vt_render_pipeline);
+            let pipeline = match self.blend_mode {
+                BlendMode::Normal => &self.vt_pipeline_normal,
+                BlendMode::Additive => &self.vt_pipeline_additive,
+            };
+            render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(1, &self.vt_bind_group, &[]);
             render_pass.set_bind_group(2, &self.colormap_bind_group, &[]);
             render_pass.set_vertex_buffer(0, vb.slice(..));
@@ -635,6 +664,22 @@ impl Visual for Image {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    fn set_blend_mode(&mut self, mode: BlendMode) {
+        self.blend_mode = mode;
+    }
+
+    fn blend_mode(&self) -> BlendMode {
+        self.blend_mode
+    }
+
+    fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity.clamp(0.0, 1.0);
+    }
+
+    fn opacity(&self) -> f32 {
+        self.opacity
     }
 
     fn name(&self) -> &str {
