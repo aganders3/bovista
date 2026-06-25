@@ -2,17 +2,19 @@
 
 Bovista's thesis is simple: **write the core visualization once in Rust, run it anywhere.**
 
-The same rendering engine — GPU resource management, LOD selection, virtual texture streaming, ray marching — compiles to a Python extension (via PyO3), a WebAssembly module (via wasm-bindgen), or a native Rust binary. There's no separate browser port or Python reimplementation. One codebase, three targets.
+The same rendering engine — GPU resource management, LOD selection, virtual texture streaming, ray marching — compiles to a Python extension (via PyO3), a WebAssembly module (via wasm-bindgen), or a native Rust binary. There's no separate browser port or Python reimplementation, just idiomatic wrappers.
 
-Built on [wgpu](https://wgpu.rs), which maps to Vulkan/Metal/DX12 on the desktop and WebGPU in the browser. The core library has no Python or browser dependencies — bindings are thin wrappers at the boundary.
+Bovista is built on [wgpu](https://wgpu.rs), which maps to Vulkan/Metal/DX12 on the desktop and WebGPU in the browser. The core library has no Python or browser dependencies — bindings are thin wrappers at the boundary.
 
 Current capabilities:
 - **Slice rendering** (`Image`): arbitrary-orientation plane intersection through 3D volumes
 - **Volume ray marching** (`DirectVolume`, `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume`): one visual per mode, each exposing only the parameters that apply to it (density, attenuation, iso threshold, …)
-- **Virtual texture streaming**: atlas + page table architecture, time-resolved 4D, up to 4 atlases per visual (lifts the per-texture VRAM cap); only the tiles in view are resident
-- **Multi-resolution LOD**: coarse-to-fine pyramid, screen-space error-based selection
-- **Pull-based remote loading**: bovista publishes a `wanted` set every frame; loaders poll it and push tile bytes back. No callback across the FFI boundary on the hot path
-- **OME-Zarr** examples: streams tiles from S3 / HTTP / local filesystem
+- **Virtual texture streaming**: atlas + page table architecture, time-resolved 4D; only the tiles in view are required, but the atlas acts as a cache for recently used or prefetched tiles
+- **Multi-resolution LOD**: coarse-to-fine pyramid, screen-space error-based LOD selection with a
+  configurable bias
+- **Pull-based remote loading**: bovista visuals publish a `wanted` set for visual chunks; loaders poll it and push bytes back
+- **OME-Zarr** examples: streams tiles from S3 / HTTP / local filesystem - loading is handled at the
+  application level
 - **Points and lines**: for annotations, axis helpers, point clouds
 
 | Native (PyQt6) | Browser (WebAssembly) |
@@ -24,31 +26,31 @@ Current capabilities:
 
 ---
 
-## Prerequisites
-
-- **Rust** (stable) — [rustup.rs](https://rustup.rs)
-- **uv** (Python package manager) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **WASM only**: `wasm-bindgen-cli` — `cargo install wasm-bindgen-cli`
-
----
-
 ## Examples
 
 Examples are organized by rendering mode, with parallel Python, Web, and Rust implementations in each:
 
 ```
 examples/
-  slice_viewer/     — arbitrary-orientation slice plane (ImageVisual)
+  slice_viewer/     — arbitrary-orientation slice plane (Image)
     python/         — PyQt6 + ThreadPoolExecutor
     web/            — Browser + WebAssembly
-    rust/           — stub (contributions welcome)
-  volume_renderer/  — direct volume rendering via ray marching (VolumeVisual)
+    rust/           — winit + wgpu (interactive native viewer)
+  volume_renderer/  — direct volume rendering via ray marching (DirectVolume, …)
     python/
     web/
-    rust/           — stub
+    rust/           — winit + wgpu (interactive native viewer)
+  orbit_stream/     — headless native reference: orbit a camera, encode to video
+  common/           — shared example code (OME-Zarr loader, pull-loader, winit harness)
 ```
 
-**Python:**
+### Prerequisites
+
+- **Rust** (stable) — [rustup.rs](https://rustup.rs)
+- **uv** (Python package manager) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **WASM only**: `wasm-bindgen-cli` — `cargo install wasm-bindgen-cli`
+
+### Python
 ```bash
 uv sync              # Compiles Rust extension and installs Python deps
 uv run python examples/slice_viewer/python/remote_ome_zarr.py
@@ -64,7 +66,7 @@ uv run python examples/volume_renderer/python/volume_ome_zarr.py
 
 ---
 
-**Web (WASM):**
+### Web (WASM)
 ```bash
 ./build_wasm.sh                              # Compiles to WASM, outputs to examples/pkg/
 python -m http.server 8000 --directory examples
@@ -72,6 +74,22 @@ open http://localhost:8000/slice_viewer/
 ```
 
 The WASM build requires `wasm32-unknown-unknown` (the build script installs it automatically).
+
+---
+
+### Rust (native)
+
+Interactive winit + wgpu viewers — no GUI framework, controls are mouse + keyboard, stats print to the console.
+
+```bash
+cargo run --release --example slice_viewer    # defaults to the marmoset_neurons dataset
+cargo run --release --example volume_renderer  # defaults to the beechnut dataset
+cargo run --release --example slice_viewer -- --zarr <path-or-https-url>
+```
+
+Pass `--help`-style flags such as `--zarr`, `--lod-bias`, `--contrast-min/--contrast-max`, and (volume only) `--mode`, `--density-mult`, `--step`. Each example prints its full control map on startup.
+
+> Loading remote OME-Zarr over HTTPS pulls in `zarrs_http`, which links OpenSSL — make sure a system OpenSSL (or `OPENSSL_DIR`) is available at build time.
 
 ---
 
@@ -88,15 +106,15 @@ src/
   visual.rs                 — Visual trait
   bindings_common.rs        — shared Python/WASM binding logic
   visuals/
-    image.rs                — ImageVisual: slice-plane rendering
-    volume.rs               — VolumeVisual: ray marching DVR
+    image.rs                — Image: slice-plane rendering
+    volume.rs               — DirectVolume/MipVolume/MinipVolume/AverageVolume/IsosurfaceVolume: ray marching DVR
     virtual_texture.rs      — VirtualTextureData: atlas, page table, LOD
     atlas.rs                — AtlasAllocator: 3D texture atlas
     page_table.rs           — PageTable: 2D-array indirection texture
     gpu_structs.rs          — TileKey, TileData, TileLoaderFn, vertex/uniform structs
-    points.rs               — PointsVisual
-    lines.rs                — LinesVisual
-    custom.rs               — CustomVisual (user-defined shaders)
+    points.rs               — Points
+    lines.rs                — Lines
+    custom.rs               — Custom (user-defined shaders)
   shaders/
     virtual_tile.wgsl       — slice shader (reads from atlas via page table)
     volume_raymarch.wgsl    — ray marching DVR shader
@@ -109,25 +127,25 @@ examples/
   slice_viewer/             — arbitrary-orientation slice plane
     python/                 — PyQt6 viewer
     web/                    — browser viewer (WebAssembly)
-    rust/                   — stub
+    rust/                   — native viewer (winit + wgpu)
   volume_renderer/          — direct volume rendering
     python/
     web/
-    rust/                   — stub
+    rust/                   — native viewer (winit + wgpu)
+  orbit_stream/             — headless native reference (camera orbit → video)
+  common/                   — shared example code (loader, winit harness, CLI)
   pkg/                      — WASM build output (generated by build_wasm.sh, not committed)
-
-kiln-render/                — standalone WebGPU browser volume renderer (TypeScript)
 ```
 
-### Rendering pipeline (both ImageVisual and VolumeVisual)
+### Rendering pipeline (both Image and the Volume modes)
 
 Both renderers share the same virtual texture back-end:
 
 1. **`VirtualTextureData::prepare()`** — per-frame LOD selection based on screen-space error; requests missing tiles via the loader callback
 2. **Loader callback** (Python thread pool or JS fetch) — loads tile data asynchronously and calls `set_chunk_data_u16()` to push bytes into the pending queue
 3. **`VirtualTextureData::upload_pending()`** — writes arrived tiles into the atlas 3D texture, updates the page table
-4. **`ImageVisual::render()`** — single draw call; slice-plane geometry samples the atlas via the page table
-5. **`VolumeVisual::render()`** — single draw call; back-face box geometry; fragment shader fires a ray per pixel and composites front-to-back through the atlas
+4. **`Image::render()`** — single draw call; slice-plane geometry samples the atlas via the page table
+5. **`DirectVolume::render()`** (and the other volume modes) — single draw call; back-face box geometry; fragment shader fires a ray per pixel and composites front-to-back through the atlas
 
 ---
 
@@ -226,21 +244,54 @@ Add-volume methods are typed per mode (`addDirectVolume`, `addMipVolume`, …); 
 ## Development
 
 ```bash
-# Fast type-check (no link)
-cargo check
+# Build the core library and native examples
+cargo build
 
-# Lint
-cargo clippy
+# Build the WASM bindings (outputs to examples/pkg/)
+./build_wasm.sh
 
-# Build Python extension in dev mode
+# Build the Python extension in dev mode
 uv run maturin develop --features python
+
+# Build and serve the mdBook docs
+./serve_docs.sh
+
+# Run a native example (see the Examples section for flags)
+cargo run --release --example slice_viewer
 ```
+
+---
+
+## A note on project goals, and AI usage
+
+Obviously, if you look at the code here, I have made _extensive_ use of Claude Code in this
+repository. The goal here, at least initially, is to explore different graphics concepts and
+implementations. The project has gone through several _major_ refactorings already, as I use it to
+evaluate different API shapes and technical concepts.
+
+A secondary goal is to use and evaluate different AI coding tools, concepts, and workflows. While I
+do read the code here, I have been doing most of the development so far through prompting. I have
+mixed feelings about this on a number of levels, but an experimental solo project seems like a safe
+place to do this kind of thing. I'd love to have been able to write this project myself, from
+scratch, but the truth is even getting the initial scaffolding and build system set up would have
+taken me weeks.
+
+I don't know where this project goes. I don't consider it production-ready, and I'm not sure it ever
+will be. The _ideas_ here, however, are very exciting to me: flexible deployment of a wgpu-based
+library, using "virtual textures" (particularly for mixed-LOD volume rendering), and a fully
+decoupled loading scheme have all been kicking around in my head for a long time.
 
 ---
 
 ## Related work
 
-Bovista sits in the same neighborhood as a few other projects worth knowing about:
+Bovista is inspired/influenced by many other cool projects:
 
-- **[pygfx](https://github.com/pygfx/pygfx)** — Python visualization library built on wgpu-py. Broad scene-graph API, multiple light types, materials, animation. Bovista is narrower (large multiscale image/volume data + virtual-texture streaming), but the wgpu-as-portable-GPU thesis is the same.
-- **[kiln](https://github.com/MPanknin/kiln-render)** — Standalone TypeScript/WebGPU browser volume renderer. A checkout lives alongside this repo in `kiln-render/` as a cross-reference for the rendering approach.
+- **[pygfx](https://github.com/pygfx/pygfx)** — Python visualization library built on wgpu-py
+- **[vispy](https://github.com/vispy/vispy)** - OpenGL-based scientific visualization
+- **[idetik](https://github.com/chanzuckerberg/idetik)** — OME-Zarr image viewing library
+- **[three.js](https://github.com/mrdoob/three.js/)** - Web-based 3D graphics library
+- **[neuroglancer](https://github.com/google/neuroglancer)** - WebGL-based volumetric image viewer
+- **[viv](https://github.com/hms-dbmi/viv)** -A deck.gl-based visualization library for large image datasets (microscopy)
+- **[napari](https://github.com/napari/napari)** - a fast, interactive, multi-dimensional image viewer for python
+- **[kiln](https://github.com/MPanknin/kiln-render)** — Standalone TypeScript/WebGPU browser volume renderer using virtual textures. This was particularly helpful implementation in the development of Bovista.
