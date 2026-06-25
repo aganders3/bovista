@@ -47,6 +47,15 @@ use bovista::visuals::{
 use bovista::visuals::virtual_texture::{PrepareStats, Wanted};
 use bovista::{Camera, ProjectionMode, Renderer, Scene};
 
+// Shared OME-Zarr loader machinery, lifted out of this file into examples/common/
+// and dedup'd across the native examples. `loader` and `ome_zarr` are mutually
+// referential (ome_zarr::open spawns loader::spawn_workers; loader reads
+// ome_zarr::read_tile), so both are top-level modules reachable as crate::*.
+#[path = "../../common/loader.rs"]
+mod loader;
+#[path = "../../common/ome_zarr.rs"]
+mod ome_zarr;
+
 // ── Mode dispatch ───────────────────────────────────────────────────────────
 //
 // orbit_stream picks one of bovista's six volume render modes at startup via
@@ -322,7 +331,20 @@ fn main() {
     ));
     let flush_diag = Arc::new(FlushDiag::new());
 
-    let setup = match ome_zarr::open(&zarr_arg, view_state.clone(), flush_diag.clone(),
+    // Current timepoint handle for the shared loader (parity slot; tile reads
+    // use key.t). The per-tile diagnostics hook bridges to this binary's
+    // FlushDiag, using view_state's clock so flush_t0_ns and arrival times
+    // share an origin.
+    let current_t = Arc::new(AtomicU32::new(0));
+    let tile_hook: ome_zarr::TileHook = {
+        let flush_diag = flush_diag.clone();
+        let view_state = view_state.clone();
+        Arc::new(move |_now_ns, decode_ns| {
+            flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
+        })
+    };
+
+    let setup = match ome_zarr::open(&zarr_arg, current_t.clone(), tile_hook,
                                        max_inflight) {
         Ok(s) => s,
         Err(e) => {
@@ -494,6 +516,7 @@ fn main() {
                 // No clear, no flicker — adjacent timepoints stay resident
                 // in the atlas as a free cache.
                 v.set_desired_timepoint(view_state.timepoint());
+                current_t.store(view_state.timepoint(), Ordering::Relaxed);
                 last_t_gen = gen;
                 let t_ns = view_state.ns_since_start();
                 flush_diag.start(t_ns);
@@ -757,28 +780,8 @@ fn render_one_frame(
     (out, prepare_dt)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Scene setup (synthetic + OME-Zarr share this shape)
-
-struct SceneSetup {
-    lods: Vec<LodLevelConfig>,
-    pending_slot: Arc<Mutex<Option<PendingChunks>>>,
-    /// World-space extents of LOD 0 along (z, y, x). Used to size the camera orbit.
-    world_extents: (f32, f32, f32),
-    /// Default atlas slot count for the visual; CLI `--cache-tiles` overrides.
-    cache_capacity: u32,
-    /// Number of timepoints if axes include a "t" axis, else 1.
-    n_timepoints: u32,
-    /// Count of tiles in bovista's `wanted` set at a given timepoint.
-    /// Used by the render loop's progress log. Returns 0 for synthetic
-    /// data (which has no wanted set since there's nothing to load).
-    queue_count_at: Arc<dyn Fn(u32) -> usize + Send + Sync>,
-    /// Slot for the volume's `wanted_handle()` so the OME-Zarr loader
-    /// pool can read what bovista wants. Filled in after VolumeVisual
-    /// is constructed (chicken-and-egg with the visual's lifetime).
-    wanted_slot: Arc<Mutex<Option<bovista::visuals::virtual_texture::Wanted>>>,
-}
-
+// SceneSetup now lives in examples/common/ome_zarr.rs (ome_zarr::SceneSetup),
+// shared with the slice_viewer / volume_renderer native examples.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ffmpeg
@@ -1537,512 +1540,4 @@ fn flag_str_opt(args: &[String], name: &str) -> Option<String> {
         i += 1;
     }
     None
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// OME-Zarr loader. Opens a multiscale group on a filesystem path or http URL,
-// publishes LOD configs derived from the multiscales metadata, and serves tile
-// reads on a small worker pool. Tiles are normalized to R16Float [0, 1].
-
-mod ome_zarr {
-    use std::collections::HashSet;
-    use std::error::Error;
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-    use std::time::Duration;
-
-    use bovista::visuals::gpu_structs::{
-        TileData, TileKey,
-    };
-    use bovista::visuals::virtual_texture::PendingChunks;
-    use bovista::visuals::LodLevelConfig;
-
-    use zarrs::array::{Array, ArraySubset};
-    use zarrs::group::Group;
-    use zarrs::storage::ReadableStorageTraits;
-
-    use super::{FlushDiag, SceneSetup, ViewState};
-
-    /// Max number of zarr-chunk reads we'll have in flight at once. NFS/VAST
-    /// happily serve many parallel readers; the cap is mostly to keep the
-    /// thread-spawn pile from getting ridiculous. For sharded zarr v3 arrays
-    /// (e.g. zebrahub), `retrieve_array_subset` decodes only the inner chunks
-    /// intersecting the tile region rather than the whole outer shard, so
-    /// per-tile cost stays tens of ms even on multi-GB outer chunks.
-    ///
-    /// Each LOD level we'll serve. We type-erase the storage so the same struct
-    /// can hold either a filesystem or http store.
-    struct Level {
-        array: Array<dyn ReadableStorageTraits>,
-        /// Index of (z, y, x) within the array's possibly-higher-dim shape.
-        z_idx: usize,
-        y_idx: usize,
-        x_idx: usize,
-        /// Index of the "t" axis, if present.
-        t_idx: Option<usize>,
-        /// Volume dims in (z, y, x) voxel order at this LOD.
-        volume_zyx: (u64, u64, u64),
-    }
-
-    pub fn open(
-        path_or_url: &str,
-        view_state: Arc<ViewState>,
-        flush_diag: Arc<FlushDiag>,
-        max_inflight: usize,
-    ) -> Result<SceneSetup, Box<dyn Error>> {
-        let store: Arc<dyn ReadableStorageTraits> = if path_or_url.starts_with("http://")
-            || path_or_url.starts_with("https://")
-        {
-            Arc::new(zarrs_http::HTTPStore::new(path_or_url)?)
-        } else {
-            Arc::new(zarrs::filesystem::FilesystemStore::new(path_or_url)?)
-        };
-
-        let group = Group::open(store.clone(), "/")?;
-        let attrs = group.attributes();
-
-        // OME-Zarr v0.5 (zarr v3): attrs["ome"]["multiscales"][0]
-        // OME-Zarr v0.4 (zarr v2): attrs["multiscales"][0]
-        let multiscales = attrs
-            .get("ome")
-            .and_then(|o| o.get("multiscales"))
-            .or_else(|| attrs.get("multiscales"))
-            .and_then(|m| m.as_array())
-            .and_then(|arr| arr.first())
-            .ok_or("no multiscales metadata in zarr group")?;
-
-        // Axis order, e.g. ["t", "c", "z", "y", "x"] → we want to pluck z/y/x.
-        let axes: Vec<String> = multiscales
-            .get("axes")
-            .and_then(|a| a.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .map(|ax| {
-                        ax.get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("")
-                            .to_string()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let datasets_meta = multiscales
-            .get("datasets")
-            .and_then(|d| d.as_array())
-            .ok_or("multiscales has no datasets[]")?;
-        if datasets_meta.is_empty() {
-            return Err("multiscales.datasets is empty".into());
-        }
-
-        // First, open every level's Array — needed to determine axis indices
-        // and chunk shapes.
-        let mut levels: Vec<Level> = Vec::with_capacity(datasets_meta.len());
-        let mut lod0_voxel_zyx: (f64, f64, f64) = (1.0, 1.0, 1.0);
-        let mut lods: Vec<LodLevelConfig> = Vec::with_capacity(datasets_meta.len());
-
-        // Determine z/y/x indices using the LOD 0 array.
-        let lod0_path = dataset_path(&datasets_meta[0], 0)?;
-        let lod0_arr = Array::open(store.clone(), &absolute_path(&lod0_path))?;
-        let ndim = lod0_arr.shape().len();
-
-        let t_idx: Option<usize> = axes.iter().position(|a| a == "t");
-        let n_timepoints: u32 = t_idx
-            .map(|i| u32::try_from(lod0_arr.shape()[i]).unwrap_or(1).max(1))
-            .unwrap_or(1);
-
-        let (z_idx, y_idx, x_idx) = match (
-            axes.iter().position(|a| a == "z"),
-            axes.iter().position(|a| a == "y"),
-            axes.iter().position(|a| a == "x"),
-        ) {
-            (Some(z), Some(y), Some(x)) => (z, y, x),
-            _ => {
-                if ndim < 3 {
-                    return Err(format!("array has {} dimensions, need ≥ 3", ndim).into());
-                }
-                (ndim - 3, ndim - 2, ndim - 1)
-            }
-        };
-
-        // The tile size we publish to bovista must be uniform across LODs.
-        // Use LOD 0's regular chunk size as the canonical tile size.
-        // We want tiles small enough that the GPU atlas stays bounded. Each
-        // tile is tz*ty*tx*2 bytes (R16Float); at MAX_TILE_AXIS=128 that's
-        // 4 MB/tile, so a 4096-slot atlas tops out at ~16 GB. If the on-disk
-        // chunk is smaller along an axis, use the chunk size so we don't
-        // require multiple chunk reads per tile; otherwise clamp.
-        const MAX_TILE_AXIS: u64 = 128;
-        let lod0_chunk = lod0_arr.chunk_shape(&vec![0; ndim])?;
-        let clamp = |chunk_dim: u64| -> u32 {
-            u32::try_from(chunk_dim.min(MAX_TILE_AXIS)).unwrap_or(64)
-        };
-        let tile_z = clamp(lod0_chunk[z_idx].get());
-        let tile_y = clamp(lod0_chunk[y_idx].get());
-        let tile_x = clamp(lod0_chunk[x_idx].get());
-
-        for (i, ds) in datasets_meta.iter().enumerate() {
-            let path = dataset_path(ds, i)?;
-            let arr = Array::open(store.clone(), &absolute_path(&path))?;
-
-            let shape = arr.shape().to_vec();
-            if shape.len() != ndim {
-                return Err(format!(
-                    "LOD {} has different dimensionality ({} vs {})",
-                    i,
-                    shape.len(),
-                    ndim
-                )
-                .into());
-            }
-            let vz = shape[z_idx];
-            let vy = shape[y_idx];
-            let vx = shape[x_idx];
-
-            // Scale transform: matches axes in length, gives voxel spacing per axis.
-            let scale = ds
-                .get("coordinateTransformations")
-                .and_then(|t| t.as_array())
-                .and_then(|arr| arr.iter().find(|t| t.get("type").and_then(|v| v.as_str()) == Some("scale")))
-                .and_then(|t| t.get("scale"))
-                .and_then(|s| s.as_array())
-                .map(|arr| arr.iter().map(|v| v.as_f64().unwrap_or(1.0)).collect::<Vec<_>>())
-                .unwrap_or_else(|| vec![1.0; ndim]);
-
-            let vs_z = *scale.get(z_idx).unwrap_or(&1.0);
-            let vs_y = *scale.get(y_idx).unwrap_or(&1.0);
-            let vs_x = *scale.get(x_idx).unwrap_or(&1.0);
-
-            let scale_factor = if i == 0 {
-                lod0_voxel_zyx = (vs_z, vs_y, vs_x);
-                1.0
-            } else {
-                let rz = vs_z / lod0_voxel_zyx.0;
-                let ry = vs_y / lod0_voxel_zyx.1;
-                let rx = vs_x / lod0_voxel_zyx.2;
-                rz.max(ry).max(rx) as f32
-            };
-
-            // Center the world frame on the LOD-0 volume center.
-            let (translation, voxel_size) = if i == 0 {
-                let tz = -(vz as f64 * vs_z) / 2.0;
-                let ty = -(vy as f64 * vs_y) / 2.0;
-                let tx = -(vx as f64 * vs_x) / 2.0;
-                (
-                    (tz as f32, ty as f32, tx as f32),
-                    (vs_z as f32, vs_y as f32, vs_x as f32),
-                )
-            } else {
-                // Lower-resolution LODs share the world frame: their voxels
-                // are larger but cover the same physical extent.
-                let lod0_translation = lods[0].translation;
-                (
-                    lod0_translation,
-                    (vs_z as f32, vs_y as f32, vs_x as f32),
-                )
-            };
-
-            lods.push(LodLevelConfig {
-                volume_size: (vz as u32, vy as u32, vx as u32),
-                tile_size:   (tile_z, tile_y, tile_x),
-                voxel_size,
-                scale_factor,
-                translation,
-            });
-
-            // Erase the storage type so we can hold a heterogenous list. The
-            // underlying Arc<dyn ReadableStorageTraits> is what we want for
-            // dynamic dispatch anyway.
-            levels.push(Level {
-                array: arr,
-                z_idx,
-                y_idx,
-                x_idx,
-                t_idx,
-                volume_zyx: (vz, vy, vx),
-            });
-        }
-
-        println!("[orbit] OME-Zarr: {} LODs, axes={:?}, tile={}×{}×{} (zyx)",
-                 lods.len(), axes, tile_z, tile_y, tile_x);
-        for (i, l) in lods.iter().enumerate() {
-            println!("  LOD {}: vol {}×{}×{} voxels, voxel size {:?}, scale {:.2}×",
-                     i, l.volume_size.0, l.volume_size.1, l.volume_size.2,
-                     l.voxel_size, l.scale_factor);
-        }
-
-        // World extents from LOD 0.
-        let world_extents = {
-            let l = &lods[0];
-            (
-                l.volume_size.0 as f32 * l.voxel_size.0,
-                l.volume_size.1 as f32 * l.voxel_size.1,
-                l.volume_size.2 as f32 * l.voxel_size.2,
-            )
-        };
-
-
-        // Pull-based loader pool. Workers read bovista's `wanted` map
-        // (priority-ordered set of tiles bovista wants right now),
-        // claim the highest-priority unclaimed key, decode, and only
-        // write to `pending` if the key is STILL wanted at the end
-        // (otherwise the user scrubbed past it during the fetch).
-        //
-        // No internal scheduler queue — bovista's `wanted` IS the
-        // queue. When bovista's prepare rebuilds it (every render
-        // frame), cancellations are implicit: keys that disappear are
-        // automatically forgotten on the next worker pick. No
-        // re-push, no backpressure logic, no max-inflight cap.
-        let levels = Arc::new(levels);
-        let pending_slot: Arc<Mutex<Option<PendingChunks>>> = Arc::new(Mutex::new(None));
-        let wanted_slot: Arc<Mutex<Option<bovista::visuals::virtual_texture::Wanted>>> =
-            Arc::new(Mutex::new(None));
-        let claimed: Arc<Mutex<HashSet<TileKey>>> = Arc::new(Mutex::new(HashSet::new()));
-        println!("[orbit] loader pool: {} worker(s) (pull-based)", max_inflight);
-
-        for _ in 0..max_inflight {
-            let wanted_slot = wanted_slot.clone();
-            let claimed = claimed.clone();
-            let pending_slot = pending_slot.clone();
-            let view_state = view_state.clone();
-            let flush_diag = flush_diag.clone();
-            let levels = levels.clone();
-            let lods = lods.clone();
-            thread::spawn(move || loop {
-                // Wait for bovista to hand us its wanted handle. Once
-                // populated this never goes back to None.
-                let wanted = loop {
-                    if let Some(w) = wanted_slot.lock().unwrap().clone() {
-                        break w;
-                    }
-                    thread::sleep(Duration::from_millis(20));
-                };
-
-                // Pick the highest-priority key bovista wants that no
-                // other worker has claimed. Tiebreak: coarser LOD
-                // first so the volume blocks in at low resolution
-                // before refining.
-                let key = {
-                    let w = wanted.lock().unwrap();
-                    let mut c = claimed.lock().unwrap();
-                    let pick = w.iter()
-                        .filter(|(k, _)| !c.contains(k))
-                        .min_by_key(|(k, p)| (**p, -(k.lod_level as i32)))
-                        .map(|(k, _)| *k);
-                    if let Some(k) = pick { c.insert(k); }
-                    pick
-                };
-                let Some(key) = key else {
-                    // Nothing to do. Poll again shortly. (No condvar:
-                    // wanted changes happen at render-frame cadence
-                    // — ~33 ms — so a 20 ms poll is in the noise.)
-                    thread::sleep(Duration::from_millis(20));
-                    continue;
-                };
-                if key.lod_level >= levels.len() {
-                    claimed.lock().unwrap().remove(&key);
-                    continue;
-                }
-                let lod_cfg = &lods[key.lod_level];
-                let decode_start = std::time::Instant::now();
-                let result = read_tile(&levels[key.lod_level], lod_cfg, key, key.t);
-                let decode_ns = decode_start.elapsed().as_nanos() as u64;
-                // Re-check membership: if bovista has dropped this key
-                // since we claimed it (user scrubbed past, zoom changed
-                // visibility), don't waste a pending-slot.
-                let still_wanted = wanted.lock().unwrap().contains_key(&key);
-                match result {
-                    Ok(data) if still_wanted => {
-                        if let Some(p) = pending_slot.lock().unwrap().clone() {
-                            // Backstop: bovista's publish_wanted already
-                            // subtracts pending size from its budget, so
-                            // wanted shrinks as pending fills. This check
-                            // catches the residual race where workers
-                            // claimed against a slightly stale wanted
-                            // snapshot. 512 ≈ 1 s of install buffer at
-                            // MAX_TILES_PER_FRAME=16 × 30 fps — well
-                            // above what publish_wanted lets through, so
-                            // it almost never fires; when it does, the
-                            // decode is just discarded.
-                            const PENDING_BACKSTOP: usize = 512;
-                            let mut guard = p.lock().unwrap();
-                            if guard.len() < PENDING_BACKSTOP {
-                                guard.insert(key, data);
-                                drop(guard);
-                                flush_diag.note_tile(view_state.ns_since_start(), decode_ns);
-                            }
-                        }
-                    }
-                    Ok(_) => { /* dropped by bovista; throw bytes away */ }
-                    Err(e) => {
-                        // Transient HTTP errors don't need explicit
-                        // re-push: if bovista still wants this key,
-                        // it's still in the `wanted` map and the next
-                        // pick iteration will grab it.
-                        eprintln!("[orbit] tile load failed (lod={} t={} z={} y={} x={}): {}",
-                                  key.lod_level, key.t, key.z, key.y, key.x, e);
-                    }
-                }
-                claimed.lock().unwrap().remove(&key);
-            });
-        }
-
-        println!("[orbit] OME-Zarr: t axis has {} timepoint(s)", n_timepoints);
-
-        Ok(SceneSetup {
-            lods,
-            pending_slot,
-            world_extents,
-            cache_capacity: 4096,
-            n_timepoints,
-            queue_count_at: {
-                let ws = wanted_slot.clone();
-                Arc::new(move |t| {
-                    let guard = ws.lock().unwrap();
-                    match guard.as_ref() {
-                        Some(w) => w.lock().unwrap().iter()
-                            .filter(|(k, _)| k.t == t).count(),
-                        None => 0,
-                    }
-                })
-            },
-            wanted_slot,
-        })
-    }
-
-
-    fn dataset_path(ds: &serde_json::Value, idx: usize) -> Result<String, Box<dyn Error>> {
-        ds.get("path")
-            .and_then(|p| p.as_str())
-            .map(String::from)
-            .ok_or_else(|| format!("datasets[{}] missing \"path\"", idx).into())
-    }
-
-    fn absolute_path(rel: &str) -> String {
-        if rel.starts_with('/') { rel.to_string() } else { format!("/{}", rel) }
-    }
-
-    /// Spawn the prefetcher: one dispatcher thread that periodically scans
-    /// the visible set and enqueues (t+offset, TileKey) reads for the next
-    /// few timepoints, plus N worker threads that consume the queue and
-    /// fill the cache.
-    ///
-    /// When the user advances to t+1, the regular loader hits the cache
-    /// instead of doing fresh I/O — sequential scrubbing / playback is
-    /// reduced to GPU upload time only.
-    /// Read the voxel sub-region for this tile and convert to R16Float bytes.
-    ///
-    /// We always go through `retrieve_array_subset`, which respects the codec
-    /// pipeline including `sharding_indexed` — for a sharded array (e.g.
-    /// zebrahub: outer chunks 512×2048×2048 containing 1024 inner 128³
-    /// chunks), zarrs reads the shard index, seeks to just the inner chunks
-    /// that intersect this tile, and decompresses only those (~500 KB each
-    /// instead of the whole 4 GB shard). For non-sharded arrays the same
-    /// call decodes whatever outer chunks the tile intersects.
-    fn read_tile(
-        level: &Level,
-        lod_cfg: &LodLevelConfig,
-        key: TileKey,
-        timepoint: u32,
-    ) -> Result<TileData, Box<dyn Error + Send + Sync>> {
-        let (tz, ty, tx) = lod_cfg.tile_size;
-        let (vz, vy, vx) = level.volume_zyx;
-
-        let z0 = (key.z as u64) * tz as u64;
-        let y0 = (key.y as u64) * ty as u64;
-        let x0 = (key.x as u64) * tx as u64;
-        let z1 = (z0 + tz as u64).min(vz);
-        let y1 = (y0 + ty as u64).min(vy);
-        let x1 = (x0 + tx as u64).min(vx);
-        if z0 >= vz || y0 >= vy || x0 >= vx {
-            return Err(format!("tile out of bounds: z={} y={} x={}", key.z, key.y, key.x).into());
-        }
-        let extent_z = (z1 - z0) as u32;
-        let extent_y = (y1 - y0) as u32;
-        let extent_x = (x1 - x0) as u32;
-
-        let ndim = level.array.shape().len();
-        let mut ranges: Vec<std::ops::Range<u64>> = (0..ndim).map(|_| 0..1).collect();
-        ranges[level.z_idx] = z0..z1;
-        ranges[level.y_idx] = y0..y1;
-        ranges[level.x_idx] = x0..x1;
-        if let Some(ti) = level.t_idx {
-            let tmax = level.array.shape()[ti].saturating_sub(1) as u32;
-            let t = timepoint.min(tmax) as u64;
-            ranges[ti] = t..(t + 1);
-        }
-        let subset = ArraySubset::new_with_ranges(&ranges);
-
-        let dtype_name = level
-            .array
-            .data_type()
-            .name(zarrs::plugin::ZarrVersion::V3)
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-
-        static DBG_ONCE: std::sync::Once = std::sync::Once::new();
-        DBG_ONCE.call_once(|| {
-            println!("[orbit] zarr dtype detected as: \"{}\"", dtype_name);
-        });
-
-        let f16_bytes = match dtype_name.as_str() {
-            "uint8" => {
-                let v: Vec<u8> = level.array.retrieve_array_subset(&subset)?;
-                normalize_to_f16(&v, |x| x as f32 / 255.0)
-            }
-            "uint16" => {
-                let v: Vec<u16> = level.array.retrieve_array_subset(&subset)?;
-                normalize_to_f16(&v, |x| x as f32 / 65535.0)
-            }
-            "int8" => {
-                let v: Vec<i8> = level.array.retrieve_array_subset(&subset)?;
-                normalize_to_f16(&v, |x| (x as f32 + 128.0) / 255.0)
-            }
-            "int16" => {
-                let v: Vec<i16> = level.array.retrieve_array_subset(&subset)?;
-                normalize_to_f16(&v, |x| (x as f32 + 32768.0) / 65535.0)
-            }
-            "float32" => {
-                let v: Vec<f32> = level.array.retrieve_array_subset(&subset)?;
-                normalize_to_f16(&v, |x| x.clamp(0.0, 1.0))
-            }
-            "float16" => {
-                let v: Vec<half::f16> = level.array.retrieve_array_subset(&subset)?;
-                let mut out = Vec::with_capacity(v.len() * 2);
-                for x in v {
-                    let bits = x.to_bits();
-                    out.push((bits & 0xff) as u8);
-                    out.push((bits >> 8) as u8);
-                }
-                out
-            }
-            other => return Err(format!("unsupported zarr dtype: {}", other).into()),
-        };
-
-        Ok(TileData {
-            data: f16_bytes,
-            z_shape: extent_z, y_shape: extent_y, x_shape: extent_x,
-            format: wgpu::TextureFormat::R16Float,
-        })
-    }
-
-    fn normalize_to_f16<T: Copy>(src: &[T], to_unit: impl Fn(T) -> f32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(src.len() * 2);
-        let mut min_v: f32 = f32::INFINITY;
-        let mut max_v: f32 = f32::NEG_INFINITY;
-        for &x in src {
-            let v = to_unit(x);
-            if v < min_v { min_v = v; }
-            if v > max_v { max_v = v; }
-            let bits = half::f16::from_f32(v).to_bits();
-            out.push((bits & 0xff) as u8);
-            out.push((bits >> 8) as u8);
-        }
-        // One-time min/max print so we can see the actual value range.
-        static DBG_RANGE: std::sync::Once = std::sync::Once::new();
-        DBG_RANGE.call_once(|| {
-            println!("[orbit] first tile normalized range: [{:.3}, {:.3}]", min_v, max_v);
-        });
-        out
-    }
 }
