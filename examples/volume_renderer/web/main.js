@@ -1,14 +1,13 @@
 import * as zarr from 'https://cdn.jsdelivr.net/npm/zarrita@latest/+esm';
 
-// Logical atlas tile size [z, y, x], uniform across all LOD levels. This is
-// bovista's *virtual* tiling and is deliberately decoupled from the dataset's
-// on-disk chunk shape — zarrita's slice reads assemble any region from the
-// stored chunks, so we never need to match them. (bovista's virtual texture
-// assumes one tile size for all LODs; datasets like marmoset_neurons use
-// different storage chunks per level, which would otherwise break that.)
-// Tuning this toward the dataset's chunking reduces over-fetch but isn't
-// required for correctness.
-const LOGICAL_TILE = [64, 64, 64];
+// Logical atlas tile size [z, y, x], uniform across all LOD levels — bovista's
+// *virtual* tiling, decoupled from the dataset's per-LOD storage chunking
+// (bovista's VT assumes one tile size for all LODs). Set per-dataset in
+// loadDataset() from the LOD-0 storage chunk (capped), so each tile maps to
+// ~one stored chunk: a fixed cube like 64³ would span dozens of thin storage
+// chunks (e.g. chunk_z=1) and fire a fetch storm.
+let logicalTile = [64, 64, 64];
+const MAX_LOGICAL_TILE = 128;
 
 // Configuration
 const DATASETS = {
@@ -36,21 +35,67 @@ const DATASETS = {
         cameraDistance: 10000.0,
         zarrVersion: 2,
     },
+    idr0062: {
+        // 2-channel CZYX volume (~236×275×271) — exercises multi-channel additive
+        // volume rendering. NOTE: chunk_z=1, so it fires many small fetches.
+        url: 'https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr',
+        description: 'IDR0062 HeLa — 2-channel (multi-channel volume test)',
+        cameraDistance: 250.0,
+        zarrVersion: 2,
+    },
 };
 
-const MAX_PENDING_CHUNKS = 64;
+// Cap on in-flight logical-tile loads (shared across channels). Each tile may
+// still fan out to a few storage-chunk fetches, so keep this modest to avoid
+// ERR_INSUFFICIENT_RESOURCES (too many concurrent requests).
+// TODO(loader): this caps logical tiles, not actual network requests. A tile's
+// `zarr.get` fans out to N storage-chunk fetches we don't throttle. Wrap the
+// zarrita FetchStore (or global fetch) in a semaphore (~16 concurrent) for a
+// real request cap — belt-and-suspenders now that tiles are chunk-aligned.
+const MAX_PENDING_CHUNKS = 32;
 
 // Global state
 let wasmModule = null;
 let wasmInitialized = false;
 let viewer = null;
-let volumeVisual = null;
+// One volume visual per channel. Length 1 for single-channel (Normal blend,
+// identical to before); multi-channel gets per-channel colormaps + additive.
+let volumeVisuals = [];
 let zarrArrays = [];
-let currentChannel = 0;
+let numChannels = 1;
 let lodLevels = [];
 let volumeCenter = [0, 0, 0];
 let volumeScale = 1.0;
 let animationFrameId = null;
+
+// Per-channel base colors for multi-channel additive display.
+const CHANNEL_COLORS = [
+    [255, 0, 0], [0, 255, 0], [0, 128, 255],
+    [255, 0, 255], [0, 255, 255], [255, 255, 0], [255, 255, 255],
+];
+
+// 256-entry RGBA LUT ramping black→`rgb` (alpha = 255). With the premultiplied
+// additive pipeline this yields per-channel intensity × hue, summed over channels.
+function makeChannelColormap(rgb) {
+    const lut = new Uint8Array(1024);
+    for (let i = 0; i < 256; i++) {
+        const f = i / 255;
+        lut[i * 4 + 0] = Math.round(rgb[0] * f);
+        lut[i * 4 + 1] = Math.round(rgb[1] * f);
+        lut[i * 4 + 2] = Math.round(rgb[2] * f);
+        lut[i * 4 + 3] = 255;
+    }
+    return lut;
+}
+
+// Helpers applying a per-visual op across all channel visuals.
+const visualsReady = () => volumeVisuals.length > 0;
+const eachVolume = (fn) => { for (const v of volumeVisuals) fn(v); };
+const totalStats = () => {
+    let loaded = 0, visible = 0;
+    for (const v of volumeVisuals) { const s = v.getStats(); loaded += s[0]; visible += s[1]; }
+    return [loaded, visible];
+};
 
 // Chunk loading state
 const pendingLoads = new Set();
@@ -105,7 +150,7 @@ function resizeCanvas() {
     if (viewer) viewer.resize(canvas.width, canvas.height);
 }
 
-// Pull-based loader. A polling loop reads `volumeVisual.wantedKeys()`
+// Pull-based loader. A polling loop reads each channel visual's `wantedKeys()`
 // (flat Uint32Array of [lod, t, z, y, x, priority, ...] sorted by
 // priority) and dispatches async fetches. Bovista drops keys from
 // `wanted` as soon as they're no longer needed, so cancellation is
@@ -114,21 +159,24 @@ let loaderPollHandle = null;
 function startLoaderPoll() {
     if (loaderPollHandle !== null) return;
     loaderPollHandle = setInterval(() => {
-        if (!volumeVisual) return;
-        const w = volumeVisual.wantedKeys();
-        for (let i = 0; i < w.length; i += 6) {
-            const lod = w[i], t = w[i+1], z = w[i+2], y = w[i+3], x = w[i+4];
-            const key = `${lod}:${t}:${z}:${y}:${x}`;
-            if (pendingLoads.has(key)) continue;
-            if (pendingLoads.size >= MAX_PENDING_CHUNKS) break;
-            pendingLoads.add(key);
-            pendingLoadsEl.textContent = pendingLoads.size;
-            loadChunkAsync(lod, t, z, y, x, key);
+        if (volumeVisuals.length === 0) return;
+        // Poll every channel's visual; each fetches its own channel's tiles.
+        for (let c = 0; c < volumeVisuals.length; c++) {
+            const w = volumeVisuals[c].wantedKeys();
+            for (let i = 0; i < w.length; i += 6) {
+                const lod = w[i], t = w[i+1], z = w[i+2], y = w[i+3], x = w[i+4];
+                const key = `${c}:${lod}:${t}:${z}:${y}:${x}`;
+                if (pendingLoads.has(key)) continue;
+                if (pendingLoads.size >= MAX_PENDING_CHUNKS) break;
+                pendingLoads.add(key);
+                pendingLoadsEl.textContent = pendingLoads.size;
+                loadChunkAsync(c, lod, t, z, y, x, key);
+            }
         }
     }, 25);
 }
 
-async function loadChunkAsync(lod, t, z, y, x, key) {
+async function loadChunkAsync(c, lod, t, z, y, x, key) {
     try {
         const zarrArray = zarrArrays[lod];
         if (!zarrArray) throw new Error(`No array for LOD ${lod}`);
@@ -137,7 +185,7 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const ndim = shape.length;
 
         const zIdx = ndim - 3, yIdx = ndim - 2, xIdx = ndim - 1;
-        const [chunkD, chunkH, chunkW] = LOGICAL_TILE;
+        const [chunkD, chunkH, chunkW] = logicalTile;
 
         const zStart = z * chunkD, yStart = y * chunkH, xStart = x * chunkW;
         const zEnd = Math.min(zStart + chunkD, shape[zIdx]);
@@ -146,9 +194,9 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
 
         let selection;
         if (ndim === 5) {
-            selection = [t, currentChannel, zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
+            selection = [t, c, zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
         } else if (ndim === 4) {
-            selection = [currentChannel, zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
+            selection = [c, zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
         } else {
             selection = [zarr.slice(zStart, zEnd), zarr.slice(yStart, yEnd), zarr.slice(xStart, xEnd)];
         }
@@ -173,14 +221,15 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const dy = sh[sh.length - 2];
         const dx = sh[sh.length - 1];
 
-        // Hand the native tile to bovista — it normalizes the full dtype
-        // range to [0, 1] itself, so no client-side rescaling.
-        if (volumeVisual) {
+        // Hand the native tile for this channel to bovista — it normalizes the
+        // full dtype range to [0, 1] itself, so no client-side rescaling.
+        const visual = volumeVisuals[c];
+        if (visual) {
             if (data instanceof Uint16Array) {
-                volumeVisual.setChunkDataU16(lod, t, z, y, x, data, dz, dy, dx);
+                visual.setChunkDataU16(lod, t, z, y, x, data, dz, dy, dx);
             } else {
                 const src = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
-                volumeVisual.setChunkDataU8(lod, t, z, y, x, src, dz, dy, dx);
+                visual.setChunkDataU8(lod, t, z, y, x, src, dz, dy, dx);
             }
         }
     } catch (error) {
@@ -240,8 +289,9 @@ function createVisual() {
     viewer.clearScene();
     pendingLoads.clear();
 
-    // Each shape/size argument is a [z, y, x] array (numpy order).
-    const jsLevels = lodLevels.map(level => new wasmModule.LevelMetadata(
+    // `new <Volume>(...)` consumes (moves) the LevelMetadata array, so build a
+    // fresh one per channel. Each shape/size arg is a [z, y, x] array (numpy order).
+    const buildLevels = () => lodLevels.map(level => new wasmModule.LevelMetadata(
         level.volumeSize,
         level.chunkSize,
         level.voxelSize,
@@ -250,9 +300,20 @@ function createVisual() {
     ));
 
     const maxChunks = computeMaxChunks();
+    // Split the tile budget across channels so total VRAM stays within budget.
+    const perChannel = Math.max(1, Math.floor(maxChunks / numChannels));
     const cfg = VOLUME_MODES[currentMode];
-    volumeVisual = new wasmModule[cfg.ctor](viewer, jsLevels, maxChunks);
-    viewer[cfg.add](volumeVisual);
+    const additive = numChannels > 1;
+    volumeVisuals = [];
+    for (let c = 0; c < numChannels; c++) {
+        const v = new wasmModule[cfg.ctor](viewer, buildLevels(), perChannel);
+        if (additive) {
+            v.setColormap(makeChannelColormap(CHANNEL_COLORS[c % CHANNEL_COLORS.length]));
+            v.setBlendMode(wasmModule.BlendMode.Additive);
+        }
+        viewer[cfg.add](v);
+        volumeVisuals.push(v);
+    }
     startLoaderPoll();
 
     // Apply all controls (common ones plus the mode-specific subset).
@@ -280,19 +341,19 @@ function applyModeCaps() {
 }
 
 function applyAttenuation() {
-    if (!volumeVisual || !volumeVisual.setAttenuation) return;
+    if (!visualsReady()) return;
     // Slider 0..100 → 0.0..10.0 attenuation strength.
     const v = parseInt(document.getElementById('attenuation').value) / 10.0;
     document.getElementById('attenuation-value').textContent = v.toFixed(2);
-    volumeVisual.setAttenuation(v);
+    eachVolume(vis => { if (vis.setAttenuation) vis.setAttenuation(v); });
 }
 
 function applyIsoThreshold() {
-    if (!volumeVisual || !volumeVisual.setIsoThreshold) return;
+    if (!visualsReady()) return;
     // Slider 1..999 → 0.001..0.999 in contrast-normalised raw units.
     const v = parseInt(document.getElementById('iso-threshold').value) / 1000.0;
     document.getElementById('iso-threshold-value').textContent = v.toFixed(3);
-    volumeVisual.setIsoThreshold(v);
+    eachVolume(vis => { if (vis.setIsoThreshold) vis.setIsoThreshold(v); });
 }
 
 // Contrast helpers: sliders are integers 0-1000 mapped within [0, contrastCeiling].
@@ -308,10 +369,10 @@ function syncContrastDisplay() {
 
 // Controls
 function applyContrast() {
-    if (!volumeVisual) return;
+    if (!visualsReady()) return;
     const min = sliderToValue(parseInt(document.getElementById('contrast-min').value));
     const max = sliderToValue(parseInt(document.getElementById('contrast-max').value));
-    volumeVisual.setContrast(min, max);
+    eachVolume(v => v.setContrast(min, max));
     windowCenter = (min + max) / 2;
     windowWidth  = max - min;
 }
@@ -343,8 +404,9 @@ async function autoContrast() {
         const sliceZ = zarr.slice(chunkZ, Math.min(chunkZ + chunks[zIdx], shape[zIdx]));
         const sliceY = zarr.slice(chunkY, Math.min(chunkY + chunks[yIdx], shape[yIdx]));
         const sliceX = zarr.slice(chunkX, Math.min(chunkX + chunks[xIdx], shape[xIdx]));
-        if (ndim === 5)      selection = [0, currentChannel, sliceZ, sliceY, sliceX];
-        else if (ndim === 4) selection = [currentChannel, sliceZ, sliceY, sliceX];
+        // Sample channel 0 for the shared auto-contrast bounds.
+        if (ndim === 5)      selection = [0, 0, sliceZ, sliceY, sliceX];
+        else if (ndim === 4) selection = [0, sliceZ, sliceY, sliceX];
         else                 selection = [sliceZ, sliceY, sliceX];
 
         const chunk = await zarr.get(coarsestArray, selection);
@@ -372,18 +434,18 @@ async function autoContrast() {
 }
 
 function applyStepSize() {
-    if (!volumeVisual) return;
+    if (!visualsReady()) return;
     // Slider maps to relative step size in LOD-0 voxels.
     // 100 → 1.0 voxel/step (default). Range 10→0.1 (oversampling) to 800→8.0 (fast/coarse).
     const relative = parseFloat(document.getElementById('step-size').value) / 100.0;
     document.getElementById('step-size-value').textContent = relative.toFixed(2) + ' vox';
-    volumeVisual.setRelativeStepSize(relative);
+    eachVolume(v => v.setRelativeStepSize(relative));
 }
 
 let densityScaleExp = 0;  // log10 exponent; slider range -20..+20 → 0.01× to 100×
 
 function applyDensityScale() {
-    if (!volumeVisual || !volumeVisual.setDensityScale) return;
+    if (!visualsReady()) return;
     // Match kiln's normalization: extinction = cs.a * stepSize * maxDim * 0.5
     // where stepSize is in normalized [0,1] volume space and maxDim is in voxels.
     // Equivalent in world-space: density_scale = 0.5 * maxDim / volumeScale,
@@ -393,7 +455,7 @@ function applyDensityScale() {
     const maxDim = Math.max(lod0.volumeSize[0], lod0.volumeSize[1], lod0.volumeSize[2]);
     const baseScale = 0.5 * maxDim / Math.max(volumeScale, 1e-9);
     const multiplier = Math.pow(10, densityScaleExp / 10);
-    volumeVisual.setDensityScale(baseScale * multiplier);
+    eachVolume(v => { if (v.setDensityScale) v.setDensityScale(baseScale * multiplier); });
     const displayMult = multiplier < 10 ? multiplier.toFixed(2) : multiplier.toFixed(1);
     document.getElementById('density-scale-value').textContent = displayMult + '×';
 }
@@ -413,13 +475,13 @@ canvas.addEventListener('mousemove', e => {
 
     if (isDragging) {
         viewer.orbitCamera(dx * 0.005, dy * 0.005);
-    } else if (isMiddleDragging && volumeVisual) {
+    } else if (isMiddleDragging && visualsReady()) {
         windowCenter += dx * 0.002 * contrastCeiling;
         windowWidth  -= dy * 0.002 * contrastCeiling;
         windowWidth   = Math.max(0.001, windowWidth);
         const min = windowCenter - windowWidth / 2;
         const max = windowCenter + windowWidth / 2;
-        volumeVisual.setContrast(min, max);
+        eachVolume(v => v.setContrast(min, max));
         if (max > contrastCeiling) setCeiling(Math.min(1.0, max * 1.1));
         document.getElementById('contrast-min').value = valueToSlider(min);
         document.getElementById('contrast-max').value = valueToSlider(max);
@@ -442,10 +504,10 @@ canvas.addEventListener('wheel', e => {
 
 // Keyboard
 document.addEventListener('keydown', e => {
-    if ((e.key === 'd' || e.key === 'D') && volumeVisual && volumeVisual.setDebugMode) {
+    if ((e.key === 'd' || e.key === 'D') && visualsReady()) {
         debugMode = !debugMode;
         atlasDebugMode = false; stepDebugMode = false;
-        volumeVisual.setDebugMode(debugMode);
+        eachVolume(v => { if (v.setDebugMode) v.setDebugMode(debugMode); });
         document.getElementById('debug-mode').checked = debugMode;
         document.getElementById('atlas-debug-mode').checked = false;
         document.getElementById('step-debug-mode').checked = false;
@@ -486,8 +548,17 @@ async function loadDataset(datasetKey) {
             const zIdx = ndim - 3, yIdx = ndim - 2, xIdx = ndim - 1;
 
             const volumeSize = [shape[zIdx], shape[yIdx], shape[xIdx]];
-            // Logical tile, uniform across LODs — NOT the dataset's storage chunk.
-            const chunkSize  = LOGICAL_TILE;
+            if (i === 0) {
+                // Align the (uniform) logical tile to the LOD-0 storage chunk,
+                // capped, so one tile fetch maps to ~one stored chunk.
+                const ch = zarrArray.chunks;
+                logicalTile = [
+                    Math.min(ch[zIdx], MAX_LOGICAL_TILE),
+                    Math.min(ch[yIdx], MAX_LOGICAL_TILE),
+                    Math.min(ch[xIdx], MAX_LOGICAL_TILE),
+                ];
+            }
+            const chunkSize  = logicalTile;
 
             const transforms = multiscales.datasets[i].coordinateTransformations || [];
             let voxelSize   = [1.0, 1.0, 1.0];
@@ -517,19 +588,18 @@ async function loadDataset(datasetKey) {
         // Channel picker
         const firstArray = zarrArrays[0];
         const hasChannels = firstArray.shape.length >= 4;
-        const numChannels = hasChannels
+        // Assign the module-level global (drives the per-channel visual loop).
+        numChannels = hasChannels
             ? (firstArray.shape.length === 5 ? firstArray.shape[1] : firstArray.shape[0])
             : 1;
 
+        // All channels render together (additive); the dropdown is informational.
         const channelSelect = document.getElementById('channel-select');
         channelSelect.innerHTML = '';
-        for (let i = 0; i < numChannels; i++) {
-            const opt = document.createElement('option');
-            opt.value = i;
-            opt.textContent = `Channel ${i}`;
-            channelSelect.appendChild(opt);
-        }
-        channelSelect.disabled = numChannels <= 1;
+        const opt = document.createElement('option');
+        opt.textContent = numChannels > 1 ? `${numChannels} channels (additive)` : 'Channel 0';
+        channelSelect.appendChild(opt);
+        channelSelect.disabled = true;
 
         // Camera setup
         const lod0 = lodLevels[0];
@@ -583,15 +653,12 @@ document.getElementById('load-btn').addEventListener('click', () => {
     if (key) loadDataset(key);
 });
 
-document.getElementById('channel-select').addEventListener('change', e => {
-    currentChannel = parseInt(e.target.value);
-    if (volumeVisual && lodLevels.length > 0) createVisual();
-});
+// Channel selection is no longer used — all channels render together (additive).
 
 document.getElementById('lod-bias').addEventListener('input', e => {
     const v = parseFloat(e.target.value) / 10.0;
     document.getElementById('lod-bias-value').textContent = v.toFixed(1);
-    if (volumeVisual) volumeVisual.setLodBias(v);
+    eachVolume(vis => vis.setLodBias(v));
 });
 
 document.getElementById('contrast-min').addEventListener('input', e => {
@@ -617,13 +684,13 @@ document.getElementById('density-scale').addEventListener('input', e => {
     applyDensityScale();
 });
 document.getElementById('vram-budget').addEventListener('change', () => {
-    // Recreate the visual with the new tile budget when a dataset is loaded.
-    if (volumeVisual && lodLevels.length > 0) createVisual();
+    // Recreate the visuals with the new tile budget when a dataset is loaded.
+    if (visualsReady() && lodLevels.length > 0) createVisual();
 });
 
 document.getElementById('render-mode').addEventListener('change', e => {
     currentMode = e.target.value;
-    if (volumeVisual && lodLevels.length > 0) createVisual();
+    if (visualsReady() && lodLevels.length > 0) createVisual();
 });
 
 document.getElementById('attenuation').addEventListener('input', applyAttenuation);
@@ -632,7 +699,7 @@ document.getElementById('iso-threshold').addEventListener('input', applyIsoThres
 document.getElementById('debug-mode').addEventListener('change', e => {
     debugMode = e.target.checked;
     if (debugMode) { atlasDebugMode = false; document.getElementById('atlas-debug-mode').checked = false; }
-    if (volumeVisual && volumeVisual.setDebugMode) volumeVisual.setDebugMode(debugMode);
+    eachVolume(v => { if (v.setDebugMode) v.setDebugMode(debugMode); });
 });
 
 document.getElementById('atlas-debug-mode').addEventListener('change', e => {
@@ -642,7 +709,7 @@ document.getElementById('atlas-debug-mode').addEventListener('change', e => {
         document.getElementById('debug-mode').checked = false;
         document.getElementById('step-debug-mode').checked = false;
     }
-    if (volumeVisual && volumeVisual.setAtlasDebugMode) volumeVisual.setAtlasDebugMode(atlasDebugMode);
+    eachVolume(v => { if (v.setAtlasDebugMode) v.setAtlasDebugMode(atlasDebugMode); });
 });
 
 document.getElementById('step-debug-mode').addEventListener('change', e => {
@@ -652,17 +719,15 @@ document.getElementById('step-debug-mode').addEventListener('change', e => {
         document.getElementById('debug-mode').checked = false;
         document.getElementById('atlas-debug-mode').checked = false;
     }
-    if (volumeVisual && volumeVisual.setStepDebugMode) volumeVisual.setStepDebugMode(stepDebugMode);
+    eachVolume(v => { if (v.setStepDebugMode) v.setStepDebugMode(stepDebugMode); });
 });
 
 // Stats update
 setInterval(() => {
-    if (volumeVisual) {
-        const stats = volumeVisual.getStats();
-        if (stats) {
-            loadedChunksEl.textContent = stats[0];
-            visibleChunksEl.textContent = stats[1];
-        }
+    if (visualsReady()) {
+        const stats = totalStats();
+        loadedChunksEl.textContent = stats[0];
+        visibleChunksEl.textContent = stats[1];
     }
 }, 500);
 
