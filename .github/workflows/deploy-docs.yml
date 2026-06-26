@@ -60,14 +60,14 @@ jobs:
         run: |
           mkdir -p docs/guide/book/examples/live
           # Copy web examples with their WASM pkg
-          cp -r examples/slice_viewer/web    docs/guide/book/examples/live/slice_viewer
+          cp -r examples/slice_renderer/web    docs/guide/book/examples/live/slice_renderer
           cp -r examples/volume_renderer/web docs/guide/book/examples/live/volume_renderer
           cp -r examples/pkg                 docs/guide/book/examples/live/pkg
           # Hub page
           cp examples/index.html             docs/guide/book/examples/live/index.html
           # Fix pkg import paths for the deployed location
           sed -i "s|../../pkg/bovista\.js|../pkg/bovista.js|g" \
-            docs/guide/book/examples/live/slice_viewer/main.js \
+            docs/guide/book/examples/live/slice_renderer/main.js \
             docs/guide/book/examples/live/volume_renderer/main.js
 
       - name: Deploy to GitHub Pages

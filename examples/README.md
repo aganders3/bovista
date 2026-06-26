@@ -6,14 +6,16 @@ Bovista's core rendering engine compiles to Python, WebAssembly, and native Rust
 
 | Example | What it shows | Python | Web | Rust |
 |---------|--------------|--------|-----|------|
-| [Slice Viewer](slice_viewer/) | Arbitrary-orientation cross-section through a 3D volume | [slice_viewer/python/](slice_viewer/python/) | [slice_viewer/web/](slice_viewer/web/) | [slice_viewer/rust/](slice_viewer/rust/) (stub) |
-| [Volume Renderer](volume_renderer/) | Direct volume rendering via GPU ray marching | [volume_renderer/python/](volume_renderer/python/) | [volume_renderer/web/](volume_renderer/web/) | [volume_renderer/rust/](volume_renderer/rust/) (stub) |
+| [Slice Renderer](slice_renderer/) | Arbitrary-orientation cross-section through a 3D volume | [slice_renderer/python/](slice_renderer/python/) | [slice_renderer/web/](slice_renderer/web/) | [slice_renderer/rust/](slice_renderer/rust/) |
+| [Volume Renderer](volume_renderer/) | Direct volume rendering via GPU ray marching | [volume_renderer/python/](volume_renderer/python/) | [volume_renderer/web/](volume_renderer/web/) | [volume_renderer/rust/](volume_renderer/rust/) |
+
+A third native-only example, [remote_volume_renderer/](remote_volume_renderer/), renders a volume headlessly with an orbiting camera and streams the frames as video — the server-side rendering use case.
 
 ## Running the Python examples
 
 ```bash
 uv sync                                                    # builds Rust extension + installs deps
-uv run python examples/slice_viewer/python/remote_ome_zarr.py
+uv run python examples/slice_renderer/python/remote_ome_zarr.py
 uv run python examples/volume_renderer/python/volume_ome_zarr.py
 ```
 
@@ -22,8 +24,16 @@ uv run python examples/volume_renderer/python/volume_ome_zarr.py
 ```bash
 ./build_wasm.sh                                            # compile to WASM → examples/pkg/
 python -m http.server 8000 --directory examples
-# open http://localhost:8000/slice_viewer/
+# open http://localhost:8000/slice_renderer/
 # open http://localhost:8000/volume_renderer/
+```
+
+## Running the native (Rust) examples
+
+```bash
+cargo run --release --example slice_renderer               # defaults to marmoset_neurons
+cargo run --release --example volume_renderer              # defaults to beechnut
+# pass --zarr <path-or-url> for any other OME-Zarr; each prints its controls on startup
 ```
 
 ## Datasets
