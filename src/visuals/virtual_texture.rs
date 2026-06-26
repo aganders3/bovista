@@ -185,6 +185,10 @@ pub struct VirtualTextureData {
     /// Pending-drain and LRU touching compare against the SPATIAL part of
     /// stored slot_map keys.
     pub visible_tile_keys: HashSet<TileKey>,
+    /// Latch so we warn at most once per under→over transition when the
+    /// visible working set can't fit in the atlas (guaranteed thrash),
+    /// instead of spamming every prepare.
+    over_capacity_warned: bool,
     pub lod_bias: f32,
     target_pixels_per_voxel: f32,
     pub cached_ideal_lod: usize,
@@ -308,6 +312,7 @@ impl VirtualTextureData {
             max_tiles,
             frame_counter: 0,
             visible_tile_keys: HashSet::new(),
+            over_capacity_warned: false,
             lod_bias: 0.0,
             target_pixels_per_voxel: 1.0,
             cached_ideal_lod: 0,
@@ -608,6 +613,26 @@ impl VirtualTextureData {
     fn publish_wanted(&mut self) {
         let t0 = web_time::Instant::now();
         let lookahead = self.prefetch_lookahead as i32;
+
+        // If the visible working set alone exceeds the atlas, not every
+        // visible tile can be resident at once — they evict each other and
+        // get re-requested every frame (the "loaded plateaus below visible,
+        // pending churns" thrash). Warn once per under→over transition so
+        // the caller knows to raise max_tiles / atlas_count / VRAM budget.
+        let visible = self.visible_tile_keys.len();
+        if visible > self.atlas_capacity {
+            if !self.over_capacity_warned {
+                log::warn!(
+                    "VT thrash: {visible} tiles visible but atlas holds only {} \
+                     (max_tiles={}). Visible tiles can't all stay resident — raise \
+                     max_tiles / atlas_count (or the VRAM budget) above {visible}.",
+                    self.atlas_capacity, self.max_tiles,
+                );
+                self.over_capacity_warned = true;
+            }
+        } else {
+            self.over_capacity_warned = false;
+        }
         // Snapshot pending keys so a worker doesn't re-fetch a tile
         // that's already decoded and waiting in line to install.
         let pending_keys: HashSet<TileKey> = {
