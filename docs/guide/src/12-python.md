@@ -28,9 +28,7 @@ viewer = bv.Viewer(width=800, height=600)
 
 Initialization:
 
-- `viewer.initialize()` — headless / offscreen (no window)
-- `viewer.initialize_with_window(handle, width, height)` — attach to a native window handle (NSView / HWND / X11 Window) for embedding in Qt or other toolkits
-- `viewer.run()` — open a standalone winit window and block until closed
+- `viewer.initialize_with_window(handle, width, height)` — attach to a native window handle (NSView / HWND / X11 Window) for embedding in Qt or another toolkit, then drive rendering yourself via `render_frame()` (see the render loop below). This is the only initialization path; the host toolkit owns the window and event loop.
 
 Camera:
 

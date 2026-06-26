@@ -219,18 +219,15 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const dy = sh[sh.length - 2];
         const dx = sh[sh.length - 1];
 
-        // Provide to WASM — VT pipeline requires uint16; upscale uint8 if needed.
+        // Hand the native tile to bovista — it normalizes the full dtype
+        // range to [0, 1] itself, so no client-side rescaling.
         if (tiledImage) {
-            let u16data;
             if (data instanceof Uint16Array) {
-                u16data = data;
+                tiledImage.setChunkDataU16(lod, t, z, y, x, data, dz, dy, dx);
             } else {
-                // Scale uint8 [0,255] → uint16 [0,65535]
                 const src = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
-                u16data = new Uint16Array(src.length);
-                for (let i = 0; i < src.length; i++) u16data[i] = src[i] * 257;
+                tiledImage.setChunkDataU8(lod, t, z, y, x, src, dz, dy, dx);
             }
-            tiledImage.setChunkDataU16(lod, t, z, y, x, u16data, dz, dy, dx);
             loadedChunkCount++;
         }
 
@@ -246,89 +243,23 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
 function updateSlicePlane() {
     if (!tiledImage) return;
 
-    const cosX = Math.cos(sliceAngleX);
-    const sinX = Math.sin(sliceAngleX);
-    const cosY = Math.cos(sliceAngleY);
-    const sinY = Math.sin(sliceAngleY);
-
-    let normalX = sinY * cosX;
-    let normalY = -sinX;
-    let normalZ = cosY * cosX;
-
-    const length = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
-    if (length > 0.0001) {
-        normalX /= length;
-        normalY /= length;
-        normalZ /= length;
-    }
-
-    tiledImage.setSlicePlane(
-        volumeCenter[0] + normalX * sliceOffset,
-        volumeCenter[1] + normalY * sliceOffset,
-        volumeCenter[2] + normalZ * sliceOffset,
-        normalX,
-        normalY,
-        normalZ
+    // bovista computes the plane normal from the two angles + offset and
+    // returns it so we can face the slice head-on in orthographic mode.
+    const n = tiledImage.setSliceFromAngles(
+        volumeCenter[0], volumeCenter[1], volumeCenter[2],
+        sliceAngleX, sliceAngleY, sliceOffset,
     );
 
-    // If in orthographic mode, align camera to slice plane
     if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Orthographic) {
-        alignCameraToSlice(normalX, normalY, normalZ);
+        viewer.alignCameraToSlice(
+            volumeCenter[0], volumeCenter[1], volumeCenter[2],
+            n[0], n[1], n[2], volumeScale * 2.0,
+        );
     }
 
     // Use adaptive precision based on volume scale
     const precision = volumeScale < 1.0 ? 6 : volumeScale < 10 ? 3 : 1;
     sliceOffsetEl.textContent = sliceOffset.toFixed(precision);
-}
-
-function alignCameraToSlice(normalX, normalY, normalZ) {
-    // Position camera along the normal at a fixed distance
-    const distance = volumeScale * 2.0;
-    const posX = volumeCenter[0] + normalX * distance;
-    const posY = volumeCenter[1] + normalY * distance;
-    const posZ = volumeCenter[2] + normalZ * distance;
-
-    viewer.setCameraPosition(posX, posY, posZ);
-    viewer.setCameraTarget(volumeCenter[0], volumeCenter[1], volumeCenter[2]);
-
-    // Calculate proper up vector perpendicular to normal (forward vector)
-    // Try to align with world Y when possible
-    let refX, refY, refZ;
-    if (Math.abs(normalY) > 0.9) {
-        // Normal is nearly vertical, use Z as reference
-        refX = 0.0; refY = 0.0; refZ = 1.0;
-    } else {
-        // Use Y as reference
-        refX = 0.0; refY = 1.0; refZ = 0.0;
-    }
-
-    // Calculate right = forward × reference
-    let rightX = normalY * refZ - normalZ * refY;
-    let rightY = normalZ * refX - normalX * refZ;
-    let rightZ = normalX * refY - normalY * refX;
-
-    // Normalize right
-    const rightLen = Math.sqrt(rightX * rightX + rightY * rightY + rightZ * rightZ);
-    if (rightLen > 0.0001) {
-        rightX /= rightLen;
-        rightY /= rightLen;
-        rightZ /= rightLen;
-    }
-
-    // Calculate up = right × forward
-    let upX = rightY * normalZ - rightZ * normalY;
-    let upY = rightZ * normalX - rightX * normalZ;
-    let upZ = rightX * normalY - rightY * normalX;
-
-    // Normalize up
-    const upLen = Math.sqrt(upX * upX + upY * upY + upZ * upZ);
-    if (upLen > 0.0001) {
-        upX /= upLen;
-        upY /= upLen;
-        upZ /= upLen;
-    }
-
-    viewer.setCameraUp(upX, upY, upZ);
 }
 
 /**

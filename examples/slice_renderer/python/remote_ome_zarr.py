@@ -114,7 +114,6 @@ class ViewerWidget(QWidget):
 
     def mouseMoveEvent(self, event):
         if self.left_pressed and self._initialized:
-            import math
             dx = event.position().x() - self.last_x
             dy = event.position().y() - self.last_y
 
@@ -171,91 +170,20 @@ class ViewerWidget(QWidget):
         if not self._image:
             return
 
-        import math
-        cos_y = math.cos(self.slice_angle_y)
-        sin_y = math.sin(self.slice_angle_y)
-        cos_x = math.cos(self.slice_angle_x)
-        sin_x = math.sin(self.slice_angle_x)
-
-        # Calculate normal vector from angles
-        normal_x = sin_y * cos_x
-        normal_y = -sin_x
-        normal_z = cos_y * cos_x
-
-        # Normalize
-        length = math.sqrt(normal_x**2 + normal_y**2 + normal_z**2)
-        if length > 0.0001:
-            normal_x /= length
-            normal_y /= length
-            normal_z /= length
-
-        # Apply to image - move slice position along the normal vector
-        center = self.volume_center
-        self._image.set_slice_plane(
-            center[0] + normal_x * self.slice_offset,
-            center[1] + normal_y * self.slice_offset,
-            center[2] + normal_z * self.slice_offset,
-            normal_x, normal_y, normal_z
+        # bovista computes the plane normal from the two angles + offset and
+        # returns it so we can face the slice head-on in orthographic mode.
+        nx, ny, nz = self._image.set_slice_from_angles(
+            *self.volume_center, self.slice_angle_x, self.slice_angle_y, self.slice_offset
         )
 
-        # If in orthographic mode, align camera to slice plane
         if self.viewer.get_camera_projection_mode() == bv.ProjectionMode.Orthographic:
-            self._align_camera_to_slice(normal_x, normal_y, normal_z)
+            self.viewer.align_camera_to_slice(*self.volume_center, nx, ny, nz, self.volume_scale * 2.0)
 
     def _apply_window_level(self):
         if not self._image:
             return
         half = self.window_width / 2.0
         self._image.set_contrast(self.window_center - half, self.window_center + half)
-
-    def _align_camera_to_slice(self, normal_x, normal_y, normal_z):
-        """Position camera along slice plane normal"""
-        import math
-        center = self.volume_center
-
-        # Position camera along the normal at a fixed distance
-        distance = self.volume_scale * 2.0
-        pos_x = center[0] + normal_x * distance
-        pos_y = center[1] + normal_y * distance
-        pos_z = center[2] + normal_z * distance
-
-        self.viewer.set_camera_position(pos_x, pos_y, pos_z)
-        self.viewer.set_camera_target(center[0], center[1], center[2])
-
-        # Calculate proper up vector perpendicular to normal (forward vector)
-        # Try to align with world Y when possible
-        if abs(normal_y) > 0.9:
-            # Normal is nearly vertical, use Z as reference
-            ref_x, ref_y, ref_z = 0.0, 0.0, 1.0
-        else:
-            # Use Y as reference
-            ref_x, ref_y, ref_z = 0.0, 1.0, 0.0
-
-        # Calculate right = forward × reference
-        right_x = normal_y * ref_z - normal_z * ref_y
-        right_y = normal_z * ref_x - normal_x * ref_z
-        right_z = normal_x * ref_y - normal_y * ref_x
-
-        # Normalize right
-        right_len = math.sqrt(right_x**2 + right_y**2 + right_z**2)
-        if right_len > 0.0001:
-            right_x /= right_len
-            right_y /= right_len
-            right_z /= right_len
-
-        # Calculate up = right × forward
-        up_x = right_y * normal_z - right_z * normal_y
-        up_y = right_z * normal_x - right_x * normal_z
-        up_z = right_x * normal_y - right_y * normal_x
-
-        # Normalize up
-        up_len = math.sqrt(up_x**2 + up_y**2 + up_z**2)
-        if up_len > 0.0001:
-            up_x /= up_len
-            up_y /= up_len
-            up_z /= up_len
-
-        self.viewer.set_camera_up(up_x, up_y, up_z)
 
     def on_ready(self, callback):
         if self._initialized:
@@ -503,9 +431,12 @@ class MainWindow(QMainWindow):
                     data = future.result()
                     if data is None:
                         return
+                    # bovista normalizes the full dtype range to [0, 1] itself,
+                    # so just hand it the native uint8/uint16 tile.
                     if data.dtype == np.uint8:
-                        data = (data.astype(np.uint16) * 257)  # 0-255 → 0-65535
-                    image.set_chunk_data_u16(lod, t, z, y, x, data)
+                        image.set_chunk_data_u8(lod, t, z, y, x, data)
+                    else:
+                        image.set_chunk_data_u16(lod, t, z, y, x, data)
 
                 def poll():
                     while not stop.is_set():

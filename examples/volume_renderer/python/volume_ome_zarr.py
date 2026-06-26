@@ -425,9 +425,12 @@ class MainWindow(QMainWindow):
                     data = future.result()
                     if data is None:
                         return
+                    # bovista normalizes the full dtype range to [0, 1] itself,
+                    # so just hand it the native uint8/uint16 tile.
                     if data.dtype == np.uint8:
-                        data = (data.astype(np.uint16) * 257)
-                    volume.set_chunk_data_u16(lod, t, z, y, x, data)
+                        volume.set_chunk_data_u8(lod, t, z, y, x, data)
+                    else:
+                        volume.set_chunk_data_u16(lod, t, z, y, x, data)
 
                 def poll():
                     while not stop.is_set():

@@ -44,17 +44,17 @@
 //! import bovista as bv
 //! import numpy as np
 //!
-//! viewer = bv.PyViewer(800, 600)
-//! viewer.initialize()
+//! viewer = bv.Viewer(800, 600)
+//! viewer.initialize_with_window(handle, width, height)  # native window handle
 //!
 //! # Generate random point cloud
 //! n_points = 10000
 //! positions = np.random.randn(n_points, 1, 3).astype(np.float32) * 2.0
 //! colors = np.random.rand(n_points, 1, 3).astype(np.float32)
 //!
-//! points = bv.PyPoints.from_numpy(viewer, positions, colors)
-//! viewer.add_points(points)
-//! viewer.run()  # Opens interactive window
+//! points = bv.Points.from_numpy(viewer, positions, colors)
+//! viewer.add(points)
+//! viewer.render_frame()  # drive from your toolkit's render loop
 //! ```
 //!
 //! ## Local Examples
