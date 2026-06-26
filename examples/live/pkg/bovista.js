@@ -35,10 +35,10 @@ export class AverageVolume {
         return this;
     }
     /**
-     * Provide uint16 tile data (stored as R16Float).
+     * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
-     * when multi-channel support lands (same signature reshape as Image's variant).
+     * when multi-channel support lands.
      * @param {number} lod
      * @param {number} t
      * @param {number} z
@@ -51,6 +51,21 @@ export class AverageVolume {
      */
     setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
         wasm.jsaveragevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * Provide uint8 tile data (full u8 range maps to [0, 1]).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsaveragevolume_setChunkDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -150,10 +165,10 @@ export class DirectVolume {
         }
     }
     /**
-     * Provide uint16 tile data (stored as R16Float).
+     * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
-     * when multi-channel support lands (same signature reshape as Image's variant).
+     * when multi-channel support lands.
      * @param {number} lod
      * @param {number} t
      * @param {number} z
@@ -166,6 +181,21 @@ export class DirectVolume {
      */
     setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
         wasm.jsdirectvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * Provide uint8 tile data (full u8 range maps to [0, 1]).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsdirectvolume_setChunkDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -255,11 +285,6 @@ export class DirectVolume {
 }
 if (Symbol.dispose) DirectVolume.prototype[Symbol.dispose] = DirectVolume.prototype.free;
 
-/**
- * JavaScript wrapper for Image — single-draw-call multiscale rendering.
- *
- * Tile data must be provided as uint16 via `setChunkDataU16`.
- */
 export class Image {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -282,12 +307,6 @@ export class Image {
         return v1;
     }
     /**
-     * Create an Image.
-     *
-     * Pull-based: bovista publishes the set of tiles it wants each
-     * frame via `wantedKeys()`. The caller (JS) polls this and pushes
-     * data via `setChunkDataU16`. No callback flowing across the FFI
-     * boundary on the hot path.
      * @param {Viewer} viewer
      * @param {LevelMetadata[]} levels
      * @param {number} max_chunks
@@ -303,11 +322,10 @@ export class Image {
         return this;
     }
     /**
-     * Provide uint16 tile data (stored as R16Float).
+     * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
-     * TODO: collapse the 9 positional args into `({ lod, t, z, y, x, shape, channel }, data)`
-     * when multi-channel support lands — the signature will need a channel index then,
-     * and that's a natural point to also switch to object-style "named args" in JS.
+     * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+     * when multi-channel support lands.
      * @param {number} lod
      * @param {number} t
      * @param {number} z
@@ -322,6 +340,21 @@ export class Image {
         wasm.jsimage_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
+     * Provide uint8 tile data (full u8 range maps to [0, 1]).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsimage_setChunkDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
      * Pass a zero-length array to reset to grayscale.
      * @param {Uint8Array} rgba
@@ -333,7 +366,6 @@ export class Image {
         }
     }
     /**
-     * Set contrast limits (0.0 to 1.0)
      * @param {number} min
      * @param {number} max
      */
@@ -344,7 +376,7 @@ export class Image {
         }
     }
     /**
-     * Enable or disable debug LOD tinting (green=LOD0, red=coarsest).
+     * r" Enable or disable debug LOD tinting (green=LOD0, red=coarsest).
      * @param {boolean} enabled
      */
     setDebugMode(enabled) {
@@ -354,7 +386,6 @@ export class Image {
         }
     }
     /**
-     * Set LOD bias (positive = prefer higher resolution / finer LOD, negative = coarser).
      * @param {number} bias
      */
     setLodBias(bias) {
@@ -364,7 +395,28 @@ export class Image {
         }
     }
     /**
-     * Set the slice plane position and normal
+     * r" Set an oblique slice plane from two angles + an offset about `center`,
+     * r" returning the resulting unit normal `[nx, ny, nz]` — pass it to
+     * r" `Viewer.alignCameraToSlice` to face the slice head-on.
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} cz
+     * @param {number} angle_x
+     * @param {number} angle_y
+     * @param {number} offset
+     * @returns {Float32Array}
+     */
+    setSliceFromAngles(cx, cy, cz, angle_x, angle_y, offset) {
+        const ret = wasm.jsimage_setSliceFromAngles(this.__wbg_ptr, cx, cy, cz, angle_x, angle_y, offset);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * r" Set an arbitrary slice plane from a point and normal.
      * @param {number} px
      * @param {number} py
      * @param {number} pz
@@ -379,7 +431,6 @@ export class Image {
         }
     }
     /**
-     * Set the slice plane position along X axis
      * @param {number} x
      */
     setSliceX(x) {
@@ -389,7 +440,6 @@ export class Image {
         }
     }
     /**
-     * Set the slice plane position along Y axis
      * @param {number} y
      */
     setSliceY(y) {
@@ -399,7 +449,6 @@ export class Image {
         }
     }
     /**
-     * Set the slice plane position along Z axis
      * @param {number} z
      */
     setSliceZ(z) {
@@ -409,9 +458,9 @@ export class Image {
         }
     }
     /**
-     * Snapshot of the tile keys bovista currently wants. Returned as
-     * a flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
-     * sorted by priority (lower = more urgent). Poll periodically.
+     * Snapshot of the tile keys bovista currently wants. Returned as a
+     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+     * sorted by priority.
      * @returns {Uint32Array}
      */
     wantedKeys() {
@@ -458,10 +507,10 @@ export class IsosurfaceVolume {
         return this;
     }
     /**
-     * Provide uint16 tile data (stored as R16Float).
+     * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
-     * when multi-channel support lands (same signature reshape as Image's variant).
+     * when multi-channel support lands.
      * @param {number} lod
      * @param {number} t
      * @param {number} z
@@ -474,6 +523,21 @@ export class IsosurfaceVolume {
      */
     setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
         wasm.jsisosurfacevolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * Provide uint8 tile data (full u8 range maps to [0, 1]).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsisosurfacevolume_setChunkDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -734,10 +798,10 @@ export class MinipVolume {
         return this;
     }
     /**
-     * Provide uint16 tile data (stored as R16Float).
+     * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
-     * when multi-channel support lands (same signature reshape as Image's variant).
+     * when multi-channel support lands.
      * @param {number} lod
      * @param {number} t
      * @param {number} z
@@ -750,6 +814,21 @@ export class MinipVolume {
      */
     setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
         wasm.jsminipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * Provide uint8 tile data (full u8 range maps to [0, 1]).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsminipvolume_setChunkDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -849,10 +928,10 @@ export class MipVolume {
         }
     }
     /**
-     * Provide uint16 tile data (stored as R16Float).
+     * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
-     * when multi-channel support lands (same signature reshape as Image's variant).
+     * when multi-channel support lands.
      * @param {number} lod
      * @param {number} t
      * @param {number} z
@@ -865,6 +944,21 @@ export class MipVolume {
      */
     setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
         wasm.jsmipvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * Provide uint8 tile data (full u8 range maps to [0, 1]).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jsmipvolume_setChunkDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
     }
     /**
      * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
@@ -1080,6 +1174,20 @@ export class Viewer {
         _assertClass(visual, Points);
         const ret = wasm.jsviewer_addPoints(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * Face an oblique slice plane head-on: position the camera `distance`
+     * away from `(cx, cy, cz)` along the slice normal `(nx, ny, nz)`.
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} cz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @param {number} distance
+     */
+    alignCameraToSlice(cx, cy, cz, nx, ny, nz, distance) {
+        wasm.jsviewer_alignCameraToSlice(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, distance);
     }
     clearScene() {
         wasm.jsviewer_clearScene(this.__wbg_ptr);

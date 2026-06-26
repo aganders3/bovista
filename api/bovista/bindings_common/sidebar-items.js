@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["with_visual_mut","with_visual_ref"],"type":["VisualRef"]};
+window.SIDEBAR_ITEMS = {"fn":["pack_u16_tile","pack_u8_tile","with_visual_mut","with_visual_ref"],"type":["VisualRef"]};

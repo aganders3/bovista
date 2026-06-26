@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-bd5612cb.js";
+            window.path_to_searchindex_js = "searchindex-1bfc6048.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-17ace711.js"></script>
@@ -194,9 +194,7 @@
 </code></pre>
 <p>Initialization:</p>
 <ul>
-<li><code>viewer.initialize()</code> — headless / offscreen (no window)</li>
-<li><code>viewer.initialize_with_window(handle, width, height)</code> — attach to a native window handle (NSView / HWND / X11 Window) for embedding in Qt or other toolkits</li>
-<li><code>viewer.run()</code> — open a standalone winit window and block until closed</li>
+<li><code>viewer.initialize_with_window(handle, width, height)</code> — attach to a native window handle (NSView / HWND / X11 Window) for embedding in Qt or another toolkit, then drive rendering yourself via <code>render_frame()</code> (see the render loop below). This is the only initialization path; the host toolkit owns the window and event loop.</li>
 </ul>
 <p>Camera:</p>
 <pre><code class="language-python">viewer.set_camera_position(x, y, z)

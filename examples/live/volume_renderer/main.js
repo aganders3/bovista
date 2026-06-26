@@ -166,23 +166,22 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
 
         // Tile extents come from the RETURNED chunk shape (z, y, x — scalar
         // t/c dims already dropped), never the requested slice bounds, so they
-        // always match u16data.length. setChunkDataU16 wants (z_shape, y_shape,
+        // always match the data length. setChunkData* wants (z_shape, y_shape,
         // x_shape) in numpy order.
         const sh = chunk.shape;
         const dz = sh[sh.length - 3];
         const dy = sh[sh.length - 2];
         const dx = sh[sh.length - 1];
 
+        // Hand the native tile to bovista — it normalizes the full dtype
+        // range to [0, 1] itself, so no client-side rescaling.
         if (volumeVisual) {
-            let u16data;
             if (data instanceof Uint16Array) {
-                u16data = data;
+                volumeVisual.setChunkDataU16(lod, t, z, y, x, data, dz, dy, dx);
             } else {
                 const src = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
-                u16data = new Uint16Array(src.length);
-                for (let i = 0; i < src.length; i++) u16data[i] = src[i] * 257;
+                volumeVisual.setChunkDataU8(lod, t, z, y, x, src, dz, dy, dx);
             }
-            volumeVisual.setChunkDataU16(lod, t, z, y, x, u16data, dz, dy, dx);
         }
     } catch (error) {
         console.error(`[ChunkLoader] Error loading ${key}:`, error);
