@@ -1,4 +1,4 @@
-//! Slice viewer — native interactive Rust example.
+//! Slice renderer — native interactive Rust example.
 //!
 //! Streams an OME-Zarr multiscale pyramid and renders an arbitrary slice plane
 //! through it via bovista's virtual-texture `Image` visual. Tiles are pulled
@@ -6,8 +6,8 @@
 //! camera and slice plane move.
 //!
 //! Usage:
-//!   cargo run --release --example slice_viewer
-//!   cargo run --release --example slice_viewer -- --zarr <path-or-url>
+//!   cargo run --release --example slice_renderer
+//!   cargo run --release --example slice_renderer -- --zarr <path-or-url>
 //!
 //! Controls:
 //!   Left-drag    orbit camera (pan in orthographic mode)
@@ -47,7 +47,7 @@ use app::{BuildCtx, ExampleApp, FrameCtx, SecondaryButton};
 const DEFAULT_ZARR: &str =
     "https://ome-zarr-scivis.s3.us-east-1.amazonaws.com/v0.5/96x2/marmoset_neurons.ome.zarr";
 
-struct SliceViewer {
+struct SliceRenderer {
     setup: ome_zarr::SceneSetup,
     args: ResolvedArgs,
 
@@ -73,7 +73,7 @@ struct ResolvedArgs {
     contrast_max: f32,
 }
 
-impl SliceViewer {
+impl SliceRenderer {
     fn apply_slice_plane(&mut self) {
         let Some(image) = &self.image else { return };
         let (sx, cx) = self.slice_angle_x.sin_cos();
@@ -107,7 +107,7 @@ impl SliceViewer {
     }
 }
 
-impl ExampleApp for SliceViewer {
+impl ExampleApp for SliceRenderer {
     fn build(&mut self, ctx: &mut BuildCtx) {
         let r = ctx.renderer;
         let cache = self
@@ -236,7 +236,7 @@ impl ExampleApp for SliceViewer {
 
     fn controls_help(&self) -> String {
         "\
-[slice viewer] controls:
+[slice renderer] controls:
   Left-drag    orbit (pan in ortho)      Scroll      zoom
   Right-drag   rotate slice (+Shift=X) + offset
   Middle-drag  window / level            [ / ]       LOD bias
@@ -264,14 +264,17 @@ fn main() {
         }
     };
 
+    // Slices show the full intensity range by default; the user narrows the
+    // window interactively (middle-drag) or via --contrast-min/--contrast-max.
+    let (contrast_min, contrast_max) = args.contrast_or(0.0, 1.0);
     let resolved = ResolvedArgs {
         cache_tiles: args.cache_tiles,
         atlas_count: args.atlas_count,
         lod_bias: args.lod_bias,
-        contrast_min: args.contrast_min,
-        contrast_max: args.contrast_max,
+        contrast_min,
+        contrast_max,
     };
-    let viewer = SliceViewer {
+    let app = SliceRenderer {
         setup,
         args: resolved,
         image: None,
@@ -284,5 +287,5 @@ fn main() {
         lod_bias: args.lod_bias,
         debug: false,
     };
-    app::run(viewer, "bovista — slice viewer");
+    app::run(app, "bovista — slice renderer");
 }

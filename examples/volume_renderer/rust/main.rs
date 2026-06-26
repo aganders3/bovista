@@ -12,13 +12,14 @@
 //! Controls:
 //! ```text
 //!   Left-drag    orbit camera          Scroll       zoom
+//!   Right/Middle-drag  window / level (horizontal = level, vertical = width)
 //!   M            cycle render mode (rebuilds the atlas — brief reload)
 //!   [ / ]        LOD bias coarser / finer
 //!   - / =        density (Direct mode)
 //!   , / .        step size (finer / coarser)
 //!   F / G        contrast floor down / up
 //!   C / V        contrast ceiling down / up
-//!   A            auto contrast (reset to [0, 1])
+//!   A            reset contrast (to the default floor)
 //!   9 / 0        attenuation (MIP) / iso threshold (Iso)
 //!   D            toggle debug tint
 //! ```
@@ -50,10 +51,16 @@ mod loader;
 #[path = "../../common/ome_zarr.rs"]
 mod ome_zarr;
 
-use app::{BuildCtx, ExampleApp, FrameCtx};
+use app::{BuildCtx, ExampleApp, FrameCtx, SecondaryButton};
 
 const DEFAULT_ZARR: &str =
     "https://ome-zarr-scivis.s3.us-east-1.amazonaws.com/v0.5/96x2/beechnut.ome.zarr";
+
+/// Default contrast floor for the volume renderer. DVR over the full [0, 1]
+/// range washes out in low-intensity haze; clipping the bottom of the window
+/// gives a far more legible default. Override with `--contrast-min`, or widen
+/// interactively (right/middle-drag = window/level, `F`/`G` = floor).
+const DEFAULT_CONTRAST_FLOOR: f32 = 0.15;
 
 // ── Mode dispatch ───────────────────────────────────────────────────────────
 
@@ -373,10 +380,13 @@ impl ExampleApp for VolumeRenderer {
                 println!("[volume] contrast = [{:.3}, {:.3}]", self.contrast_min, self.contrast_max);
             }
             'a' | 'A' => {
-                self.contrast_min = 0.0;
+                self.contrast_min = DEFAULT_CONTRAST_FLOOR;
                 self.contrast_max = 1.0;
                 self.apply_all();
-                println!("[volume] contrast auto → [0, 1]");
+                println!(
+                    "[volume] contrast reset → [{:.2}, 1.0]",
+                    DEFAULT_CONTRAST_FLOOR
+                );
             }
             '9' => {
                 if self.mode == VolumeMode::Mip {
@@ -409,6 +419,27 @@ impl ExampleApp for VolumeRenderer {
         }
     }
 
+    fn on_secondary_drag(
+        &mut self,
+        dx: f32,
+        dy: f32,
+        _shift: bool,
+        _btn: SecondaryButton,
+        _ctx: &mut FrameCtx,
+    ) {
+        // Window / level on either right- or middle-drag (the volume has no
+        // slice plane to rotate): horizontal = level (slide the window),
+        // vertical = width (widen / narrow). Mirrors the slice renderer.
+        let center = (self.contrast_min + self.contrast_max) / 2.0 + dx * 0.002;
+        let width = ((self.contrast_max - self.contrast_min) + dy * 0.002).max(0.002);
+        self.contrast_min = (center - width / 2.0).clamp(0.0, 1.0);
+        self.contrast_max = (center + width / 2.0).clamp(0.0, 1.0);
+        if self.contrast_max - self.contrast_min < 0.001 {
+            self.contrast_max = (self.contrast_min + 0.001).min(1.0);
+        }
+        self.apply_all();
+    }
+
     fn print_stats(&mut self) {
         let Some(vol) = &self.volume else { return };
         let v = vol.lock().unwrap();
@@ -423,10 +454,11 @@ impl ExampleApp for VolumeRenderer {
     fn controls_help(&self) -> String {
         "\
 [volume renderer] controls:
-  Left-drag  orbit      Scroll  zoom        M   cycle mode
-  [ / ]      LOD bias   - / =   density     , / .  step size
-  F/G floor  C/V ceil   A  auto contrast
-  9 / 0      attenuation (MIP) / iso (Iso)  D   debug"
+  Left-drag  orbit          Scroll  zoom        M   cycle mode
+  R/M-drag   window / level                     A   reset contrast
+  [ / ]      LOD bias       - / =   density     , / .  step size
+  F/G floor  C/V ceiling
+  9 / 0      attenuation (MIP) / iso (Iso)      D   debug"
             .to_string()
     }
 }
@@ -455,6 +487,7 @@ fn main() {
     };
 
     let cache = args.cache_tiles.unwrap_or(setup.cache_capacity) as usize;
+    let (contrast_min, contrast_max) = args.contrast_or(DEFAULT_CONTRAST_FLOOR, 1.0);
     let resolved = ResolvedArgs {
         cache,
         atlas_count: args.atlas_count,
@@ -466,8 +499,8 @@ fn main() {
         base_density: 1.0,
         mode,
         lod_bias: args.lod_bias,
-        contrast_min: args.contrast_min,
-        contrast_max: args.contrast_max,
+        contrast_min,
+        contrast_max,
         density_mult: args.density_mult,
         step: args.step.unwrap_or(1.0),
         attenuation: args.attenuation,

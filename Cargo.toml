@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 png = "0.17"
-# OME-Zarr loading for the orbit_stream example. zarrs default features cover
+# OME-Zarr loading for the remote_volume_renderer example. zarrs default features cover
 # filesystem + common codecs (blosc, gzip, zstd, sharding, crc32c); zarrs_http
 # adds a synchronous HTTP store so we can stream remote datasets directly.
 #
@@ -79,8 +79,8 @@ default = []
 python = ["pyo3", "numpy"]
 
 [[example]]
-name = "slice_viewer"
-path = "examples/slice_viewer/rust/main.rs"
+name = "slice_renderer"
+path = "examples/slice_renderer/rust/main.rs"
 required-features = []
 
 [[example]]
@@ -89,8 +89,8 @@ path = "examples/volume_renderer/rust/main.rs"
 required-features = []
 
 [[example]]
-name = "orbit_stream"
-path = "examples/orbit_stream/rust/main.rs"
+name = "remote_volume_renderer"
+path = "examples/remote_volume_renderer/rust/main.rs"
 required-features = []
 
 # Pin wgpu-hal to a forked branch that adds EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR

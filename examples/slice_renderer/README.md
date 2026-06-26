@@ -1,4 +1,4 @@
-# Slice Viewer
+# Slice Renderer
 
 Renders an arbitrary-orientation cross-section through a remote OME-Zarr volume using `Image` and virtual texture streaming.
 
@@ -6,8 +6,8 @@ Renders an arbitrary-orientation cross-section through a remote OME-Zarr volume 
 
 | Platform | Entry point | How to run |
 |----------|-------------|------------|
-| Python | `python/remote_ome_zarr.py` | `uv run python examples/slice_viewer/python/remote_ome_zarr.py` |
-| Web | `web/index.html` | `./build_wasm.sh && python -m http.server 8000 --directory examples` → `http://localhost:8000/slice_viewer/` |
+| Python | `python/remote_ome_zarr.py` | `uv run python examples/slice_renderer/python/remote_ome_zarr.py` |
+| Web | `web/index.html` | `./build_wasm.sh && python -m http.server 8000 --directory examples` → `http://localhost:8000/slice_renderer/` |
 | Rust | `rust/main.rs` | stub — see comments |
 
 ## Controls

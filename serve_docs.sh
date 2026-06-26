@@ -35,7 +35,7 @@ cp -r target/doc "$BOOK_DIR/api"
 
 # 3. Assemble: copy examples into the book output, rewrite pkg path
 mkdir -p "$LIVE_DIR"
-cp -r examples/slice_viewer/web    "$LIVE_DIR/slice_viewer"
+cp -r examples/slice_renderer/web    "$LIVE_DIR/slice_renderer"
 cp -r examples/volume_renderer/web "$LIVE_DIR/volume_renderer"
 cp -r examples/pkg                 "$LIVE_DIR/pkg"
 cp examples/index.html             "$LIVE_DIR/index.html"
@@ -43,14 +43,14 @@ cp examples/index.html             "$LIVE_DIR/index.html"
 # Deployed layout has examples/live/{viewer}/main.js one level from pkg;
 # the source files use ../../pkg (two levels from examples/*/web/).
 sed -i '' "s|../../pkg/bovista\.js|../pkg/bovista.js|g" \
-    "$LIVE_DIR/slice_viewer/main.js" \
+    "$LIVE_DIR/slice_renderer/main.js" \
     "$LIVE_DIR/volume_renderer/main.js"
 
 echo ""
 echo "Serving at http://localhost:$PORT"
 echo "  Docs:             http://localhost:$PORT"
 echo "  Examples hub:     http://localhost:$PORT/examples/live/"
-echo "  Slice viewer:     http://localhost:$PORT/examples/live/slice_viewer/"
+echo "  Slice viewer:     http://localhost:$PORT/examples/live/slice_renderer/"
 echo "  Volume renderer:  http://localhost:$PORT/examples/live/volume_renderer/"
 echo "  Rust API docs:    http://localhost:$PORT/api/bovista/"
 echo ""

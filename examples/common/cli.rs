@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-/// Parsed CLI options. The volume-only fields are ignored by slice_viewer.
+/// Parsed CLI options. The volume-only fields are ignored by slice_renderer.
 pub struct CliArgs {
     /// OME-Zarr root (filesystem path or http(s):// URL).
     pub zarr: Option<String>,
@@ -19,10 +19,10 @@ pub struct CliArgs {
     pub max_inflight: Option<usize>,
     /// Shader LOD bias (`--lod-bias`).
     pub lod_bias: f32,
-    /// Contrast window floor (`--contrast-min`).
-    pub contrast_min: f32,
-    /// Contrast window ceiling (`--contrast-max`).
-    pub contrast_max: f32,
+    /// Contrast window floor (`--contrast-min`). None → example default.
+    pub contrast_min: Option<f32>,
+    /// Contrast window ceiling (`--contrast-max`). None → example default.
+    pub contrast_max: Option<f32>,
 
     // ── Volume-only ──────────────────────────────────────────────────────
     /// Render mode string (`--mode`): direct | mip | minip | average | iso.
@@ -68,12 +68,8 @@ impl CliArgs {
             lod_bias: flag_str_opt(&args, "--lod-bias")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0),
-            contrast_min: flag_str_opt(&args, "--contrast-min")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0),
-            contrast_max: flag_str_opt(&args, "--contrast-max")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1.0),
+            contrast_min: flag_str_opt(&args, "--contrast-min").and_then(|v| v.parse().ok()),
+            contrast_max: flag_str_opt(&args, "--contrast-max").and_then(|v| v.parse().ok()),
             mode: flag_str_opt(&args, "--mode"),
             density_mult: flag_str_opt(&args, "--density-mult")
                 .and_then(|v| v.parse().ok())
@@ -93,8 +89,18 @@ impl CliArgs {
         self.zarr.clone().unwrap_or_else(|| default_url.to_string())
     }
 
+    /// Resolve contrast limits, falling back to the example's defaults when the
+    /// `--contrast-min` / `--contrast-max` flags are omitted. (slice and volume
+    /// want different default floors.)
+    pub fn contrast_or(&self, def_min: f32, def_max: f32) -> (f32, f32) {
+        (
+            self.contrast_min.unwrap_or(def_min),
+            self.contrast_max.unwrap_or(def_max),
+        )
+    }
+
     /// Budget in-flight worker threads against the CPU count, leaving room for
-    /// the render + rayon pools. Mirrors orbit_stream's heuristic.
+    /// the render + rayon pools. Mirrors remote_volume_renderer's heuristic.
     pub fn resolved_max_inflight(&self) -> usize {
         if let Some(n) = self.max_inflight {
             return n;

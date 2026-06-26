@@ -12,7 +12,7 @@ The script installs `wasm32-unknown-unknown` if needed and invokes `wasm-bindgen
 
 ```bash
 python3 -m http.server 8000 --directory examples
-# open http://localhost:8000/slice_viewer/
+# open http://localhost:8000/slice_renderer/
 ```
 
 ## JavaScript API

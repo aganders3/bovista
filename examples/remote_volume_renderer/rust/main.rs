@@ -11,9 +11,9 @@
 //! are both supported.
 //!
 //! Usage:
-//!   cargo run --release --example orbit_stream
-//!   cargo run --release --example orbit_stream -- --zarr /nfs/.../foo.ome.zarr
-//!   cargo run --release --example orbit_stream -- --zarr https://… --port 9090
+//!   cargo run --release --example remote_volume_renderer
+//!   cargo run --release --example remote_volume_renderer -- --zarr /nfs/.../foo.ome.zarr
+//!   cargo run --release --example remote_volume_renderer -- --zarr https://… --port 9090
 //!
 //! Flags:
 //!   --zarr PATH-OR-URL   OME-Zarr root; omit for synthetic cube
@@ -58,7 +58,7 @@ mod ome_zarr;
 
 // ── Mode dispatch ───────────────────────────────────────────────────────────
 //
-// orbit_stream picks one of bovista's six volume render modes at startup via
+// remote_volume_renderer picks one of bovista's six volume render modes at startup via
 // `--mode`. The visual type is fixed for the process lifetime; runtime
 // switching without rebuilding the atlas is a follow-up (it needs the
 // VolumeBackend split discussed in PR #6's notes).
@@ -781,7 +781,7 @@ fn render_one_frame(
 }
 
 // SceneSetup now lives in examples/common/ome_zarr.rs (ome_zarr::SceneSetup),
-// shared with the slice_viewer / volume_renderer native examples.
+// shared with the slice_renderer / volume_renderer native examples.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ffmpeg
@@ -1344,7 +1344,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   #status { color:#666; }
 </style>
 </head><body>
-<h1>bovista orbit_stream
+<h1>bovista remote_volume_renderer
   <span style="float:right"><span id="status">connecting…</span>
   &nbsp;<span id="fps_val" style="color:#fff;font-variant-numeric:tabular-nums">—</span></span></h1>
 <canvas id="live" width="{{WIDTH}}" height="{{HEIGHT}}"></canvas>
