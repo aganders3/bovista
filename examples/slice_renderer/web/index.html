@@ -44,6 +44,20 @@
             </div>
 
             <div class="header-section">
+                <label>VRAM Budget:</label>
+                <select id="vram-budget">
+                    <option value="1">1 GB</option>
+                    <option value="2" selected>2 GB</option>
+                    <option value="4">4 GB</option>
+                    <option value="8">8 GB</option>
+                    <option value="16">16 GB</option>
+                </select>
+                <span style="font-size:11px;color:#8b949e;">→</span>
+                <span id="max-chunks-display" class="value-display">—</span>
+                <span style="font-size:11px;color:#8b949e;">tiles/ch</span>
+            </div>
+
+            <div class="header-section">
                 <button id="projection-toggle" disabled>Switch to Orthographic</button>
             </div>
         </div>

@@ -317,6 +317,46 @@ function updateSlicePlane() {
     sliceOffsetEl.textContent = sliceOffset.toFixed(precision);
 }
 
+// Actual atlas byte size for n tiles at the given tile dimensions. The
+// allocator lays slots out in a cols×rows×layers grid (cube-ish), so the
+// real texture rounds up past n. R16Float = 2 bytes/voxel.
+function atlasSizeBytes(n, tileW, tileH, tileD) {
+    const cols   = Math.ceil(Math.cbrt(n));
+    const rows   = Math.ceil(Math.cbrt(n));
+    const layers = Math.ceil(n / (cols * rows));
+    return cols * tileW * rows * tileH * layers * tileD * 2;
+}
+
+// Largest per-channel slot count whose atlas fits the VRAM budget, split
+// across the N channel atlases. This doesn't try to predict the working set
+// (which depends on slice orientation + tile shape — e.g. thin z-chunks make
+// a side-on slice touch far more tiles than a top-down one); it just hands
+// the atlas as many slots as the budget allows. If even that's too few for a
+// given orientation, the library logs a thrash warning (see VirtualTextureData).
+function computeMaxChunks() {
+    if (lodLevels.length === 0) return 512;
+    const [tileZ, tileY, tileX] = lodLevels[0].chunkSize;
+    const vramBudgetGB = parseFloat(document.getElementById('vram-budget').value);
+    // Split the budget across channels (each channel owns its own atlas) and
+    // respect the WebGPU staging-buffer hard limit of 4 GB per texture.
+    const budgetBytes = Math.min(
+        (vramBudgetGB * 1024 ** 3) / Math.max(1, numChannels),
+        4 * 1024 ** 3,
+    );
+    let lo = 1, hi = 65536, best = 64;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (atlasSizeBytes(mid, tileX, tileY, tileZ) <= budgetBytes) {
+            best = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    document.getElementById('max-chunks-display').textContent = best;
+    return best;
+}
+
 /**
  * Create (or recreate) the tiled image visual
  * Called on initial load and when changing channels
@@ -352,8 +392,9 @@ function createVisual() {
     // the channels composite order-independently.
     tiledImages = [];
     const additive = numChannels > 1;
+    const maxChunks = computeMaxChunks();
     for (let c = 0; c < numChannels; c++) {
-        const visual = new wasmModule.Image(viewer, buildLevels(), 512 /* max_chunks */);
+        const visual = new wasmModule.Image(viewer, buildLevels(), maxChunks);
         if (additive) {
             visual.setColormap(makeChannelColormap(CHANNEL_COLORS[c % CHANNEL_COLORS.length]));
             visual.setBlendMode(wasmModule.BlendMode.Additive);
@@ -679,6 +720,11 @@ document.getElementById('load-btn').addEventListener('click', () => {
 });
 
 // Channel selection is no longer used — all channels render together (additive).
+
+document.getElementById('vram-budget').addEventListener('change', () => {
+    // Rebuild the visuals with the new per-channel tile budget.
+    if (visualsReady() && lodLevels.length > 0) createVisual();
+});
 
 document.getElementById('lod-bias').addEventListener('input', (e) => {
     const value = parseFloat(e.target.value) / 10.0;
