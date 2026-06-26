@@ -61,19 +61,23 @@
 //! import bovista as bv
 //! import numpy as np
 //!
-//! # Create viewer
-//! viewer = bv.PyViewer(800, 600)
-//! viewer.initialize()
+//! # Create the viewer and attach it to a native window handle from your
+//! # toolkit (e.g. Qt's `int(widget.winId())`). The host owns the window and
+//! # event loop; bovista renders one frame per call to `render_frame()`.
+//! viewer = bv.Viewer(800, 600)
+//! viewer.initialize_with_window(handle, width, height)
 //!
-//! # Add point cloud
+//! # Add a point cloud
 //! positions = np.random.rand(1000, 1, 3).astype(np.float32)
 //! colors = np.random.rand(1000, 1, 3).astype(np.float32)
-//! points = bv.PyPoints.from_numpy(viewer, positions, colors)
-//! viewer.add_points(points)
+//! points = bv.Points.from_numpy(viewer, positions, colors)
+//! viewer.add(points)
 //!
-//! # Run interactive window
-//! viewer.run()
+//! # Drive rendering from your toolkit's timer / paint callback
+//! viewer.render_frame()
 //! ```
+//!
+//! See `examples/*/python/` for a complete Qt integration.
 //!
 //! ## Remote Zarr Example
 //!

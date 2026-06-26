@@ -184,6 +184,23 @@ impl Camera {
     pub fn ortho_height(&self) -> f32 {
         self.ortho_height
     }
+
+    /// Face `center` head-on from `distance` away along `normal`, picking a
+    /// stable up vector. Used to align the camera with an oblique slice
+    /// plane (e.g. in orthographic mode) so the slice fills the view.
+    pub fn look_along(&mut self, center: Vec3, normal: Vec3, distance: f32) {
+        let forward = normal.normalize_or_zero();
+        if forward == Vec3::ZERO {
+            return;
+        }
+        self.position = center + forward * distance;
+        self.target = center;
+        // Use world-Z as the up reference when the normal is near-vertical,
+        // world-Y otherwise, so `right` never degenerates.
+        let reference = if forward.y.abs() > 0.9 { Vec3::Z } else { Vec3::Y };
+        let right = forward.cross(reference).normalize_or_zero();
+        self.up = right.cross(forward).normalize_or_zero();
+    }
 }
 
 impl Default for Camera {

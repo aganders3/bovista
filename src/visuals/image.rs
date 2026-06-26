@@ -47,6 +47,24 @@ impl SlicePlane {
             normal: [normal[0] / len, normal[1] / len, normal[2] / len],
         }
     }
+
+    /// Build an oblique slice plane from two angles and an offset, centered
+    /// on `center`. `angle_x` pitches the normal about the X axis, `angle_y`
+    /// yaws it about the Y axis, and `offset` slides the plane along the
+    /// resulting normal away from `center`. Handy for drag-to-slice UIs.
+    pub fn from_angles(center: [f32; 3], angle_x: f32, angle_y: f32, offset: f32) -> Self {
+        let (sx, cx) = angle_x.sin_cos();
+        let (sy, cy) = angle_y.sin_cos();
+        let n = Self::new(center, [sy * cx, -sx, cy * cx]).normal;
+        Self {
+            position: [
+                center[0] + n[0] * offset,
+                center[1] + n[1] * offset,
+                center[2] + n[2] * offset,
+            ],
+            normal: n,
+        }
+    }
 }
 
 impl Default for SlicePlane {

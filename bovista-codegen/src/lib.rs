@@ -63,7 +63,8 @@ pub fn visual_methods(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - Camera: `set_camera_position`, `set_camera_target`, `set_camera_up`,
 ///   `orbit_camera`, `pan_camera`, `zoom_camera`, `set_camera_clip_planes`,
 ///   `set_camera_projection_mode`, `get_camera_projection_mode`,
-///   `set_camera_ortho_height`, `get_camera_ortho_height`, `get_camera_distance`
+///   `set_camera_ortho_height`, `get_camera_ortho_height`, `get_camera_distance`,
+///   `align_camera_to_slice`
 /// - Scene: `visual_count`, `clear_visuals`, `clear_scene`
 ///
 /// # Example
@@ -267,6 +268,18 @@ fn expand_camera_method(method: &ImplItemFn) -> ImplItemFn {
         },
         "get_camera_distance" => quote! {
             (self.camera.position - self.camera.target).length()
+        },
+        "align_camera_to_slice" => {
+            let (cx, cy, cz) = (&arg_names[0], &arg_names[1], &arg_names[2]);
+            let (nx, ny, nz) = (&arg_names[3], &arg_names[4], &arg_names[5]);
+            let distance = &arg_names[6];
+            quote! {
+                self.camera.look_along(
+                    glam::Vec3::new(#cx, #cy, #cz),
+                    glam::Vec3::new(#nx, #ny, #nz),
+                    #distance,
+                );
+            }
         },
         "visual_count" => quote! {
             self.scene.len()
