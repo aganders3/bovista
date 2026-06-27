@@ -107,6 +107,9 @@ struct CameraUniforms {
 @group(1) @binding(5) var page_table: texture_2d_array<u32>;
 @group(1) @binding(6) var<uniform> vt: VTUniforms;
 @group(1) @binding(7) var<uniform> vol: VolumeUniforms;
+// Per-tile (min, max) parallel to the page table, Rg8Unorm in [0, 1].
+// .r = min, .g = max. Used for tile-level empty-space skipping.
+@group(1) @binding(8) var page_table_meta: texture_2d_array<f32>;
 
 fn sample_atlas(atlas_id: u32, uv: vec3f) -> f32 {
     switch atlas_id {
@@ -160,7 +163,10 @@ fn encode_srgb(c: vec4f) -> vec4f {
 
 // ── Page-table sampling (mirrored from virtual_tile.wgsl) ─────────────────────
 
-fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
+// Returns (sample_value, lod, tile_max). lod < 0 ⇒ not resident at this LOD
+// (tile_max is then meaningless). tile_max is the resident tile's max voxel
+// in contrast-normalised [0, 1], read from the parallel metadata texture.
+fn try_lod(vol_uv: vec3f, lod: i32) -> vec3f {
     let grid = vt.lods[lod].grid_dims;
     // Clamp to [0, grid - ε) before computing frac. Without this, when vol_uv = 1.0 and
     // the volume dimension is an exact multiple of tile_w, vol_in_tiles lands on an integer
@@ -177,7 +183,9 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let resident = (entry >> 31u) & 1u;
     let atlas_id = (entry >> 29u) & 0x3u;
     let slot_t   = (entry >> 16u) & 0x1FFFu;
-    if resident == 0u || slot_t != vt.desired_t { return vec2f(0.0, -1.0); }
+    if resident == 0u || slot_t != vt.desired_t { return vec3f(0.0, -1.0, 0.0); }
+    // Parallel metadata texel: .g = tile max in [0, 1].
+    let tile_max = textureLoad(page_table_meta, vec2i(pt_x, pt_y), lod, 0).g;
     let slot = entry & 0xFFFFu;
     let atlas_col   = slot % vt.atlas_cols;
     let atlas_row   = (slot / vt.atlas_cols) % vt.atlas_rows;
@@ -194,10 +202,10 @@ fn try_lod(vol_uv: vec3f, lod: i32) -> vec2f {
     let v = (f32(atlas_row)   + within_tile.y) * vt.atlas_tile_pitch_y;
     let w = (f32(atlas_layer) + within_tile.z) * vt.atlas_tile_pitch_z;
 
-    return vec2f(sample_atlas(atlas_id, vec3f(u, v, w)), f32(lod));
+    return vec3f(sample_atlas(atlas_id, vec3f(u, v, w)), f32(lod), tile_max);
 }
 
-fn sample_vvt(vol_uv: vec3f) -> vec2f {
+fn sample_vvt(vol_uv: vec3f) -> vec3f {
     let ideal_lod = i32(vt.target_lod);
     let max_lod   = i32(vt.lod_count) - 1;
 
@@ -209,7 +217,24 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
         let r = try_lod(vol_uv, lod);
         if r.y >= 0.0 { return r; }
     }
-    return vec2f(0.0, -1.0);
+    return vec3f(0.0, -1.0, 0.0);
+}
+
+// World-space distance to the next tile boundary at the resolved LOD, for
+// jumping over a tile whose contents can't contribute. Clamped to step_size
+// so progress is always positive (no infinite loop on grazing rays).
+fn tile_skip_advance(lod: i32, step_size: f32, vol_uv: vec3f, ray_dir: vec3f,
+                     vol_extent: vec3f) -> f32 {
+    let scale = vt.lods[lod].tile_scale;
+    let duv_dt = ray_dir / vol_extent;
+    let tile_idx = floor(vol_uv / scale);
+    let next_uv  = select(tile_idx, tile_idx + 1.0, duv_dt > vec3f(0.0)) * scale;
+    let dt_to_bound = select(
+        vec3f(1e9),
+        (next_uv - vol_uv) / duv_dt,
+        abs(duv_dt) > vec3f(1e-7),
+    );
+    return max(min(dt_to_bound.x, min(dt_to_bound.y, dt_to_bound.z)), step_size);
 }
 
 // ── Shared ray-setup helpers ──────────────────────────────────────────────────
@@ -318,6 +343,16 @@ fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
         let lod_f   = result.y;
         let advance = compute_advance(lod_f, s.step_size, vol_uv, s.ray_dir,
                                        s.vol_extent, s.inv_tile0_scale_x);
+
+        // Tile-level empty-space skip (mode 0 only): a resident tile whose max
+        // sits below the contrast floor can't contribute any colour, so jump to
+        // its far boundary instead of stepping through it. Debug modes step
+        // verbatim so the heatmap/tint still show the true traversal.
+        let skip_max_threshold = vt.contrast_min + 0.004;  // ~one 8-bit step
+        if vol.debug_mode == 0u && lod_f >= 0.0 && result.z < skip_max_threshold {
+            t += tile_skip_advance(i32(lod_f), s.step_size, vol_uv, s.ray_dir, s.vol_extent);
+            continue;
+        }
 
         if vol.debug_mode == 1u {
             // Mode 1: LOD tinting.

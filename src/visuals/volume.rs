@@ -257,6 +257,18 @@ impl VolumeCore {
                     },
                     count: None,
                 },
+                // Per-tile (min, max) metadata parallel to the page table,
+                // used for tile-level empty-space skipping (non-filtering).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         assert_eq!(vt.atlas_views.len(), MAX_ATLAS_COUNT);
@@ -272,6 +284,7 @@ impl VolumeCore {
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view) },
                 wgpu::BindGroupEntry { binding: 6, resource: vt_uniform_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: vol_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&vt.page_table.metadata_texture_view) },
             ],
         });
 
