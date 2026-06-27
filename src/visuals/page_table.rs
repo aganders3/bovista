@@ -28,6 +28,14 @@ use crate::visuals::virtual_texture::LodLevelConfig;
 pub struct PageTable {
     pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,
+    /// Per-tile metadata texture parallel to `texture`, same dimensions.
+    /// `Rg8Unorm` where .r = min, .g = max across the tile's
+    /// contrast-normalised voxels (both in [0, 1]). `(0, 0)` is the cleared
+    /// state; the resident bit in `texture` is the source of truth for
+    /// whether a tile's metadata is meaningful. The raymarcher uses this to
+    /// skip tiles that can't contribute (max below the contrast floor).
+    pub metadata_texture: wgpu::Texture,
+    pub metadata_texture_view: wgpu::TextureView,
     /// Width of the 2D page table texture (used for linear→2D coord mapping).
     pub width: u32,
     // (gx, gy, gz) for each LOD
@@ -78,7 +86,32 @@ impl PageTable {
             ..Default::default()
         });
 
-        Self { texture, texture_view, width: pt_width, lod_grids }
+        // Parallel metadata texture, identical layout, Rg8Unorm (min, max).
+        let metadata_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("VT Page Table Metadata"),
+            size: wgpu::Extent3d {
+                width: pt_width,
+                height: pt_height,
+                depth_or_array_layers: num_lods.max(2),
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rg8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let metadata_texture_view = metadata_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
+        Self {
+            texture, texture_view,
+            metadata_texture, metadata_texture_view,
+            width: pt_width, lod_grids,
+        }
     }
 
     /// Mark a tile as resident at the given atlas slot, tagged with the
@@ -89,7 +122,8 @@ impl PageTable {
     /// explicit clearing on every desired_t change.
     #[allow(clippy::too_many_arguments)]
     pub fn update(&self, queue: &wgpu::Queue, lod: usize, tz: u32, ty: u32, tx: u32,
-                  atlas_id: u32, t: u32, slot: u32) {
+                  atlas_id: u32, t: u32, slot: u32,
+                  tile_min: f32, tile_max: f32) {
         let (gx, gy, _gz) = self.lod_grids[lod];
         let linear = tz * gy * gx + ty * gx + tx;
         let value: u32 = (1u32 << 31)
@@ -97,6 +131,7 @@ impl PageTable {
                        | ((t & 0x1FFF) << 16)
                        | (slot & 0xFFFF);
         self.write_texel(queue, lod as u32, linear, value);
+        self.write_metadata_texel(queue, lod as u32, linear, tile_min, tile_max);
     }
 
     /// Mark a tile as non-resident (clear its entry).
@@ -120,6 +155,29 @@ impl PageTable {
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.width * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+    }
+
+    fn write_metadata_texel(&self, queue: &wgpu::Queue, layer: u32, linear: u32,
+                            tile_min: f32, tile_max: f32) {
+        let px = linear % self.width;
+        let py = linear / self.width;
+        let min_q = (tile_min.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let max_q = (tile_max.clamp(0.0, 1.0) * 255.0).round() as u8;
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.metadata_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: px, y: py, z: layer },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[min_q, max_q],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(self.width * 2),
                 rows_per_image: None,
             },
             wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
