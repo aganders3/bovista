@@ -8,6 +8,23 @@ use glam::Vec3;
 use std::sync::Arc;
 use wgpu::{BindGroup, Buffer, Texture, TextureView};
 
+/// Additive blend (`src + dst` on both color and alpha). Correct only on
+/// premultiplied-alpha output (which both the image and volume shaders now
+/// produce). Used for the `BlendMode::Additive` pipeline variant, which is the
+/// basis for order-independent multi-channel compositing.
+pub const ADDITIVE_BLENDING: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// Response containing tile/chunk data.
 ///
 /// Shape uses the numpy convention: `z_shape`, `y_shape`, `x_shape` are voxel
@@ -264,7 +281,14 @@ pub struct VTUniforms {
     /// blending across timepoints) while letting stale entries from a
     /// previous t persist harmlessly in the page table.
     pub desired_t: u32,
-    // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
+    /// Per-visual opacity multiplier in [0, 1], applied to the final
+    /// (premultiplied) fragment output.
+    pub opacity: f32,
+    // Pad the header to a 16-byte boundary so `lods` stays aligned (12 scalars
+    // + opacity + 3 pad = 16 scalars = 64 bytes; 64 mod 16 = 0 ✓).
+    pub _pad_op0: f32,
+    pub _pad_op1: f32,
+    pub _pad_op2: f32,
     pub lods: [VTLodInfo; VT_MAX_LODS],
 }
 
@@ -283,6 +307,10 @@ impl Default for VTUniforms {
             page_table_width: 1,
             target_lod: 0,
             desired_t: 0,
+            opacity: 1.0,
+            _pad_op0: 0.0,
+            _pad_op1: 0.0,
+            _pad_op2: 0.0,
             lods: [VTLodInfo {
                 grid_dims: [1, 1, 1], _pad: 0,
                 tile_scale: [1.0, 1.0, 1.0], _pad2: 0.0,
@@ -340,7 +368,9 @@ pub struct VolumeUniforms {
     /// Attenuated-MIP falloff coefficient per accumulated normalised density.
     /// Used by fs_mip; 0.0 makes it plain MIP.
     pub attenuation: f32,
-    pub _pad0: f32,
+    /// Per-visual opacity multiplier in [0, 1], applied to the final
+    /// (premultiplied) fragment output.
+    pub opacity: f32,
     pub _pad1: f32,
 }
 

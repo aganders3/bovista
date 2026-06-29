@@ -81,7 +81,13 @@ struct VTUniforms {
     // doesn't match this are rejected (treated as non-resident), so the
     // display stays strictly on this t with no cross-t blending.
     desired_t: u32,
-    // Offset 48 — VTLodInfo has align 16, 48 mod 16 = 0 ✓
+    // Per-visual opacity multiplier in [0, 1], applied to the final output.
+    opacity: f32,
+    // Pad the header to a 16-byte boundary so `lods` stays aligned
+    // (16 scalars = 64 bytes; 64 mod 16 = 0 ✓).
+    _pad_op0: f32,
+    _pad_op1: f32,
+    _pad_op2: f32,
     lods: array<VTLodInfo, 16>,
 }
 
@@ -212,5 +218,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         out = color;
     }
 
-    return encode_srgb(out);
+    // Premultiplied output (one convention for both Normal and Additive blend),
+    // scaled by per-visual opacity. Premultiply rgb in linear space and encode;
+    // scale alpha separately (alpha is not sRGB-encoded).
+    let a = out.a * vt.opacity;
+    let premul_rgb = encode_srgb(vec4f(out.rgb * out.a * vt.opacity, 1.0)).rgb;
+    return vec4f(premul_rgb, a);
 }

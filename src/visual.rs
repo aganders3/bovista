@@ -149,6 +149,20 @@ pub struct CameraInfo {
     pub view_proj: glam::Mat4,
 }
 
+/// How a visual's fragments combine with what's already in the framebuffer.
+///
+/// `Normal` is standard (premultiplied) alpha compositing — the default.
+/// `Additive` sums contributions (`src + dst`), which is commutative and thus
+/// order-independent; it is the basis for multi-channel compositing (render one
+/// visual per channel, additively blended). Visuals that don't support blending
+/// (e.g. points/lines) ignore this.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Additive,
+}
+
 /// Base trait for all visual objects that can be rendered in a scene
 #[cfg(not(target_arch = "wasm32"))]
 pub trait Visual: Send + Sync + Any {
@@ -177,6 +191,22 @@ pub trait Visual: Send + Sync + Any {
     /// Get a human-readable name for this visual (for debugging)
     fn name(&self) -> &str {
         "Unnamed Visual"
+    }
+
+    /// Set the blend mode for this visual. Default: no-op (Normal only).
+    fn set_blend_mode(&mut self, _mode: BlendMode) {}
+
+    /// Current blend mode. Default: `Normal`.
+    fn blend_mode(&self) -> BlendMode {
+        BlendMode::Normal
+    }
+
+    /// Set the per-visual opacity multiplier in `[0, 1]`. Default: no-op.
+    fn set_opacity(&mut self, _opacity: f32) {}
+
+    /// Current opacity. Default: `1.0`.
+    fn opacity(&self) -> f32 {
+        1.0
     }
 }
 
@@ -209,5 +239,21 @@ pub trait Visual: Any {
     /// Get a human-readable name for this visual (for debugging)
     fn name(&self) -> &str {
         "Unnamed Visual"
+    }
+
+    /// Set the blend mode for this visual. Default: no-op (Normal only).
+    fn set_blend_mode(&mut self, _mode: BlendMode) {}
+
+    /// Current blend mode. Default: `Normal`.
+    fn blend_mode(&self) -> BlendMode {
+        BlendMode::Normal
+    }
+
+    /// Set the per-visual opacity multiplier in `[0, 1]`. Default: no-op.
+    fn set_opacity(&mut self, _opacity: f32) {}
+
+    /// Current opacity. Default: `1.0`.
+    fn opacity(&self) -> f32 {
+        1.0
     }
 }

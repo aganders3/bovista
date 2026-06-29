@@ -1,14 +1,13 @@
 import * as zarr from 'https://cdn.jsdelivr.net/npm/zarrita@latest/+esm';
 
-// Logical atlas tile size [z, y, x], uniform across all LOD levels. This is
-// bovista's *virtual* tiling and is deliberately decoupled from the dataset's
-// on-disk chunk shape — zarrita's slice reads assemble any region from the
-// stored chunks, so we never need to match them. (bovista's virtual texture
-// assumes one tile size for all LODs; datasets like marmoset_neurons use
-// different storage chunks per level, which would otherwise break that.)
-// Tuning this toward the dataset's chunking reduces over-fetch but isn't
-// required for correctness.
-const LOGICAL_TILE = [64, 64, 64];
+// Logical atlas tile size [z, y, x], uniform across all LOD levels — bovista's
+// *virtual* tiling, decoupled from the dataset's per-LOD storage chunking
+// (bovista's VT assumes one tile size for all LODs). Set per-dataset in
+// loadDataset() from the LOD-0 storage chunk (capped), so each tile maps to
+// ~one stored chunk: a fixed cube like 64³ would span dozens of thin storage
+// chunks (e.g. chunk_z=1, as in idr0062) and fire a fetch storm.
+let logicalTile = [64, 64, 64];
+const MAX_LOGICAL_TILE = 128;
 
 // Configuration
 const DATASETS = {
@@ -44,7 +43,14 @@ const DATASETS = {
     }
 };
 
-const MAX_PENDING_CHUNKS = 64; // Increased to handle more concurrent loads
+// Cap on in-flight logical-tile loads (shared across channels). Each tile may
+// still fan out to a few storage-chunk fetches, so keep this modest to avoid
+// ERR_INSUFFICIENT_RESOURCES (too many concurrent requests).
+// TODO(loader): this caps logical tiles, not actual network requests. A tile's
+// `zarr.get` fans out to N storage-chunk fetches we don't throttle. Wrap the
+// zarrita FetchStore (or global fetch) in a semaphore (~16 concurrent) for a
+// real request cap — belt-and-suspenders now that tiles are chunk-aligned.
+const MAX_PENDING_CHUNKS = 32;
 
 // Global State
 let wasmModule = null;
@@ -54,12 +60,53 @@ let device = null;
 let queue = null;
 let context = null;
 let format = null;
-let tiledImage = null;
+// One Image visual per channel. Length 1 for single-channel data (Normal blend,
+// identical to before); for multi-channel, each visual gets its own colormap and
+// additive blending so the channels composite order-independently.
+let tiledImages = [];
 let zarrStore = null;
 let zarrRoot = null;
 let zarrArrays = [];
-let currentChannel = 0;
+let numChannels = 1;
 let lodLevels = [];
+
+// Per-channel base colors for multi-channel additive display (black→color ramps).
+const CHANNEL_COLORS = [
+    [255, 0, 0],     // red
+    [0, 255, 0],     // green
+    [0, 128, 255],   // blue
+    [255, 0, 255],   // magenta
+    [0, 255, 255],   // cyan
+    [255, 255, 0],   // yellow
+    [255, 255, 255], // white
+];
+
+// Build a 256-entry RGBA colormap LUT (1024 bytes) ramping black→`rgb`, with the
+// channel value carried in the RGB magnitude (alpha = 255). With the premultiplied
+// additive pipeline this yields per-channel intensity × hue, summed across channels.
+function makeChannelColormap(rgb) {
+    const lut = new Uint8Array(1024);
+    for (let i = 0; i < 256; i++) {
+        const f = i / 255;
+        lut[i * 4 + 0] = Math.round(rgb[0] * f);
+        lut[i * 4 + 1] = Math.round(rgb[1] * f);
+        lut[i * 4 + 2] = Math.round(rgb[2] * f);
+        lut[i * 4 + 3] = 255;
+    }
+    return lut;
+}
+
+// Helpers applying a per-visual operation across all channel visuals.
+const visualsReady = () => tiledImages.length > 0;
+const applyContrastAll = (min, max) => { for (const v of tiledImages) v.setContrast(min, max); };
+const applyDebugModeAll = (on) => { for (const v of tiledImages) v.setDebugMode(on); };
+const applyLodBiasAll = (b) => { for (const v of tiledImages) v.setLodBias(b); };
+const totalStats = () => {
+    let loaded = 0, visible = 0;
+    for (const v of tiledImages) { const s = v.getStats(); loaded += s[0]; visible += s[1]; }
+    return [loaded, visible];
+};
+
 let volumeCenter = [0, 0, 0];
 let volumeScale = 1.0;  // Largest dimension of volume for adaptive zoom
 let cameraDistance = 1.0;  // Distance from target (synced from Rust after each zoom)
@@ -126,16 +173,19 @@ let loaderPollHandle = null;
 function startLoaderPoll() {
     if (loaderPollHandle !== null) return;
     loaderPollHandle = setInterval(() => {
-        if (!tiledImage) return;
-        const w = tiledImage.wantedKeys();
-        for (let i = 0; i < w.length; i += 6) {
-            const lod = w[i], t = w[i+1], z = w[i+2], y = w[i+3], x = w[i+4];
-            const key = `${lod}:${t}:${z}:${y}:${x}`;
-            if (pendingLoads.has(key)) continue;
-            if (pendingLoads.size >= MAX_PENDING_CHUNKS) break;
-            pendingLoads.add(key);
-            pendingLoadsEl.textContent = pendingLoads.size;
-            loadChunkAsync(lod, t, z, y, x, key);
+        if (tiledImages.length === 0) return;
+        // Poll every channel's visual; each fetches its own channel's tiles.
+        for (let c = 0; c < tiledImages.length; c++) {
+            const w = tiledImages[c].wantedKeys();
+            for (let i = 0; i < w.length; i += 6) {
+                const lod = w[i], t = w[i+1], z = w[i+2], y = w[i+3], x = w[i+4];
+                const key = `${c}:${lod}:${t}:${z}:${y}:${x}`;
+                if (pendingLoads.has(key)) continue;
+                if (pendingLoads.size >= MAX_PENDING_CHUNKS) break;
+                pendingLoads.add(key);
+                pendingLoadsEl.textContent = pendingLoads.size;
+                loadChunkAsync(c, lod, t, z, y, x, key);
+            }
         }
     }, 25);
 }
@@ -143,7 +193,7 @@ function startLoaderPoll() {
 /**
  * Async chunk loading from Zarr
  */
-async function loadChunkAsync(lod, t, z, y, x, key) {
+async function loadChunkAsync(c, lod, t, z, y, x, key) {
     try {
         const zarrArray = zarrArrays[lod];
         if (!zarrArray) {
@@ -157,7 +207,7 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const yIdx = ndim - 2;
         const xIdx = ndim - 1;
 
-        const [chunkDepth, chunkHeight, chunkWidth] = LOGICAL_TILE;
+        const [chunkDepth, chunkHeight, chunkWidth] = logicalTile;
 
         const zStart = z * chunkDepth;
         const yStart = y * chunkHeight;
@@ -171,7 +221,7 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
             // TCZYX - index into time and channel, slice spatial dims
             selection = [
                 t,  // T - index from bovista's wanted set
-                currentChannel,  // C - index (not slice!)
+                c,  // C - this visual's fixed channel (index, not slice)
                 zarr.slice(zStart, zEnd),
                 zarr.slice(yStart, yEnd),
                 zarr.slice(xStart, xEnd)
@@ -179,7 +229,7 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         } else if (ndim === 4) {
             // CZYX - index into channel, slice spatial dims
             selection = [
-                currentChannel,  // C - index (not slice!)
+                c,  // C - this visual's fixed channel (index, not slice)
                 zarr.slice(zStart, zEnd),
                 zarr.slice(yStart, yEnd),
                 zarr.slice(xStart, xEnd)
@@ -219,14 +269,15 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
         const dy = sh[sh.length - 2];
         const dx = sh[sh.length - 1];
 
-        // Hand the native tile to bovista — it normalizes the full dtype
-        // range to [0, 1] itself, so no client-side rescaling.
-        if (tiledImage) {
+        // Hand the native tile for this channel to bovista — it normalizes the
+        // full dtype range to [0, 1] itself, so no client-side rescaling.
+        const visual = tiledImages[c];
+        if (visual) {
             if (data instanceof Uint16Array) {
-                tiledImage.setChunkDataU16(lod, t, z, y, x, data, dz, dy, dx);
+                visual.setChunkDataU16(lod, t, z, y, x, data, dz, dy, dx);
             } else {
                 const src = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
-                tiledImage.setChunkDataU8(lod, t, z, y, x, src, dz, dy, dx);
+                visual.setChunkDataU8(lod, t, z, y, x, src, dz, dy, dx);
             }
             loadedChunkCount++;
         }
@@ -241,14 +292,18 @@ async function loadChunkAsync(lod, t, z, y, x, key) {
 
 // Slice Plane Control
 function updateSlicePlane() {
-    if (!tiledImage) return;
+    if (tiledImages.length === 0) return;
 
     // bovista computes the plane normal from the two angles + offset and
     // returns it so we can face the slice head-on in orthographic mode.
-    const n = tiledImage.setSliceFromAngles(
-        volumeCenter[0], volumeCenter[1], volumeCenter[2],
-        sliceAngleX, sliceAngleY, sliceOffset,
-    );
+    // All channels share the same plane.
+    let n;
+    for (const visual of tiledImages) {
+        n = visual.setSliceFromAngles(
+            volumeCenter[0], volumeCenter[1], volumeCenter[2],
+            sliceAngleX, sliceAngleY, sliceOffset,
+        );
+    }
 
     if (viewer.getCameraProjectionMode() === wasmModule.ProjectionMode.Orthographic) {
         viewer.alignCameraToSlice(
@@ -260,6 +315,46 @@ function updateSlicePlane() {
     // Use adaptive precision based on volume scale
     const precision = volumeScale < 1.0 ? 6 : volumeScale < 10 ? 3 : 1;
     sliceOffsetEl.textContent = sliceOffset.toFixed(precision);
+}
+
+// Actual atlas byte size for n tiles at the given tile dimensions. The
+// allocator lays slots out in a cols×rows×layers grid (cube-ish), so the
+// real texture rounds up past n. R16Float = 2 bytes/voxel.
+function atlasSizeBytes(n, tileW, tileH, tileD) {
+    const cols   = Math.ceil(Math.cbrt(n));
+    const rows   = Math.ceil(Math.cbrt(n));
+    const layers = Math.ceil(n / (cols * rows));
+    return cols * tileW * rows * tileH * layers * tileD * 2;
+}
+
+// Largest per-channel slot count whose atlas fits the VRAM budget, split
+// across the N channel atlases. This doesn't try to predict the working set
+// (which depends on slice orientation + tile shape — e.g. thin z-chunks make
+// a side-on slice touch far more tiles than a top-down one); it just hands
+// the atlas as many slots as the budget allows. If even that's too few for a
+// given orientation, the library logs a thrash warning (see VirtualTextureData).
+function computeMaxChunks() {
+    if (lodLevels.length === 0) return 512;
+    const [tileZ, tileY, tileX] = lodLevels[0].chunkSize;
+    const vramBudgetGB = parseFloat(document.getElementById('vram-budget').value);
+    // Split the budget across channels (each channel owns its own atlas) and
+    // respect the WebGPU staging-buffer hard limit of 4 GB per texture.
+    const budgetBytes = Math.min(
+        (vramBudgetGB * 1024 ** 3) / Math.max(1, numChannels),
+        4 * 1024 ** 3,
+    );
+    let lo = 1, hi = 65536, best = 64;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (atlasSizeBytes(mid, tileX, tileY, tileZ) <= budgetBytes) {
+            best = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    document.getElementById('max-chunks-display').textContent = best;
+    return best;
 }
 
 /**
@@ -280,8 +375,9 @@ function createVisual() {
     pendingLoads.clear();
     loadedChunkCount = 0;
 
-    // Each shape/size argument is a [z, y, x] array (numpy order).
-    const jsLevels = lodLevels.map(level =>
+    // `new Image(...)` consumes (moves) the LevelMetadata array, so build a
+    // fresh one per channel. Each shape/size arg is a [z, y, x] array (numpy order).
+    const buildLevels = () => lodLevels.map(level =>
         new wasmModule.LevelMetadata(
             level.volumeSize,
             level.chunkSize,
@@ -291,22 +387,28 @@ function createVisual() {
         )
     );
 
-    tiledImage = new wasmModule.Image(
-        viewer,     // Pass the viewer instance
-        jsLevels,   // Array of LevelMetadata
-        512,        // max_chunks
-    );
+    // One Image visual per channel. Single channel → Normal blend (identical to
+    // before). Multi-channel → each gets its own colormap + additive blending so
+    // the channels composite order-independently.
+    tiledImages = [];
+    const additive = numChannels > 1;
+    const maxChunks = computeMaxChunks();
+    for (let c = 0; c < numChannels; c++) {
+        const visual = new wasmModule.Image(viewer, buildLevels(), maxChunks);
+        if (additive) {
+            visual.setColormap(makeChannelColormap(CHANNEL_COLORS[c % CHANNEL_COLORS.length]));
+            visual.setBlendMode(wasmModule.BlendMode.Additive);
+        }
+        visual.setContrast(0.0, 1.0);
+        viewer.addImage(visual);
+        tiledImages.push(visual);
+    }
 
-    viewer.addImage(tiledImage);
     startLoaderPoll();
 
     // Reapply slice plane if volumeCenter is set
     if (volumeCenter) {
         updateSlicePlane();
-    }
-
-    {
-        tiledImage.setContrast(0.0, 1.0);
     }
 }
 
@@ -344,12 +446,12 @@ canvas.addEventListener('mousemove', (e) => {
         } else {
             viewer.orbitCamera(deltaX * 0.005, deltaY * 0.005);
         }
-    } else if (isMiddleDragging && tiledImage) {
+    } else if (isMiddleDragging && visualsReady()) {
         // Horizontal drag: level (center); vertical drag: window (width)
         windowCenter += deltaX * 0.002;
         windowWidth  += deltaY * 0.002;
         windowWidth   = Math.max(0.001, windowWidth);
-        tiledImage.setContrast(windowCenter - windowWidth / 2, windowCenter + windowWidth / 2);
+        applyContrastAll(windowCenter - windowWidth / 2, windowCenter + windowWidth / 2);
     } else if (isRightDragging) {
         if (e.shiftKey) {
             sliceAngleX += deltaY * 0.01;
@@ -401,8 +503,8 @@ canvas.addEventListener('wheel', (e) => {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'd' || e.key === 'D') {
         debugMode = !debugMode;
-        if (tiledImage) {
-            tiledImage.setDebugMode(debugMode);
+        if (visualsReady()) {
+            applyDebugModeAll(debugMode);
         }
         document.getElementById('debug-mode').checked = debugMode;
     }
@@ -462,8 +564,17 @@ async function loadDataset(datasetKey) {
             const xIdx = ndim - 1;
 
             const volumeSize = [shape[zIdx], shape[yIdx], shape[xIdx]];
-            // Logical tile, uniform across LODs — NOT the dataset's storage chunk.
-            const chunkSize = LOGICAL_TILE;
+            if (lodIdx === 0) {
+                // Align the (uniform) logical tile to the LOD-0 storage chunk,
+                // capped, so one tile fetch maps to ~one stored chunk.
+                const ch = zarrArray.chunks;
+                logicalTile = [
+                    Math.min(ch[zIdx], MAX_LOGICAL_TILE),
+                    Math.min(ch[yIdx], MAX_LOGICAL_TILE),
+                    Math.min(ch[xIdx], MAX_LOGICAL_TILE),
+                ];
+            }
+            const chunkSize = logicalTile;
 
             const transforms = datasets[lodIdx].coordinateTransformations || [];
             let voxelSize = [1.0, 1.0, 1.0];
@@ -515,18 +626,18 @@ async function loadDataset(datasetKey) {
 
         const firstArray = zarrArrays[0];
         const hasChannels = firstArray.shape.length >= 4;
-        const numChannels = hasChannels ?
+        // Assign the module-level global (drives the per-channel visual loop).
+        numChannels = hasChannels ?
             (firstArray.shape.length === 5 ? firstArray.shape[1] : firstArray.shape[0]) : 1;
 
+        // All channels are now shown together (additive). The dropdown is
+        // informational only — no per-channel switching.
         const channelSelect = document.getElementById('channel-select');
         channelSelect.innerHTML = '';
-        for (let i = 0; i < numChannels; i++) {
-            const option = document.createElement('option');
-            option.value = i;
-            option.textContent = `Channel ${i}`;
-            channelSelect.appendChild(option);
-        }
-        channelSelect.disabled = numChannels <= 1;
+        const option = document.createElement('option');
+        option.textContent = numChannels > 1 ? `${numChannels} channels (additive)` : 'Channel 0';
+        channelSelect.appendChild(option);
+        channelSelect.disabled = true;
 
         // Apply translation offset if present (e.g., OME-Zarr 0.5 datasets)
         const lod0 = lodLevels[0];
@@ -583,9 +694,7 @@ async function loadDataset(datasetKey) {
         windowWidth = 1.0;
         updateSlicePlane();
 
-        tiledImage.setContrast(0.0, 1.0);
-
-        const stats = tiledImage.getStats();
+        applyContrastAll(0.0, 1.0);
 
         setStatus(`Ready: ${dataset.description}`, 'status-ready');
 
@@ -610,20 +719,18 @@ document.getElementById('load-btn').addEventListener('click', () => {
     }
 });
 
-document.getElementById('channel-select').addEventListener('change', (e) => {
-    currentChannel = parseInt(e.target.value);
+// Channel selection is no longer used — all channels render together (additive).
 
-    // Recreate the visual to clear Rust-side cache
-    if (tiledImage && lodLevels.length > 0) {
-        createVisual();
-    }
+document.getElementById('vram-budget').addEventListener('change', () => {
+    // Rebuild the visuals with the new per-channel tile budget.
+    if (visualsReady() && lodLevels.length > 0) createVisual();
 });
 
 document.getElementById('lod-bias').addEventListener('input', (e) => {
     const value = parseFloat(e.target.value) / 10.0;
     document.getElementById('lod-bias-value').textContent = value.toFixed(1);
-    if (tiledImage) {
-        tiledImage.setLodBias(value);
+    if (visualsReady()) {
+        applyLodBiasAll(value);
     }
 });
 
@@ -639,8 +746,8 @@ document.getElementById('contrast-max').addEventListener('input', (e) => {
 
 document.getElementById('debug-mode').addEventListener('change', (e) => {
     debugMode = e.target.checked;
-    if (tiledImage) {
-        tiledImage.setDebugMode(debugMode);
+    if (visualsReady()) {
+        applyDebugModeAll(debugMode);
     }
 });
 
@@ -666,16 +773,16 @@ document.getElementById('projection-toggle').addEventListener('click', () => {
 
 
 function updateContrast() {
-    if (!tiledImage) return;
+    if (!visualsReady()) return;
     const min = parseFloat(document.getElementById('contrast-min').value) / 1000.0;
     const max = parseFloat(document.getElementById('contrast-max').value) / 1000.0;
-    tiledImage.setContrast(min, max);
+    applyContrastAll(min, max);
 }
 
 // Stats update interval
 setInterval(() => {
-    if (tiledImage) {
-        const stats = tiledImage.getStats();
+    if (visualsReady()) {
+        const stats = totalStats();
         if (stats) {
             loadedChunksEl.textContent = stats[0];
             visibleChunksEl.textContent = stats[1];
@@ -693,12 +800,7 @@ function renderLoop() {
     if (viewer && wasmInitialized) {
         try {
             viewer.renderFrame();
-
-            // Log stats every 60 frames (about 1 second)
             frameCount++;
-            if (frameCount % 60 === 0 && tiledImage) {
-                const stats = tiledImage.getStats();
-            }
         } catch (error) {
             // A render error (e.g. a Rust panic) leaves the wasm module
             // unusable, so stop the loop instead of rescheduling forever and
