@@ -115,6 +115,9 @@ let lastMouseY = 0;
 let debugMode = false;
 let atlasDebugMode = false;
 let stepDebugMode = false;
+// Empty-space leaping (Direct mode / step heatmap). On by default; the checkbox
+// flips it at runtime so you can A/B it — including watching the step heatmap.
+let skipEmpty = true;
 
 // Active rendering mode (one of the six volume visuals). Switching rebuilds
 // the visual but keeps the rest of the viewer state (camera, contrast,
@@ -320,6 +323,7 @@ function createVisual() {
     applyModeCaps();
     applyStepSize();
     applyContrast();
+    applySkipEmpty();
     if (cfg.density) applyDensityScale();
     if (cfg.attenuation) applyAttenuation();
     if (cfg.iso) applyIsoThreshold();
@@ -338,6 +342,9 @@ function applyModeCaps() {
         if (!cfg.debug) document.getElementById(id).checked = false;
     }
     if (!cfg.debug) { debugMode = false; atlasDebugMode = false; stepDebugMode = false; }
+    // skip_empty is read only by DirectVolume's shader (cfg.debug ⇒ Direct);
+    // enable the checkbox there, but keep its value so it persists across modes.
+    document.getElementById('skip-empty').disabled = !cfg.debug;
 }
 
 function applyAttenuation() {
@@ -368,6 +375,12 @@ function syncContrastDisplay() {
 }
 
 // Controls
+// Only DirectVolume's shader (fs_translucent, modes 0 + 3) reads skip_empty;
+// other modes ignore it, so the `if` guards the missing binding.
+function applySkipEmpty() {
+    eachVolume(v => { if (v.setSkipEmpty) v.setSkipEmpty(skipEmpty); });
+}
+
 function applyContrast() {
     if (!visualsReady()) return;
     const min = sliderToValue(parseInt(document.getElementById('contrast-min').value));
@@ -634,7 +647,7 @@ async function loadDataset(datasetKey) {
         createVisual();
 
         // Enable controls
-        ['lod-bias','render-mode','contrast-min','contrast-max','contrast-ceiling','auto-contrast-btn','step-size','density-scale','debug-mode','atlas-debug-mode','step-debug-mode'].forEach(id => {
+        ['lod-bias','render-mode','contrast-min','contrast-max','contrast-ceiling','auto-contrast-btn','step-size','density-scale','debug-mode','atlas-debug-mode','step-debug-mode','skip-empty'].forEach(id => {
             const el = document.getElementById(id);
             if (el) { el.disabled = false; el.removeAttribute('disabled'); }
         });
@@ -720,6 +733,11 @@ document.getElementById('step-debug-mode').addEventListener('change', e => {
         document.getElementById('atlas-debug-mode').checked = false;
     }
     eachVolume(v => { if (v.setStepDebugMode) v.setStepDebugMode(stepDebugMode); });
+});
+
+document.getElementById('skip-empty').addEventListener('change', e => {
+    skipEmpty = e.target.checked;
+    applySkipEmpty();
 });
 
 // Stats update

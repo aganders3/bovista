@@ -346,12 +346,15 @@ fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
         let advance = compute_advance(lod_f, s.step_size, vol_uv, s.ray_dir,
                                        s.vol_extent, s.inv_tile0_scale_x);
 
-        // Tile-level empty-space skip (mode 0 only): a resident tile whose max
-        // sits below the contrast floor can't contribute any colour, so jump to
-        // its far boundary instead of stepping through it. Debug modes step
-        // verbatim so the heatmap/tint still show the true traversal.
+        // Tile-level empty-space skip: a resident tile whose max sits below the
+        // contrast floor can't contribute any colour, so jump to its far
+        // boundary instead of stepping through it. Applied in normal DVR
+        // (mode 0) AND the step heatmap (mode 3) so the heatmap faithfully
+        // reflects mode-0 traversal — including the leap over empty space.
+        // Modes 1 (LOD tint) / 2 (atlas direct) intentionally step verbatim.
         let skip_max_threshold = vt.contrast_min + 0.004;  // ~one 8-bit step
-        if vol.skip_empty != 0u && vol.debug_mode == 0u && lod_f >= 0.0 && result.z < skip_max_threshold {
+        if vol.skip_empty != 0u && (vol.debug_mode == 0u || vol.debug_mode == 3u)
+            && lod_f >= 0.0 && result.z < skip_max_threshold {
             t += tile_skip_advance(i32(lod_f), s.step_size, vol_uv, s.ray_dir, s.vol_extent);
             continue;
         }

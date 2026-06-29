@@ -669,6 +669,7 @@ js_vt_visual!(JsImage, "Image", Image, extra: {
 
 js_vt_visual!(JsDirectVolume, "DirectVolume", DirectVolume, extra: {
     pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+    pub fn set_skip_empty(&self, on: bool) -> Result<(), JsValue> {}
     pub fn set_density_scale(&self, scale: f32) -> Result<(), JsValue> {}
     pub fn set_early_exit_alpha(&self, alpha: f32) -> Result<(), JsValue> {}
     pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
@@ -678,18 +679,22 @@ js_vt_visual!(JsDirectVolume, "DirectVolume", DirectVolume, extra: {
 
 js_vt_visual!(JsMipVolume, "MipVolume", MipVolume, extra: {
     pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+    pub fn set_skip_empty(&self, on: bool) -> Result<(), JsValue> {}
     pub fn set_attenuation(&self, attenuation: f32) -> Result<(), JsValue> {}
 });
 
 js_vt_visual!(JsMinipVolume, "MinipVolume", MinipVolume, extra: {
     pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+    pub fn set_skip_empty(&self, on: bool) -> Result<(), JsValue> {}
 });
 js_vt_visual!(JsAverageVolume, "AverageVolume", AverageVolume, extra: {
     pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+    pub fn set_skip_empty(&self, on: bool) -> Result<(), JsValue> {}
 });
 
 js_vt_visual!(JsIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra: {
     pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+    pub fn set_skip_empty(&self, on: bool) -> Result<(), JsValue> {}
     pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {}
 });
 
