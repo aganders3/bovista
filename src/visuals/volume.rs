@@ -118,6 +118,8 @@ pub struct VolumeCore {
     relative_step_size: f32,
     blend_mode: BlendMode,
     opacity: f32,
+    /// Tile-level empty-space skip toggle (default on). Runtime-switchable for benchmarking.
+    skip_empty: bool,
     frame_number: u64,
 
     transform: Transform,
@@ -423,6 +425,7 @@ impl VolumeCore {
             relative_step_size: 1.0,
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
+            skip_empty: true,
             frame_number: 0,
             transform: Transform::identity(),
             visible: true,
@@ -534,7 +537,7 @@ impl VolumeCore {
             iso_threshold: extras.iso_threshold,
             attenuation: extras.attenuation,
             opacity: self.opacity,
-            _pad1: 0.0,
+            skip_empty: self.skip_empty as u32,
         };
 
         queue.write_buffer(&self.vt_uniform_buffer,  0, bytemuck::cast_slice(&[vt_uniforms]));
@@ -559,6 +562,7 @@ impl VolumeCore {
 
     pub fn set_name(&mut self, name: String) { self.name = name; }
     pub fn set_relative_step_size(&mut self, step: f32) { self.relative_step_size = step; }
+    pub fn set_skip_empty(&mut self, on: bool) { self.skip_empty = on; }
     pub fn set_contrast_limits(&mut self, min: f32, max: f32) { self.contrast_limits = (min, max); }
     pub fn set_blend_mode(&mut self, mode: BlendMode) { self.blend_mode = mode; }
     pub fn blend_mode(&self) -> BlendMode { self.blend_mode }
@@ -637,6 +641,7 @@ macro_rules! impl_common_volume_methods {
         impl $ty {
             pub fn set_name(&mut self, name: String) { self.core.set_name(name); }
             pub fn set_relative_step_size(&mut self, step: f32) { self.core.set_relative_step_size(step); }
+            pub fn set_skip_empty(&mut self, on: bool) { self.core.set_skip_empty(on); }
             pub fn set_contrast_limits(&mut self, min: f32, max: f32) { self.core.set_contrast_limits(min, max); }
             pub fn set_colormap(&mut self, rgba: &[u8]) { self.core.set_colormap(rgba); }
             pub fn set_lod_bias(&mut self, bias: f32) { self.core.set_lod_bias(bias); }

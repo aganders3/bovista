@@ -80,7 +80,9 @@ struct VolumeUniforms {
     attenuation: f32,
     /// Per-visual opacity multiplier in [0, 1], applied to the final output.
     opacity: f32,
-    _pad1: f32,
+    /// 1 = enable tile-level empty-space skip (fs_translucent mode 0), 0 = off.
+    /// A runtime toggle so the skip can be A/B-benchmarked in one build.
+    skip_empty: u32,
 }
 
 // ── Group 0: camera ──────────────────────────────────────────────────────────
@@ -349,7 +351,7 @@ fn fs_translucent(in: VertexOutput) -> @location(0) vec4<f32> {
         // its far boundary instead of stepping through it. Debug modes step
         // verbatim so the heatmap/tint still show the true traversal.
         let skip_max_threshold = vt.contrast_min + 0.004;  // ~one 8-bit step
-        if vol.debug_mode == 0u && lod_f >= 0.0 && result.z < skip_max_threshold {
+        if vol.skip_empty != 0u && vol.debug_mode == 0u && lod_f >= 0.0 && result.z < skip_max_threshold {
             t += tile_skip_advance(i32(lod_f), s.step_size, vol_uv, s.ray_dir, s.vol_extent);
             continue;
         }
