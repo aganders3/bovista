@@ -35,6 +35,17 @@ export class AverageVolume {
         return this;
     }
     /**
+     * Set the blend mode (Normal or Additive). Additive enables
+     * order-independent multi-channel compositing.
+     * @param {BlendMode} mode
+     */
+    setBlendMode(mode) {
+        const ret = wasm.jsaveragevolume_setBlendMode(this.__wbg_ptr, mode);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
@@ -98,6 +109,16 @@ export class AverageVolume {
         }
     }
     /**
+     * Set per-visual opacity in [0, 1].
+     * @param {number} opacity
+     */
+    setOpacity(opacity) {
+        const ret = wasm.jsaveragevolume_setOpacity(this.__wbg_ptr, opacity);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} step
      */
     setRelativeStepSize(step) {
@@ -118,6 +139,16 @@ export class AverageVolume {
     }
 }
 if (Symbol.dispose) AverageVolume.prototype[Symbol.dispose] = AverageVolume.prototype.free;
+
+/**
+ * How a visual composites with the framebuffer. `Additive` (order-independent)
+ * is the basis for multi-channel compositing.
+ * @enum {0 | 1}
+ */
+export const BlendMode = Object.freeze({
+    Normal: 0, "0": "Normal",
+    Additive: 1, "1": "Additive",
+});
 
 export class DirectVolume {
     __destroy_into_raw() {
@@ -160,6 +191,17 @@ export class DirectVolume {
      */
     setAtlasDebugMode(enabled) {
         const ret = wasm.jsdirectvolume_setAtlasDebugMode(this.__wbg_ptr, enabled);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set the blend mode (Normal or Additive). Additive enables
+     * order-independent multi-channel compositing.
+     * @param {BlendMode} mode
+     */
+    setBlendMode(mode) {
+        const ret = wasm.jsdirectvolume_setBlendMode(this.__wbg_ptr, mode);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -255,6 +297,16 @@ export class DirectVolume {
         }
     }
     /**
+     * Set per-visual opacity in [0, 1].
+     * @param {number} opacity
+     */
+    setOpacity(opacity) {
+        const ret = wasm.jsdirectvolume_setOpacity(this.__wbg_ptr, opacity);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} step
      */
     setRelativeStepSize(step) {
@@ -320,6 +372,17 @@ export class Image {
         this.__wbg_ptr = ret;
         ImageFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * Set the blend mode (Normal or Additive). Additive enables
+     * order-independent multi-channel compositing.
+     * @param {BlendMode} mode
+     */
+    setBlendMode(mode) {
+        const ret = wasm.jsimage_setBlendMode(this.__wbg_ptr, mode);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Provide uint16 tile data (full u16 range maps to [0, 1]).
@@ -390,6 +453,16 @@ export class Image {
      */
     setLodBias(bias) {
         const ret = wasm.jsimage_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set per-visual opacity in [0, 1].
+     * @param {number} opacity
+     */
+    setOpacity(opacity) {
+        const ret = wasm.jsimage_setOpacity(this.__wbg_ptr, opacity);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -507,6 +580,17 @@ export class IsosurfaceVolume {
         return this;
     }
     /**
+     * Set the blend mode (Normal or Additive). Additive enables
+     * order-independent multi-channel compositing.
+     * @param {BlendMode} mode
+     */
+    setBlendMode(mode) {
+        const ret = wasm.jsisosurfacevolume_setBlendMode(this.__wbg_ptr, mode);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
@@ -574,6 +658,16 @@ export class IsosurfaceVolume {
      */
     setLodBias(bias) {
         const ret = wasm.jsisosurfacevolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set per-visual opacity in [0, 1].
+     * @param {number} opacity
+     */
+    setOpacity(opacity) {
+        const ret = wasm.jsisosurfacevolume_setOpacity(this.__wbg_ptr, opacity);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -798,6 +892,17 @@ export class MinipVolume {
         return this;
     }
     /**
+     * Set the blend mode (Normal or Additive). Additive enables
+     * order-independent multi-channel compositing.
+     * @param {BlendMode} mode
+     */
+    setBlendMode(mode) {
+        const ret = wasm.jsminipvolume_setBlendMode(this.__wbg_ptr, mode);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
@@ -856,6 +961,16 @@ export class MinipVolume {
      */
     setLodBias(bias) {
         const ret = wasm.jsminipvolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set per-visual opacity in [0, 1].
+     * @param {number} opacity
+     */
+    setOpacity(opacity) {
+        const ret = wasm.jsminipvolume_setOpacity(this.__wbg_ptr, opacity);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -928,6 +1043,17 @@ export class MipVolume {
         }
     }
     /**
+     * Set the blend mode (Normal or Additive). Additive enables
+     * order-independent multi-channel compositing.
+     * @param {BlendMode} mode
+     */
+    setBlendMode(mode) {
+        const ret = wasm.jsmipvolume_setBlendMode(this.__wbg_ptr, mode);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Provide uint16 tile data (full u16 range maps to [0, 1]).
      *
      * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
@@ -986,6 +1112,16 @@ export class MipVolume {
      */
     setLodBias(bias) {
         const ret = wasm.jsmipvolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set per-visual opacity in [0, 1].
+     * @param {number} opacity
+     */
+    setOpacity(opacity) {
+        const ret = wasm.jsmipvolume_setOpacity(this.__wbg_ptr, opacity);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -2328,7 +2464,7 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 127, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 141, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e013bd767eefc9f);
             return ret;
         },

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["VT_MAX_LODS"],"fn":["compute_plane_aabb_intersection"],"struct":["AABB","SlicePlane","Tile","TileData","TileKey","TileUniforms","TileVertex","VTLodInfo","VTUniforms","VolumeUniforms","VolumeVertex"]};
+window.SIDEBAR_ITEMS = {"constant":["ADDITIVE_BLENDING","VT_MAX_LODS"],"fn":["compute_plane_aabb_intersection"],"struct":["AABB","SlicePlane","Tile","TileData","TileKey","TileUniforms","TileVertex","VTLodInfo","VTUniforms","VolumeUniforms","VolumeVertex"]};

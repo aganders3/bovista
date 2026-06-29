@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["VertexFormat"],"struct":["CameraInfo","Transform","VertexAttribute","VertexBufferLayout"],"trait":["Visual"]};
+window.SIDEBAR_ITEMS = {"enum":["BlendMode","VertexFormat"],"struct":["CameraInfo","Transform","VertexAttribute","VertexBufferLayout"],"trait":["Visual"]};
