@@ -200,6 +200,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let raw     = result.x;
     let lod_idx = result.y;   // -1 if nothing resident
 
+    // Nothing resident at any LOD here (tile not streamed in yet). Leave the
+    // fragment transparent instead of painting it opaque black via colormap[0]
+    // — otherwise an unloaded tile near the camera occludes loaded tiles behind
+    // it during streaming. Real value-0 *data* still renders (it's resident);
+    // only genuinely-missing tiles drop out, and the LOD fallback means this
+    // only triggers when no LOD at all covers the spot. Debug mode keeps the
+    // blue "not found" tint as a diagnostic.
+    if vt.debug_mode == 0u && lod_idx < 0.0 {
+        discard;
+    }
+
     let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
     let color    = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);
 
