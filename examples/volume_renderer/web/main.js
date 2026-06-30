@@ -43,6 +43,15 @@ const DATASETS = {
         cameraDistance: 250.0,
         zarrVersion: 2,
     },
+    zebrahub_zmns001: {
+        // 5D TCZYX, 2 channels (h2afva, mezzo), 5 LODs, ~780µm extent. The data
+        // sits low in the u16 range (window ~0–1500), so use Auto contrast after
+        // loading. t is fixed at 0 (the examples don't expose the time axis).
+        url: 'https://public.czbiohub.org/royerlab/zebrahub/imaging/multi-view/ZMNS001.ome.zarr',
+        description: 'Zebrahub ZMNS001 — zebrafish embryo, 2-channel light-sheet',
+        cameraDistance: 1000.0,
+        zarrVersion: 2,
+    },
 };
 
 // Cap on in-flight logical-tile loads (shared across channels). Each tile may
