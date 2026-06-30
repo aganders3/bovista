@@ -83,8 +83,13 @@ const CHANNEL_COLORS = [
     [255, 0, 255], [0, 255, 255], [255, 255, 0], [255, 255, 255],
 ];
 
-// 256-entry RGBA LUT ramping black→`rgb` (alpha = 255). With the premultiplied
-// additive pipeline this yields per-channel intensity × hue, summed over channels.
+// 256-entry RGBA LUT ramping black→`rgb`, with alpha proportional to value.
+// In DVR the colormap alpha drives per-sample extinction, so alpha must track
+// value — otherwise (flat alpha=255) dim data composites just as opaquely as
+// bright data, and dim front samples (background, or the coarse-LOD fallback
+// near the camera while fine tiles stream) paint dark and occlude brighter data
+// behind. Proportional alpha matches the single-channel default colormap
+// ([v,v,v,v]); the additive pipeline still sums per-channel intensity × hue.
 function makeChannelColormap(rgb) {
     const lut = new Uint8Array(1024);
     for (let i = 0; i < 256; i++) {
@@ -92,7 +97,7 @@ function makeChannelColormap(rgb) {
         lut[i * 4 + 0] = Math.round(rgb[0] * f);
         lut[i * 4 + 1] = Math.round(rgb[1] * f);
         lut[i * 4 + 2] = Math.round(rgb[2] * f);
-        lut[i * 4 + 3] = 255;
+        lut[i * 4 + 3] = i;  // alpha ∝ value (= round(255·f))
     }
     return lut;
 }

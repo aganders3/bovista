@@ -668,7 +668,11 @@ impl DirectVolume {
             device, queue, surface_format, camera_bind_group_layout,
             lod_levels, max_tiles, atlas_count, VolumeRenderMode::Translucent,
         );
-        Self { core, density_scale: 0.01, early_exit_alpha: 0.95, debug_mode: 0 }
+        // 0.90 (vs the classic 0.95): terminate once the ray is 90% opaque.
+        // The last 10% of transmittance contributes negligibly to the final
+        // pixel, so this trims tail steps in dense regions for ~no visible
+        // change. Tunable per-visual via set_early_exit_alpha.
+        Self { core, density_scale: 0.01, early_exit_alpha: 0.90, debug_mode: 0 }
     }
 
     /// Per-step extinction multiplier. Higher = denser/more opaque volume.
