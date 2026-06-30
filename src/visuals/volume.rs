@@ -118,6 +118,8 @@ pub struct VolumeCore {
     relative_step_size: f32,
     blend_mode: BlendMode,
     opacity: f32,
+    /// Tile-level empty-space skip toggle (default on). Runtime-switchable for benchmarking.
+    skip_empty: bool,
     frame_number: u64,
 
     transform: Transform,
@@ -257,6 +259,18 @@ impl VolumeCore {
                     },
                     count: None,
                 },
+                // Per-tile (min, max) metadata parallel to the page table,
+                // used for tile-level empty-space skipping (non-filtering).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         assert_eq!(vt.atlas_views.len(), MAX_ATLAS_COUNT);
@@ -272,6 +286,7 @@ impl VolumeCore {
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&vt.page_table.texture_view) },
                 wgpu::BindGroupEntry { binding: 6, resource: vt_uniform_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: vol_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&vt.page_table.metadata_texture_view) },
             ],
         });
 
@@ -410,6 +425,7 @@ impl VolumeCore {
             relative_step_size: 1.0,
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
+            skip_empty: true,
             frame_number: 0,
             transform: Transform::identity(),
             visible: true,
@@ -521,7 +537,7 @@ impl VolumeCore {
             iso_threshold: extras.iso_threshold,
             attenuation: extras.attenuation,
             opacity: self.opacity,
-            _pad1: 0.0,
+            skip_empty: self.skip_empty as u32,
         };
 
         queue.write_buffer(&self.vt_uniform_buffer,  0, bytemuck::cast_slice(&[vt_uniforms]));
@@ -546,6 +562,7 @@ impl VolumeCore {
 
     pub fn set_name(&mut self, name: String) { self.name = name; }
     pub fn set_relative_step_size(&mut self, step: f32) { self.relative_step_size = step; }
+    pub fn set_skip_empty(&mut self, on: bool) { self.skip_empty = on; }
     pub fn set_contrast_limits(&mut self, min: f32, max: f32) { self.contrast_limits = (min, max); }
     pub fn set_blend_mode(&mut self, mode: BlendMode) { self.blend_mode = mode; }
     pub fn blend_mode(&self) -> BlendMode { self.blend_mode }
@@ -624,6 +641,7 @@ macro_rules! impl_common_volume_methods {
         impl $ty {
             pub fn set_name(&mut self, name: String) { self.core.set_name(name); }
             pub fn set_relative_step_size(&mut self, step: f32) { self.core.set_relative_step_size(step); }
+            pub fn set_skip_empty(&mut self, on: bool) { self.core.set_skip_empty(on); }
             pub fn set_contrast_limits(&mut self, min: f32, max: f32) { self.core.set_contrast_limits(min, max); }
             pub fn set_colormap(&mut self, rgba: &[u8]) { self.core.set_colormap(rgba); }
             pub fn set_lod_bias(&mut self, bias: f32) { self.core.set_lod_bias(bias); }

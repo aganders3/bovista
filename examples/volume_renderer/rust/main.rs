@@ -22,6 +22,7 @@
 //!   A            reset contrast (to the default floor)
 //!   9 / 0        attenuation (MIP) / iso threshold (Iso)
 //!   D            toggle debug tint
+//!   K            toggle empty-space skip (for A/B benchmarking, Direct mode)
 //! ```
 //!
 //! Flags: --zarr, --mode, --cache-tiles, --atlas-count, --max-inflight,
@@ -159,6 +160,9 @@ impl Volume {
     fn set_relative_step_size(&mut self, step: f32) {
         volume_dispatch!(self, v => v.set_relative_step_size(step));
     }
+    fn set_skip_empty(&mut self, on: bool) {
+        volume_dispatch!(self, v => v.set_skip_empty(on));
+    }
     fn pending_chunks(&self) -> Option<PendingChunks> {
         volume_dispatch!(self, v => v.pending_chunks())
     }
@@ -234,6 +238,7 @@ struct VolumeRenderer {
     contrast_max: f32,
     density_mult: f32,
     step: f32,
+    skip_empty: bool,
     attenuation: f32,
     iso_threshold: f32,
     debug: bool,
@@ -252,6 +257,7 @@ impl VolumeRenderer {
         v.set_contrast_limits(self.contrast_min, self.contrast_max);
         v.set_lod_bias(self.lod_bias);
         v.set_relative_step_size(self.step);
+        v.set_skip_empty(self.skip_empty);
         v.try_set_density_scale(self.base_density * self.density_mult);
         v.try_set_attenuation(self.attenuation);
         v.try_set_iso_threshold(self.iso_threshold);
@@ -279,6 +285,7 @@ impl VolumeRenderer {
         volume.set_contrast_limits(self.contrast_min, self.contrast_max);
         volume.set_lod_bias(self.lod_bias);
         volume.set_relative_step_size(self.step);
+        volume.set_skip_empty(self.skip_empty);
         volume.try_set_density_scale(self.base_density * self.density_mult);
         volume.try_set_attenuation(self.attenuation);
         volume.try_set_iso_threshold(self.iso_threshold);
@@ -328,6 +335,12 @@ impl ExampleApp for VolumeRenderer {
                 ctx.scene.add(volume.clone());
                 self.volume = Some(volume);
                 println!("[volume] mode → {:?} (atlas reloading)", self.mode);
+            }
+            'k' | 'K' => {
+                self.skip_empty = !self.skip_empty;
+                self.apply_all();
+                println!("[volume] empty-space skip = {} (A/B this with a GPU capture; \
+                          use a sparse dataset + mode 0)", if self.skip_empty { "ON" } else { "OFF" });
             }
             '[' => {
                 self.lod_bias -= 0.5;
@@ -503,6 +516,7 @@ fn main() {
         contrast_max,
         density_mult: args.density_mult,
         step: args.step.unwrap_or(1.0),
+        skip_empty: true,
         attenuation: args.attenuation,
         iso_threshold: args.iso_threshold,
         debug: false,
