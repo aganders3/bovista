@@ -250,19 +250,25 @@ fn setup_ray(world_pos: vec3f) -> RaySetup {
 }
 
 // World-space advance for the next step. Resident tiles → step_size scaled to
-// the current LOD; unresident regions → jump to the next coarsest-LOD tile
-// boundary so we don't crawl through gaps one LOD-0 voxel at a time.
+// the current LOD; unresident regions → jump to the next *ideal-LOD* tile
+// boundary so we skip the gap without crawling voxel-by-voxel.
+//
+// This must be the ideal-LOD tile, NOT the coarsest: tiles stream in at (and
+// around) the ideal LOD, so a coarsest-tile jump would leap a span that may
+// contain a *loaded* finer tile behind the unresident point — stepping over it
+// entirely. The ray then comes up empty and the region renders black, looking
+// like the unloaded near tile "occludes" the loaded one behind it. Jumping by
+// the ideal tile is the largest stride that can't skip a loaded tile.
 fn compute_advance(lod_f: f32, step_size: f32, vol_uv: vec3f, ray_dir: vec3f,
                    vol_extent: vec3f, inv_tile0_scale_x: f32) -> f32 {
     if lod_f >= 0.0 {
         let lod_i = i32(lod_f);
         return step_size * vt.lods[lod_i].tile_scale.x * inv_tile0_scale_x;
     }
-    let coarsest = i32(vt.lod_count) - 1;
-    let coarse_scale = vt.lods[coarsest].tile_scale;
+    let step_scale = vt.lods[vt.target_lod].tile_scale;
     let duv_dt = ray_dir / vol_extent;
-    let tile_idx  = floor(vol_uv / coarse_scale);
-    let next_uv   = select(tile_idx, tile_idx + 1.0, duv_dt > vec3f(0.0)) * coarse_scale;
+    let tile_idx  = floor(vol_uv / step_scale);
+    let next_uv   = select(tile_idx, tile_idx + 1.0, duv_dt > vec3f(0.0)) * step_scale;
     let dt_to_bound = select(
         vec3f(1e9),
         (next_uv - vol_uv) / duv_dt,
