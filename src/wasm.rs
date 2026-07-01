@@ -66,7 +66,7 @@ use web_sys::console;
 
 use crate::{
     bindings_common::{self, VisualRef},
-    BlendMode, Camera, Image, Lines, Points, Renderer, Scene, SlicePlane, Visual,
+    BlendMode, Camera, Image, Labels, Lines, Points, Renderer, Scene, SlicePlane, Visual,
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::gpu_structs::TileKey,
@@ -269,6 +269,12 @@ impl JsViewer {
     /// Add an image visual to the scene
     #[wasm_bindgen(js_name = addImage)]
     pub fn add_image(&mut self, visual: &JsImage) -> usize {
+        self.scene.add(visual.get_inner())
+    }
+
+    /// Add a labels (segmentation) visual to the scene
+    #[wasm_bindgen(js_name = addLabels)]
+    pub fn add_labels(&mut self, visual: &JsLabels) -> usize {
         self.scene.add(visual.get_inner())
     }
 
@@ -480,10 +486,28 @@ impl JsLevelMetadata {
 /// Generate the JS wrapper struct + `#[wasm_bindgen]` impl for a
 /// virtual-texture-backed visual (the slice `Image` and every volume mode).
 macro_rules! js_vt_visual {
+    // Public arm: default (normalized) u16/u8 packers — full-range → [0, 1].
     (
         $wrapper:ident,
         $js_name:literal,
         $rust_ty:ident
+        $(, extra: { $($extra:tt)* })?
+    ) => {
+        js_vt_visual!(
+            @full $wrapper, $js_name, $rust_ty,
+            bindings_common::pack_u16_tile, bindings_common::pack_u8_tile
+            $(, extra: { $($extra)* })?
+        );
+    };
+    // Full arm: caller supplies the tile packers. Labels pass the
+    // raw-magnitude variants so integer IDs survive the R16Float atlas.
+    (
+        @full
+        $wrapper:ident,
+        $js_name:literal,
+        $rust_ty:ident,
+        $pack16:path,
+        $pack8:path
         $(, extra: { $($extra:tt)* })?
     ) => {
         #[wasm_bindgen(js_name = $js_name)]
@@ -585,7 +609,7 @@ macro_rules! js_vt_visual {
                     return;
                 }
                 if let Some(ref pending_chunks) = self.pending_chunks {
-                    let tile = bindings_common::pack_u16_tile(data.to_vec(), z_shape, y_shape, x_shape);
+                    let tile = $pack16(data.to_vec(), z_shape, y_shape, x_shape);
                     pending_chunks.lock().unwrap()
                         .insert(TileKey { lod_level: lod, t, z, y, x }, tile);
                 }
@@ -604,7 +628,7 @@ macro_rules! js_vt_visual {
                     return;
                 }
                 if let Some(ref pending_chunks) = self.pending_chunks {
-                    let tile = bindings_common::pack_u8_tile(data.to_vec(), z_shape, y_shape, x_shape);
+                    let tile = $pack8(data.to_vec(), z_shape, y_shape, x_shape);
                     pending_chunks.lock().unwrap()
                         .insert(TileKey { lod_level: lod, t, z, y, x }, tile);
                 }
@@ -666,6 +690,75 @@ js_vt_visual!(JsImage, "Image", Image, extra: {
     #[wasm_bindgen(js_name = setDebugMode)]
     pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
 });
+
+// Labels: 2D segmentation-mask visual. Same slice surface as Image, but tile
+// data is packed by magnitude (raw integer IDs) and the shader renders each ID
+// as a flat hashed color (ID 0 transparent). setContrast is inherited but inert.
+js_vt_visual!(@full JsLabels, "Labels", Labels,
+    bindings_common::pack_u16_label_tile, bindings_common::pack_u8_label_tile,
+    extra: {
+        #[wasm_bindgen(js_name = setSliceZ)]
+        pub fn set_slice_z(&self, z: f32) -> Result<(), JsValue> {}
+        #[wasm_bindgen(js_name = setSliceY)]
+        pub fn set_slice_y(&self, y: f32) -> Result<(), JsValue> {}
+        #[wasm_bindgen(js_name = setSliceX)]
+        pub fn set_slice_x(&self, x: f32) -> Result<(), JsValue> {}
+
+        /// Set an arbitrary slice plane from a point and normal.
+        #[wasm_bindgen(js_name = setSlicePlane)]
+        pub fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> Result<(), JsValue> {
+            bindings_common::with_visual_mut::<Labels, _, _>(
+                &self.inner,
+                |v| v.set_slice_plane(SlicePlane::new([px, py, pz], [nx, ny, nz]))
+            ).map_err(|e| JsValue::from_str(&e))
+        }
+
+        /// Set an oblique slice plane from two angles + an offset about `center`,
+        /// returning the resulting unit normal `[nx, ny, nz]`.
+        #[wasm_bindgen(js_name = setSliceFromAngles)]
+        pub fn set_slice_from_angles(
+            &self, cx: f32, cy: f32, cz: f32, angle_x: f32, angle_y: f32, offset: f32,
+        ) -> Result<Vec<f32>, JsValue> {
+            let plane = SlicePlane::from_angles([cx, cy, cz], angle_x, angle_y, offset);
+            bindings_common::with_visual_mut::<Labels, _, _>(
+                &self.inner,
+                |v| { v.set_slice_plane(plane); vec![plane.normal[0], plane.normal[1], plane.normal[2]] }
+            ).map_err(|e| JsValue::from_str(&e))
+        }
+
+        /// Reshuffle the label→color mapping (napari "shuffle colors").
+        #[wasm_bindgen(js_name = setLabelSeed)]
+        pub fn set_label_seed(&self, seed: f32) -> Result<(), JsValue> {}
+
+        /// Provide uint16 label tile data (raw integer IDs; exact up to 2048).
+        #[wasm_bindgen(js_name = setLabelDataU16)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn set_label_data_u16(
+            &self,
+            lod: usize, t: u32, z: u32, y: u32, x: u32,
+            data: &js_sys::Uint16Array,
+            z_shape: u32, y_shape: u32, x_shape: u32,
+        ) {
+            self.set_chunk_data_u16(lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+        }
+
+        /// Provide uint8 label tile data (raw integer IDs).
+        #[wasm_bindgen(js_name = setLabelDataU8)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn set_label_data_u8(
+            &self,
+            lod: usize, t: u32, z: u32, y: u32, x: u32,
+            data: &js_sys::Uint8Array,
+            z_shape: u32, y_shape: u32, x_shape: u32,
+        ) {
+            self.set_chunk_data_u8(lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+        }
+
+        /// Enable or disable debug LOD tinting.
+        #[wasm_bindgen(js_name = setDebugMode)]
+        pub fn set_debug_mode(&self, enabled: bool) -> Result<(), JsValue> {}
+    }
+);
 
 js_vt_visual!(JsDirectVolume, "DirectVolume", DirectVolume, extra: {
     pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}

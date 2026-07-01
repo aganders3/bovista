@@ -83,10 +83,13 @@ struct VTUniforms {
     desired_t: u32,
     // Per-visual opacity multiplier in [0, 1], applied to the final output.
     opacity: f32,
+    // Fragment color path: 0 = Intensity (contrast + colormap),
+    // 1 = LabelHash (integer ID → hashed colormap coord, ID 0 transparent).
+    color_mode: u32,
+    // Reshuffle seed for LabelHash (perturbs the ID→color hash).
+    label_seed: f32,
     // Pad the header to a 16-byte boundary so `lods` stays aligned
     // (16 scalars = 64 bytes; 64 mod 16 = 0 ✓).
-    _pad_op0: f32,
-    _pad_op1: f32,
     _pad_op2: f32,
     lods: array<VTLodInfo, 16>,
 }
@@ -194,11 +197,35 @@ fn sample_vvt(vol_uv: vec3f) -> vec2f {
     return vec2f(0.0, -1.0);
 }
 
+// Hash an integer label ID to a stable coordinate in [0, 1), used as the
+// colormap lookup for LabelHash mode. PCG-style bit mixing: adjacent IDs land
+// far apart so neighbouring segments get distinct colors. `seed` reshuffles.
+fn hash01(id: u32, seed: u32) -> f32 {
+    var h = id * 747796405u + seed * 2891336453u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    return f32(h) * (1.0 / 4294967296.0);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let result  = sample_vvt(input.vol_uv);
     let raw     = result.x;
     let lod_idx = result.y;   // -1 if nothing resident
+
+    // LabelHash: raw is an integer segmentation ID (exact in f16 up to 2048).
+    // ID 0 is transparent background (also covers the not-resident case, where
+    // raw == 0), so loading holes and background read through to layers below.
+    if vt.color_mode == 1u {
+        let id = u32(round(max(raw, 0.0)));
+        if id == 0u {
+            return vec4f(0.0, 0.0, 0.0, 0.0);
+        }
+        let coord = hash01(id, bitcast<u32>(vt.label_seed));
+        let lcolor = textureSampleLevel(colormap, colormap_sampler, vec2f(coord, 0.5), 0.0);
+        let a = vt.opacity;
+        return vec4f(encode_srgb(vec4f(lcolor.rgb * a, 1.0)).rgb, a);
+    }
 
     let adjusted = clamp((raw - vt.contrast_min) / (vt.contrast_max - vt.contrast_min), 0.0, 1.0);
     let color    = textureSampleLevel(colormap, colormap_sampler, vec2f(adjusted, 0.5), 0.0);

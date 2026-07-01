@@ -127,7 +127,7 @@ pub use scene::Scene;
 pub use spatial::VolumeGrid;
 pub use visual::{BlendMode, Transform, VertexAttribute, VertexBufferLayout, VertexFormat, Visual};
 pub use visuals::{
-    AverageVolume, Custom, DirectVolume, Image, IsosurfaceVolume,
+    AverageVolume, Custom, DirectVolume, Image, IsosurfaceVolume, Labels,
     Lines, LodLevelConfig, MinipVolume, MipVolume, Points, SliceOrientation,
     SlicePlane,
 };
