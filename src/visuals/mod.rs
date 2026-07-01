@@ -1,6 +1,7 @@
 pub mod atlas;
 pub mod custom;
 pub mod image;
+pub mod label_colors;
 pub mod labels;
 pub mod lines;
 pub mod page_table;
@@ -16,5 +17,5 @@ pub use lines::Lines;
 pub use points::Points;
 pub use virtual_texture::LodLevelConfig;
 pub use volume::{
-    AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
+    AverageVolume, DirectVolume, IsosurfaceVolume, LabelVolume, MinipVolume, MipVolume,
 };

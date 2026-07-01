@@ -17,45 +17,8 @@ use std::ops::{Deref, DerefMut};
 
 use crate::visual::{BlendMode, ColorMode, Transform, Visual};
 use crate::visuals::image::Image;
+use crate::visuals::label_colors::categorical_colormap;
 use crate::visuals::virtual_texture::LodLevelConfig;
-
-/// Build a 256-entry RGBA colormap of visually-distinct categorical colors by
-/// stepping hue with the golden-ratio conjugate (low-discrepancy → adjacent
-/// LUT indices are far apart in hue). The label hash maps IDs into this LUT.
-fn categorical_colormap() -> Vec<u8> {
-    const GOLDEN: f32 = 0.618_034;
-    let mut out = Vec::with_capacity(256 * 4);
-    let mut h = 0.0f32;
-    for _ in 0..256 {
-        h = (h + GOLDEN).fract();
-        // Fixed high saturation/value for vivid, well-separated colors.
-        let (r, g, b) = hsv_to_rgb(h, 0.7, 0.95);
-        out.extend_from_slice(&[r, g, b, 255]);
-    }
-    out
-}
-
-/// HSV → RGB (all inputs in [0, 1]); returns 8-bit channels.
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let i = (h * 6.0).floor();
-    let f = h * 6.0 - i;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - f * s);
-    let t = v * (1.0 - (1.0 - f) * s);
-    let (r, g, b) = match (i as i32).rem_euclid(6) {
-        0 => (v, t, p),
-        1 => (q, v, p),
-        2 => (p, v, t),
-        3 => (p, q, v),
-        4 => (t, p, v),
-        _ => (v, p, q),
-    };
-    (
-        (r * 255.0).round() as u8,
-        (g * 255.0).round() as u8,
-        (b * 255.0).round() as u8,
-    )
-}
 
 /// Segmentation-mask visual. See the module docs; behaves like [`Image`] but
 /// renders integer label IDs as flat hashed colors (ID 0 = transparent).
