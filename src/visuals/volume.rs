@@ -495,8 +495,10 @@ impl VolumeCore {
             // shader reads `vol.opacity`); this field is unused by the volume
             // shader but kept consistent.
             opacity: self.opacity,
-            _pad_op0: 0.0,
-            _pad_op1: 0.0,
+            // color_mode/label_seed are Image/Labels-only (the volume shader
+            // ignores them); kept zeroed so the shared struct layout matches.
+            color_mode: 0,
+            label_seed: 0.0,
             _pad_op2: 0.0,
             lods,
         };

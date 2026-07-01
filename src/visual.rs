@@ -163,6 +163,30 @@ pub enum BlendMode {
     Additive,
 }
 
+/// How the virtual-texture fragment shader turns an atlas sample into a color.
+///
+/// `Intensity` is the classic path: normalize the raw value by the contrast
+/// limits, then look it up in the colormap LUT. `LabelHash` treats the raw
+/// value as an integer segmentation ID (napari "Auto" mode): ID 0 is
+/// transparent background, and any other ID is hashed to a stable colormap
+/// coordinate. Contrast limits are ignored in `LabelHash` mode.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum ColorMode {
+    #[default]
+    Intensity,
+    LabelHash,
+}
+
+impl ColorMode {
+    /// Encoding shared with the shader's `color_mode` uniform.
+    pub fn as_u32(self) -> u32 {
+        match self {
+            ColorMode::Intensity => 0,
+            ColorMode::LabelHash => 1,
+        }
+    }
+}
+
 /// Base trait for all visual objects that can be rendered in a scene
 #[cfg(not(target_arch = "wasm32"))]
 pub trait Visual: Send + Sync + Any {

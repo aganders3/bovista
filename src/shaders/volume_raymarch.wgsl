@@ -47,10 +47,12 @@ struct VTUniforms {
     page_table_width: u32,
     target_lod: u32,
     desired_t: u32,
-    // Mirror of the Rust VTUniforms: opacity + 3 pad keep `lods` 16-byte aligned.
+    // Mirror of the Rust VTUniforms: opacity + color_mode + label_seed + 1 pad
+    // keep `lods` 16-byte aligned. color_mode/label_seed are Image/Labels-only
+    // and unused by the volume shader.
     opacity: f32,
-    _pad_op0: f32,
-    _pad_op1: f32,
+    color_mode: u32,
+    label_seed: f32,
     _pad_op2: f32,
     lods: array<VTLodInfo, 16>,
 }

@@ -199,7 +199,7 @@ mod tests {
     }
 
     impl Visual for DummyVisual {
-        fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
+        fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _camera_info: &crate::visual::CameraInfo) {}
         fn render(&self, _render_pass: &mut RenderPass) {}
         fn set_transform(&mut self, transform: Transform) {
             self.transform = transform;
