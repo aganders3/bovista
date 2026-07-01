@@ -631,3 +631,122 @@ fn fs_iso(in: VertexOutput) -> @location(0) vec4<f32> {
     let specular = 0.3 * spec * vec3f(1.0);
     return encode_srgb(vec4f((ambient + diffuse + specular) * vol.opacity, vol.opacity));
 }
+
+// ── Mode: label isosurface ───────────────────────────────────────────────────
+// First-hit surface of a segmentation, colored per label. Identical march to
+// fs_iso but: the surface is "any nonzero label" (not a contrast threshold),
+// the normal comes from the *binary foreground mask* (the raw ID field has no
+// meaningful gradient across categories), and the surface color is a hash of
+// the hit label's ID into the categorical colormap.
+
+// Integer label ID → stable coordinate in [0, 1) (mirror of virtual_tile.wgsl).
+fn hash01(id: u32, seed: u32) -> f32 {
+    var h = id * 747796405u + seed * 2891336453u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    return f32(h) * (1.0 / 4294967296.0);
+}
+
+// 1.0 where a nonzero, resident label sits; 0.0 otherwise (background /
+// not-resident). This binary mask is the field whose gradient is the segment's
+// surface normal.
+fn sample_foreground(vol_uv: vec3f) -> f32 {
+    let r = sample_vvt(vol_uv);
+    return select(0.0, 1.0, r.y >= 0.0 && r.x >= 0.5);
+}
+
+// Sobel-Feldman gradient of the foreground mask (see sobel_gradient; same
+// weights, but samples the 0/1 label mask instead of the contrast field).
+fn sobel_gradient_mask(loc: vec3f, step: vec3f) -> vec3f {
+    var G = vec3f(0.0);
+    for (var i = -1; i <= 1; i++) {
+        for (var j = -1; j <= 1; j++) {
+            for (var k = -1; k <= 1; k++) {
+                if (i == 0 && j == 0 && k == 0) { continue; }
+                let sample_loc = loc + vec3f(f32(i), f32(j), f32(k)) * step;
+                let val = sample_foreground(sample_loc);
+                let on_axis_x = f32(j == 0 && k == 0);
+                let face_x    = f32(j == 0 || k == 0);
+                let wx = f32(-i) * (1.0 + face_x + 2.0 * on_axis_x);
+                let on_axis_y = f32(i == 0 && k == 0);
+                let face_y    = f32(i == 0 || k == 0);
+                let wy = f32(-j) * (1.0 + face_y + 2.0 * on_axis_y);
+                let on_axis_z = f32(i == 0 && j == 0);
+                let face_z    = f32(i == 0 || j == 0);
+                let wz = f32(-k) * (1.0 + face_z + 2.0 * on_axis_z);
+                G += val * vec3f(wx, wy, wz);
+            }
+        }
+    }
+    return G;
+}
+
+@fragment
+fn fs_label_iso(in: VertexOutput) -> @location(0) vec4<f32> {
+    let s = setup_ray(in.world_pos);
+    if !s.hit { discard; }
+
+    var t = s.t_start;
+    var t_prev = t;
+    var hit_t = -1.0;
+
+    loop {
+        if t >= s.t_exit { break; }
+        let world_p = s.ray_origin + s.ray_dir * t;
+        let vol_uv  = clamp((world_p - vol.vol_min) / s.vol_extent, vec3f(0.0), vec3f(1.0));
+        let result  = sample_vvt(vol_uv);
+        let raw     = result.x;
+        let lod_f   = result.y;
+        let advance = compute_advance(lod_f, s.step_size, vol_uv, s.ray_dir,
+                                       s.vol_extent, s.inv_tile0_scale_x);
+
+        if lod_f >= 0.0 {
+            // Any nonzero label is a surface (labels are exact integers ≥ 1).
+            if raw >= 0.5 {
+                hit_t = t;
+                break;
+            }
+            t_prev = t;
+        }
+        t += advance;
+    }
+
+    if hit_t < 0.0 { discard; }
+
+    // Bisection on the foreground mask crossing (background → label).
+    var lo = t_prev;
+    var hi = hit_t;
+    for (var i = 0; i < 3; i++) {
+        let mid = 0.5 * (lo + hi);
+        let p   = s.ray_origin + s.ray_dir * mid;
+        let uv  = clamp((p - vol.vol_min) / s.vol_extent, vec3f(0.0), vec3f(1.0));
+        if sample_foreground(uv) >= 0.5 { hi = mid; } else { lo = mid; }
+    }
+    let surface_t  = hi;
+    let surface_p  = s.ray_origin + s.ray_dir * surface_t;
+    let surface_uv = clamp((surface_p - vol.vol_min) / s.vol_extent, vec3f(0.0), vec3f(1.0));
+
+    // Normal from the binary-mask gradient (outward = −∇mask, high inside).
+    let surface_center = sample_vvt(surface_uv);
+    let lod_i  = max(i32(surface_center.y), 0);
+    let voxel  = lod_voxel_size_uv(lod_i);
+    let grad   = sobel_gradient_mask(surface_uv, voxel);
+    let glen   = length(grad);
+    let normal = select(vec3f(0.0, 0.0, 1.0), grad / glen, glen > 1e-6);
+
+    // Color by the hit label's ID, hashed into the categorical colormap.
+    let id    = u32(round(max(surface_center.x, 0.0)));
+    let base  = sample_colormap(hash01(id, bitcast<u32>(vt.label_seed))).rgb;
+
+    // Phong: headlight + ambient (same as fs_iso, tinted by the label color).
+    let view  = -s.ray_dir;
+    let light = view;
+    let ndotl = max(dot(normal, light), 0.0);
+    let refl  = reflect(-light, normal);
+    let spec  = pow(max(dot(refl, view), 0.0), 32.0);
+
+    let ambient  = 0.3 * base;
+    let diffuse  = 0.7 * ndotl * base;
+    let specular = 0.2 * spec * vec3f(1.0);
+    return encode_srgb(vec4f((ambient + diffuse + specular) * vol.opacity, vol.opacity));
+}

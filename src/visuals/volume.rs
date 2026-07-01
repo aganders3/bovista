@@ -20,6 +20,8 @@ enum VolumeRenderMode {
     Minip,
     Average,
     Iso,
+    /// First-hit isosurface of a segmentation, colored per label.
+    LabelIso,
 }
 
 impl VolumeRenderMode {
@@ -30,6 +32,7 @@ impl VolumeRenderMode {
             Self::Minip         => "fs_minip",
             Self::Average       => "fs_average",
             Self::Iso           => "fs_iso",
+            Self::LabelIso      => "fs_label_iso",
         }
     }
 }
@@ -118,6 +121,9 @@ pub struct VolumeCore {
     relative_step_size: f32,
     blend_mode: BlendMode,
     opacity: f32,
+    /// Reshuffle seed for the LabelIso mode's ID→color hash. Unused by the
+    /// intensity modes; written into `VTUniforms.label_seed` each frame.
+    label_seed: f32,
     frame_number: u64,
 
     transform: Transform,
@@ -392,6 +398,7 @@ impl VolumeCore {
             VolumeRenderMode::Minip         => "MinipVolume",
             VolumeRenderMode::Average       => "AverageVolume",
             VolumeRenderMode::Iso           => "IsosurfaceVolume",
+            VolumeRenderMode::LabelIso      => "LabelVolume",
         };
 
         Self {
@@ -410,6 +417,7 @@ impl VolumeCore {
             relative_step_size: 1.0,
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
+            label_seed: 0.0,
             frame_number: 0,
             transform: Transform::identity(),
             visible: true,
@@ -495,10 +503,11 @@ impl VolumeCore {
             // shader reads `vol.opacity`); this field is unused by the volume
             // shader but kept consistent.
             opacity: self.opacity,
-            // color_mode/label_seed are Image/Labels-only (the volume shader
-            // ignores them); kept zeroed so the shared struct layout matches.
+            // color_mode is Image/Labels-only; the volume shader picks its path
+            // by fragment entry, not this flag. label_seed feeds fs_label_iso's
+            // ID→color hash (0 for the intensity modes).
             color_mode: 0,
-            label_seed: 0.0,
+            label_seed: self.label_seed,
             _pad_op2: 0.0,
             lods,
         };
@@ -553,6 +562,7 @@ impl VolumeCore {
     pub fn blend_mode(&self) -> BlendMode { self.blend_mode }
     pub fn set_opacity(&mut self, opacity: f32) { self.opacity = opacity.clamp(0.0, 1.0); }
     pub fn opacity(&self) -> f32 { self.opacity }
+    pub fn set_label_seed(&mut self, seed: f32) { self.label_seed = seed; }
 
     /// Upload a 256-entry RGBA colormap (1024 bytes, values 0–255).
     /// An empty or wrong-length slice resets to the default grayscale.
@@ -836,3 +846,38 @@ impl_volume_visual!(IsosurfaceVolume, |me| VolumeUniformExtras {
     iso_threshold: me.iso_threshold,
     ..VolumeUniformExtras::default()
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+
+/// 3D segmentation-mask visual: first-hit isosurface of "any nonzero label",
+/// shaded via the label's binary-mask surface and colored by hashing its
+/// integer ID into a categorical palette (napari's 3D-labels behavior). Label
+/// tiles are packed raw-magnitude (see the label bindings), never normalized.
+pub struct LabelVolume {
+    core: VolumeCore,
+}
+
+impl LabelVolume {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        lod_levels: Vec<LodLevelConfig>,
+        max_tiles: usize,
+        atlas_count: usize,
+    ) -> Self {
+        let mut core = VolumeCore::new(
+            device, queue, surface_format, camera_bind_group_layout,
+            lod_levels, max_tiles, atlas_count, VolumeRenderMode::LabelIso,
+        );
+        core.set_colormap(&crate::visuals::label_colors::categorical_colormap());
+        Self { core }
+    }
+
+    /// Reshuffle the label→color mapping (napari "shuffle colors").
+    pub fn set_label_seed(&mut self, seed: f32) { self.core.set_label_seed(seed); }
+}
+
+impl_common_volume_methods!(LabelVolume);
+impl_volume_visual!(LabelVolume, |_me| VolumeUniformExtras::default());
