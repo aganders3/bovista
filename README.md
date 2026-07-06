@@ -132,7 +132,7 @@ src/
     virtual_texture.rs      — VirtualTextureData: atlas, page table, LOD
     atlas.rs                — AtlasAllocator: 3D texture atlas
     page_table.rs           — PageTable: 2D-array indirection texture
-    gpu_structs.rs          — TileKey, TileData, TileLoaderFn, vertex/uniform structs
+    gpu_structs.rs          — TileKey, TileData, vertex/uniform structs
     points.rs               — Points
     lines.rs                — Lines
     custom.rs               — Custom (user-defined shaders)
@@ -160,10 +160,10 @@ examples/
 
 ### Rendering pipeline (both Image and the Volume modes)
 
-Both renderers share the same virtual texture back-end:
+Both renderers share the same virtual texture back-end. Loading is **pull-based** — the engine publishes what it wants and the app pushes tiles back; there is no engine callback on the hot path:
 
-1. **`VirtualTextureData::prepare()`** — per-frame LOD selection based on screen-space error; requests missing tiles via the loader callback
-2. **Loader callback** (Python thread pool or JS fetch) — loads tile data asynchronously and calls `set_chunk_data_u16()` to push bytes into the pending queue
+1. **`VirtualTextureData::prepare()`** — per-frame LOD selection based on screen-space error; publishes the missing tiles to the `wanted` set (with priorities)
+2. **Loader** (Python thread pool or JS fetch) — polls `wanted_keys()`, fetches tile data asynchronously, and calls `set_chunk_data_u16()` to push bytes into the pending queue
 3. **`VirtualTextureData::upload_pending()`** — writes arrived tiles into the atlas 3D texture, updates the page table
 4. **`Image::render()`** — single draw call; slice-plane geometry samples the atlas via the page table
 5. **`DirectVolume::render()`** (and the other volume modes) — single draw call; back-face box geometry; fragment shader fires a ray per pixel and composites front-to-back through the atlas

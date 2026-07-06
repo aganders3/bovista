@@ -20,90 +20,81 @@
 //!
 //! - **[`Points`]**: Render point clouds with per-point colors
 //! - **[`Lines`]**: Render line segments and wireframes
-//! - **[`Image`]**: Render 3D volumes with slice plane visualization and on-demand chunk loading
+//! - **[`Image`]**: Slice-plane rendering through a 3D volume (arbitrary orientation)
+//! - **[`DirectVolume`]**, **[`MipVolume`]**, **[`MinipVolume`]**, **[`AverageVolume`]**,
+//!   **[`IsosurfaceVolume`]**: volume ray marching, one visual per rendering mode
 //! - **[`Custom`]**: Base for creating custom visualization types
 //!
-//! ### Chunked Loading System
+//! [`Image`] and the volume visuals share the virtual-texture streaming back-end
+//! (atlas + page table + multi-resolution LOD), so terabyte-scale datasets render
+//! from a fixed VRAM budget regardless of size.
 //!
-//! [`Image`] supports chunked loading with multi-resolution LOD (Level of Detail) for handling
-//! datasets that are too large to fit in memory:
+//! ### Streaming and Loading
 //!
-//! 1. **Spatial Partitioning**: Volume is divided into tiles at multiple LOD levels
-//! 2. **Visibility Culling**: Only visible tiles are loaded based on frustum and LOD selection
-//! 3. **LRU Cache**: Least recently used tiles are evicted when memory limit is reached
-//! 4. **Async Loading**: Tiles are loaded asynchronously via callbacks (typically from Python)
+//! The virtual-texture visuals stream tiles on demand with a **pull-based** loader:
 //!
-//! ## Usage Example
+//! 1. **Spatial partitioning**: the volume is a grid of tiles at multiple LOD levels
+//! 2. **Visibility + LOD selection**: each frame, only the tiles in view at the
+//!    screen-space-appropriate LOD are wanted
+//! 3. **LRU cache**: the atlas is fixed-size; least-recently-used tiles are evicted
+//! 4. **Pull-based loading**: the engine publishes a `wanted` set; the application
+//!    polls it (`wanted_keys()`), fetches the bytes, and pushes them back
+//!    (`set_chunk_data_u16()`). There is no engine callback on the hot path.
 //!
-//! ```rust,no_run
-//! use bovista::{Renderer, Scene, Camera, Points};
+//! ## Usage (native Rust)
 //!
-//! // Initialize renderer with GPU device
+//! ```ignore
+//! use bovista::{Renderer, Scene, Camera};
+//!
 //! let renderer = Renderer::new(device, queue, surface_format).await;
 //! let mut scene = Scene::new();
 //! let camera = Camera::new(aspect_ratio);
 //!
-//! // Create and add visuals
-//! let points = Points::test_cube(&device, &format, &layout, 10);
+//! // Visuals are wrapped for the scene's interior mutability.
 //! scene.add(Arc::new(Mutex::new(points)));
 //!
-//! // Render loop
+//! // Per frame:
 //! renderer.update_camera(&camera);
-//! scene.prepare(&device, &queue);
+//! scene.prepare(&device, &queue, &camera_info);
 //! renderer.render(&scene, &view, &depth_view, clear_color);
 //! ```
 //!
-//! ## Python Bindings
+//! ## Python bindings
 //!
-//! When compiled with the `python` feature, Bovista provides Python bindings via PyO3:
+//! With the `python` feature, Bovista exposes PyO3 bindings. The host toolkit owns
+//! the window and event loop; bovista renders one frame per `render_frame()` call.
 //!
 //! ```python
 //! import bovista as bv
 //! import numpy as np
 //!
-//! # Create the viewer and attach it to a native window handle from your
-//! # toolkit (e.g. Qt's `int(widget.winId())`). The host owns the window and
-//! # event loop; bovista renders one frame per call to `render_frame()`.
 //! viewer = bv.Viewer(800, 600)
-//! viewer.initialize_with_window(handle, width, height)
+//! viewer.initialize_with_window(handle, width, height)  # e.g. int(widget.winId())
 //!
-//! # Add a point cloud
 //! positions = np.random.rand(1000, 1, 3).astype(np.float32)
 //! colors = np.random.rand(1000, 1, 3).astype(np.float32)
 //! points = bv.Points.from_numpy(viewer, positions, colors)
 //! viewer.add(points)
-//!
-//! # Drive rendering from your toolkit's timer / paint callback
 //! viewer.render_frame()
 //! ```
 //!
-//! See `examples/*/python/` for a complete Qt integration.
-//!
-//! ## Remote Zarr Example
-//!
-//! The most advanced usage is loading multiscale OME-Zarr data from remote S3:
+//! ## Streaming OME-Zarr (pull-based loader)
 //!
 //! ```python
-//! import zarr
 //! import bovista as bv
 //!
-//! # Open remote zarr store
-//! store = zarr.open("https://s3.../dataset.zarr", mode="r")
-//! array = store["0"]  # Resolution level 0
+//! # lod_levels: a list of bv.LevelMetadata, finest first.
+//! image = bv.Image(viewer, lod_levels, max_tiles=500)
+//! viewer.add(image)
 //!
-//! # Define tile loader callback
-//! def load_chunk(lod_level, tile_z, tile_y, tile_x):
-//!     tile_data = array[tile_z:tile_z+tz, tile_y:tile_y+ty, tile_x:tile_x+tx]
-//!     return np.array(tile_data, dtype=np.uint8)
-//!
-//! # Create image with chunked loading and multiple LOD levels
-//! image = bv.Image.from_chunked(
-//!     viewer,
-//!     lod_levels=[...],  # List of LevelMetadata for each LOD
-//!     loader=load_chunk,
-//!     max_chunks=500
-//! )
+//! # A worker thread polls the wanted set, fetches tiles, and pushes them back.
+//! # wanted_keys() returns [(lod, t, z, y, x, priority), ...] sorted by priority.
+//! for lod, t, z, y, x, priority in image.wanted_keys():
+//!     data = fetch_tile(lod, t, z, y, x)          # your fetch (zarr / S3 / HTTP)
+//!     image.set_chunk_data_u16(lod, t, z, y, x, data)
 //! ```
+//!
+//! See `examples/*/python/` for complete Qt integrations.
 
 pub mod camera;
 pub mod renderer;
