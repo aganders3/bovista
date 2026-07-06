@@ -35,21 +35,20 @@ type VisualRef = Rc<RefCell<dyn Visual>>;
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use bovista::{Scene, Points};
+/// ```ignore
+/// use bovista::Scene;
 /// use std::sync::{Arc, Mutex};
 ///
 /// let mut scene = Scene::new();
 ///
-/// // Add visuals to the scene
-/// let points = Points::test_cube(&device, &format, &layout, 10);
+/// // Add a visual (wrapped for the scene's interior mutability).
 /// let index = scene.add(Arc::new(Mutex::new(points)));
 ///
-/// // Prepare and render
-/// scene.prepare(&device, &queue);
+/// // Per frame: prepare (updates GPU buffers) then render.
+/// scene.prepare(&device, &queue, &camera_info);
 /// scene.render(&mut render_pass);
 ///
-/// // Remove a visual
+/// // Remove a visual by its insertion index.
 /// scene.remove(index);
 /// ```
 pub struct Scene {

@@ -35,7 +35,7 @@ The **prepare** phase updates GPU resources (buffers, uniforms) before the frame
 | `IsosurfaceVolume` | Iso-surface rendering (`set_iso_threshold`) |
 | `Custom` | User-supplied WGSL shader; Bovista provides the camera bind group and depth buffer |
 
-Volume rendering is split across five classes — one visual per mode, not a single mode-flag class — so each exposes only the parameters that apply to it. `Image` and the volume visuals share the virtual texture system; see [Virtual Textures](./01-philosophy.md).
+Volume rendering is split across five classes — one visual per mode, not a single mode-flag class — so each exposes only the parameters that apply to it. `Image` and the volume visuals share the virtual texture system; see [Virtual Textures](./virtual-textures.md).
 
 ## Adding a New Visual Type
 
