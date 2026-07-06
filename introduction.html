@@ -15,8 +15,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-1bfc6048.js";
+            window.path_to_searchindex_js = "searchindex-416a741f.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-17ace711.js"></script>
+        <script src="toc-6532de03.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -215,7 +215,7 @@ for lod, t, z, y, x, priority in volume.wanted_keys():
 <p>This relies an assumption of TCZYX dimensions, though only single-channel data is currently supported.</p>
 <h3 id="virtual-texture-streaming"><a class="header" href="#virtual-texture-streaming">Virtual Texture Streaming</a></h3>
 <p>The <code>Image</code> and volume visuals share one streaming back-end. The volume is divided into uniform tiles. A 3D texture <strong>atlas</strong> holds the resident tiles; a <strong>page table</strong> (a small 2D-array texture indexed by LOD + tile grid coordinates) maps each virtual tile address to its atlas slot. The fragment shader looks up the page table at runtime; if a tile is missing it falls back to the nearest loaded coarser LOD. The entire volume renders in a <strong>single draw call</strong> — no per-tile state changes.</p>
-<p>Because only the visible tiles are ever resident, the addressable dataset is bounded by indexing rather than memory: up to ~4 billion voxels per axis and many teravoxels overall — ballpark a ~26,000³ volume in the browser and larger on desktop GPUs. This assumes the dataset ships a proper multiscale pyramid and sane chunking — bovista renders large volumes by streaming coarse LODs, so the coarse levels are what make it tractable. In practice you’ll hit your storage and network long before bovista’s limits; see <a href="./01-philosophy.html#limits">Virtual Textures</a> for the specifics.</p>
+<p>Because only the visible tiles are ever resident, the addressable dataset is bounded by indexing rather than memory: up to ~4 billion voxels per axis and many teravoxels overall — ballpark a ~26,000³ volume in the browser and larger on desktop GPUs. This assumes the dataset ships a proper multiscale pyramid and sane chunking — bovista renders large volumes by streaming coarse LODs, so the coarse levels are what make it tractable. In practice you’ll hit your storage and network long before bovista’s limits; see <a href="./virtual-textures.html#limits">Virtual Textures</a> for the specifics.</p>
 
                     </main>
 
@@ -259,7 +259,7 @@ for lod, t, z, y, x, priority in volume.wanted_keys():
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
         <script src="custom-10a296ff.js"></script>
