@@ -19,6 +19,27 @@ pub const MAX_ATLAS_COUNT: usize = 4;
 /// Type alias for pending chunks queue (can be shared across threads)
 pub type PendingChunks = Arc<Mutex<HashMap<TileKey, TileData>>>;
 
+/// Scan a chunk's voxels for (min, max) in the contrast-normalised [0, 1]
+/// range, for the page-table metadata texture so the raymarcher can skip
+/// tiles that can't contribute to the current mode.
+///
+/// Only R16Float is handled; integer atlas formats (labels) land later and
+/// return `(0.0, 1.0)` here — i.e. "never skip" — until then.
+fn compute_tile_min_max(data: &TileData) -> (f32, f32) {
+    if data.format != wgpu::TextureFormat::R16Float || data.data.len() < 2 {
+        return (0.0, 1.0);
+    }
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    // Each voxel is one little-endian f16 (2 bytes).
+    for c in data.data.chunks_exact(2) {
+        let v = half::f16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32();
+        if v < min { min = v; }
+        if v > max { max = v; }
+    }
+    if min.is_infinite() { (0.0, 0.0) } else { (min, max) }
+}
+
 /// Set of tiles bovista currently wants in the atlas, keyed by full
 /// TileKey, value = priority (lower = more urgent). Rebuilt from
 /// scratch at the end of every prepare; loaders read it to decide
@@ -150,6 +171,11 @@ pub struct VirtualTextureData {
 
     // TileKey → (atlas_id, slot)
     pub slot_map: HashMap<TileKey, (u32, u32)>,
+    // TileKey → (min, max) of that tile's contrast-normalised voxels, computed
+    // once at upload. Mirrors `slot_map`'s lifetime (inserted on upload, removed
+    // on eviction) so `refresh_page_table` — which re-points entries without the
+    // tile bytes on hand — can still write correct metadata.
+    tile_minmax: HashMap<TileKey, (f32, f32)>,
     // SPATIAL key (t forced to 0) → (atlas_id, slot) the page table currently
     // points at for that spatial. Two uses, both about gating GPU writes:
     //   1. `refresh_page_table` skips `queue.write_texture` calls for
@@ -304,6 +330,7 @@ impl VirtualTextureData {
             atlas_capacity,
             page_table,
             slot_map: HashMap::new(),
+            tile_minmax: HashMap::new(),
             last_written_slot: HashMap::new(),
             lru_map: HashMap::new(),
             pending_chunks: Arc::new(Mutex::new(HashMap::new())),
@@ -373,6 +400,7 @@ impl VirtualTextureData {
         self.last_written_slot.clear();
         self.slot_map.clear();
         self.lru_map.clear();
+        self.tile_minmax.clear();
         self.wanted.lock().unwrap().clear();
         self.pending_chunks.lock().unwrap().clear();
         for alloc in &mut self.atlas_allocators {
@@ -462,9 +490,12 @@ impl VirtualTextureData {
 
             self.write_tile_to_atlas(queue, atlas_id, slot, &data);
 
+            let (tile_min, tile_max) = compute_tile_min_max(&data);
+            self.tile_minmax.insert(key, (tile_min, tile_max));
+
             let TileKey { lod_level, t, z, y, x } = key;
             if t == self.desired_t {
-                self.page_table.update(queue, lod_level, z, y, x, atlas_id, t, slot);
+                self.page_table.update(queue, lod_level, z, y, x, atlas_id, t, slot, tile_min, tile_max);
                 self.last_written_slot.insert(key.spatial(), (atlas_id, slot));
                 page_table_writes += 1;
             }
@@ -710,8 +741,10 @@ impl VirtualTextureData {
                                 z: spatial.z, y: spatial.y, x: spatial.x };
             let Some(&(atlas_id, slot)) = self.slot_map.get(&key) else { continue; };
             if self.last_written_slot.get(spatial) == Some(&(atlas_id, slot)) { continue; }
+            let (tile_min, tile_max) = self.tile_minmax.get(&key).copied().unwrap_or((0.0, 1.0));
             self.page_table.update(queue,
-                spatial.lod_level, spatial.z, spatial.y, spatial.x, atlas_id, target, slot);
+                spatial.lod_level, spatial.z, spatial.y, spatial.x, atlas_id, target, slot,
+                tile_min, tile_max);
             self.last_written_slot.insert(*spatial, (atlas_id, slot));
             writes += 1;
         }
@@ -767,6 +800,7 @@ impl VirtualTextureData {
             }
             self.slot_map.remove(&vkey);
             self.lru_map.remove(&vkey);
+            self.tile_minmax.remove(&vkey);
             self.atlas_allocators[vatlas as usize].free(vslot);
             let spatial = vkey.spatial();
             if self.last_written_slot.get(&spatial) == Some(&(vatlas, vslot)) {

@@ -371,7 +371,9 @@ pub struct VolumeUniforms {
     /// Per-visual opacity multiplier in [0, 1], applied to the final
     /// (premultiplied) fragment output.
     pub opacity: f32,
-    pub _pad1: f32,
+    /// 1 = enable tile-level empty-space skip (fs_translucent mode 0), 0 = off.
+    /// Runtime toggle so the skip can be A/B-benchmarked within one build.
+    pub skip_empty: u32,
 }
 
 /// Shared uniforms for tile rendering
