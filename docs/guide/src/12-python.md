@@ -11,7 +11,7 @@ uv sync   # builds the Rust extension and installs Python dependencies
 or with maturin directly:
 
 ```bash
-maturin develop --features python --release
+maturin develop --release
 ```
 
 ```python
@@ -286,6 +286,6 @@ def start_loader(volume):
 
 ## Binding structure
 
-The Python bindings live in `src/python.rs`. The `#[visual_methods(VisualType)]` proc-macro (in `bovista-codegen/`) generates the downcast + error-mapping boilerplate for empty-body methods, keeping the binding file focused on constructors and type conversion.
+The Python bindings live in the `bovista-py` crate (`src/lib.rs`). The `#[visual_methods(VisualType)]` proc-macro (in `bovista-codegen/`) generates the downcast + error-mapping boilerplate for empty-body methods, keeping the binding file focused on constructors and type conversion.
 
 The `Arc<Mutex<dyn Visual>>` reference type (`VisualRef`) is shared between the Python wrapper and the `Scene`, so the viewer can call `prepare()` and `render()` without the wrapper holding the lock.

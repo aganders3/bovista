@@ -1,0 +1,29 @@
+[package]
+name = "bovista-py"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Python bindings for the bovista WebGPU volumetric renderer"
+repository = "https://github.com/aganders3/bovista"
+
+[dependencies]
+# Aliased to bovista_core internally so the `#[pymodule] fn bovista` doesn't
+# collide with the dependency crate name. Published crate name stays `bovista`.
+bovista_core = { package = "bovista", path = "../bovista-core" }
+bovista-codegen = { path = "../bovista-codegen" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py311"] }
+numpy = "0.22"
+# `camera_methods` expands to glam::Vec3; wgpu types appear in tile-upload signatures.
+glam = "0.29"
+wgpu = "26"
+# PyViewer builds a wgpu surface from a host window handle and blocks on async init.
+raw-window-handle = "0.6"
+pollster = "0.3"
+
+[lib]
+# Distinct from the core crate's `bovista` lib name to avoid a workspace
+# duplicate-lib collision. maturin renames the built artifact to the module
+# name (`bovista`) via `module-name` in pyproject.toml, and the `#[pymodule]`
+# fn is still named `bovista`, so `import bovista` is unchanged.
+name = "bovista_py"
+crate-type = ["cdylib"]

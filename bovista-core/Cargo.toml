@@ -1,0 +1,56 @@
+[package]
+name = "bovista"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "High-performance WebGPU renderer for terabyte-scale volumetric imaging data"
+repository = "https://github.com/aganders3/bovista"
+
+[dependencies]
+wgpu = "26"
+bytemuck = { version = "1.14", features = ["derive"] }
+glam = "0.29"
+half = "2"
+log = "0.4"
+# std::time::Instant panics on wasm32; web-time is a drop-in that delegates
+# to performance.now() in the browser and to std on native.
+web-time = "1"
+
+# On wasm the scene's render-time diagnostics log through the browser console.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["console"] }
+
+[dev-dependencies]
+# Native interactive examples (examples/*/rust). These are the only things that
+# need a window, an async runtime, or an OME-Zarr loader — the library itself
+# stays free of them so the crates.io build is lean.
+winit = "0.30"
+pollster = "0.3"
+env_logger = "0.11"
+rayon = "1"
+serde_json = "1"
+# OME-Zarr loading for the remote_volume_renderer example. zarrs default features
+# cover filesystem + common codecs (blosc, gzip, zstd, sharding, crc32c); zarrs_http
+# adds a synchronous HTTP store so we can stream remote datasets directly.
+#
+# Note: zarrs_http → reqwest → openssl-sys. On hosts that don't ship libssl-dev,
+# point the build at a prebuilt OpenSSL via OPENSSL_DIR, or set
+# features = ["vendored"] on openssl-sys.
+zarrs = "0.23"
+zarrs_http = "0.3"
+
+[lib]
+crate-type = ["rlib"]
+
+[[example]]
+name = "slice_renderer"
+path = "../examples/slice_renderer/rust/main.rs"
+
+[[example]]
+name = "volume_renderer"
+path = "../examples/volume_renderer/rust/main.rs"
+
+[[example]]
+name = "remote_volume_renderer"
+path = "../examples/remote_volume_renderer/rust/main.rs"

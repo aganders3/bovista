@@ -24,7 +24,11 @@ dependencies = [
 ]
 
 [tool.maturin]
-features = ["pyo3/extension-module", "python"]
+# The pyo3 extension lives in its own workspace crate now (bovista-py). Its lib
+# is named `bovista_py` to avoid colliding with the core `bovista` rlib; maturin
+# renames the built artifact to the module name below, and the `#[pymodule]` fn
+# is still `bovista`, so `import bovista` is unchanged.
+manifest-path = "bovista-py/Cargo.toml"
 module-name = "bovista"
 
 [dependency-groups]
@@ -36,7 +40,12 @@ dev = [
 # Cache keys for automatic Rust rebuilds — include shaders so uv rebuilds on .wgsl changes too
 cache-keys = [
     {file = "Cargo.toml"},
-    {file = "build.rs"},
-    {file = "src/**/*.rs"},
-    {file = "src/**/*.wgsl"},
+    {file = "bovista-core/Cargo.toml"},
+    {file = "bovista-py/Cargo.toml"},
+    {file = "bovista-codegen/Cargo.toml"},
+    {file = "bovista-core/build.rs"},
+    {file = "bovista-core/src/**/*.rs"},
+    {file = "bovista-core/src/**/*.wgsl"},
+    {file = "bovista-py/src/**/*.rs"},
+    {file = "bovista-codegen/src/**/*.rs"},
 ]

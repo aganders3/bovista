@@ -14,20 +14,20 @@ pub enum JsProjectionMode {
     Orthographic = 1,
 }
 
-impl From<JsProjectionMode> for crate::ProjectionMode {
+impl From<JsProjectionMode> for bovista_core::ProjectionMode {
     fn from(mode: JsProjectionMode) -> Self {
         match mode {
-            JsProjectionMode::Perspective => crate::ProjectionMode::Perspective,
-            JsProjectionMode::Orthographic => crate::ProjectionMode::Orthographic,
+            JsProjectionMode::Perspective => bovista_core::ProjectionMode::Perspective,
+            JsProjectionMode::Orthographic => bovista_core::ProjectionMode::Orthographic,
         }
     }
 }
 
-impl From<crate::ProjectionMode> for JsProjectionMode {
-    fn from(mode: crate::ProjectionMode) -> Self {
+impl From<bovista_core::ProjectionMode> for JsProjectionMode {
+    fn from(mode: bovista_core::ProjectionMode) -> Self {
         match mode {
-            crate::ProjectionMode::Perspective => JsProjectionMode::Perspective,
-            crate::ProjectionMode::Orthographic => JsProjectionMode::Orthographic,
+            bovista_core::ProjectionMode::Perspective => JsProjectionMode::Perspective,
+            bovista_core::ProjectionMode::Orthographic => JsProjectionMode::Orthographic,
         }
     }
 }
@@ -64,8 +64,58 @@ use std::cell::RefCell;
 use js_sys::Uint8Array;
 use web_sys::console;
 
-use crate::{
-    bindings_common::{self, VisualRef},
+/// Binding-side glue the generated `Visual` wrappers expand against: the tile
+/// packers (from core, where the correctness-sensitive packing has one home)
+/// plus the wasm `Rc<RefCell>` `VisualRef` and the downcast helpers the
+/// `visual_methods` macro references as `bindings_common::…`. On wasm, wgpu
+/// types aren't `Send`/`Sync`, so the scene uses single-threaded interior
+/// mutability. Trivial and coupled to that macro, so it lives here rather than
+/// in core's public API.
+mod bindings_common {
+    use std::any::Any;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use bovista_core::Visual;
+
+    pub use bovista_core::packing::{
+        pack_u16_label_tile, pack_u16_tile, pack_u8_label_tile, pack_u8_tile,
+    };
+
+    pub type VisualRef = Rc<RefCell<dyn Visual>>;
+
+    pub fn with_visual_mut<T, F, R>(visual_ref: &VisualRef, f: F) -> Result<R, String>
+    where
+        T: Visual + 'static,
+        F: FnOnce(&mut T) -> R,
+    {
+        let mut visual = visual_ref
+            .try_borrow_mut()
+            .map_err(|e| format!("Borrow error: {}", e))?;
+        let visual_any: &mut dyn Any = &mut *visual;
+        visual_any
+            .downcast_mut::<T>()
+            .map(f)
+            .ok_or_else(|| format!("Failed to downcast to {}", std::any::type_name::<T>()))
+    }
+
+    pub fn with_visual_ref<T, F, R>(visual_ref: &VisualRef, f: F) -> Result<R, String>
+    where
+        T: Visual + 'static,
+        F: FnOnce(&T) -> R,
+    {
+        let visual = visual_ref
+            .try_borrow()
+            .map_err(|e| format!("Borrow error: {}", e))?;
+        let visual_any: &dyn Any = &*visual;
+        visual_any
+            .downcast_ref::<T>()
+            .map(f)
+            .ok_or_else(|| format!("Failed to downcast to {}", std::any::type_name::<T>()))
+    }
+}
+use crate::bindings_common::VisualRef;
+use bovista_core::{
     BlendMode, Camera, Image, Labels, Lines, Points, Renderer, Scene, SlicePlane, Visual,
     AverageVolume, DirectVolume, IsosurfaceVolume, LabelVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
@@ -215,7 +265,7 @@ impl JsViewer {
         self.renderer.update_camera(&self.camera);
 
         // Prepare scene (this triggers chunk loading callbacks)
-        let camera_info = crate::visual::CameraInfo {
+        let camera_info = bovista_core::visual::CameraInfo {
             position: self.camera.position,
             target: self.camera.target,
             fov_y: self.camera.fov_y,
@@ -519,7 +569,7 @@ macro_rules! js_vt_visual {
         pub struct $wrapper {
             inner: VisualRef,
             pending_chunks: Option<PendingChunks>,
-            wanted: crate::visuals::virtual_texture::Wanted,
+            wanted: bovista_core::visuals::virtual_texture::Wanted,
         }
 
         #[visual_methods($rust_ty)]
@@ -555,7 +605,7 @@ macro_rules! js_vt_visual {
             /// sorted by priority.
             #[wasm_bindgen(js_name = wantedKeys)]
             pub fn wanted_keys(&self) -> js_sys::Uint32Array {
-                let flat: Vec<u32> = crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
+                let flat: Vec<u32> = bovista_core::visuals::virtual_texture::wanted_sorted(&self.wanted)
                     .into_iter()
                     .flat_map(|(lod, t, z, y, x, p)| [lod as u32, t, z, y, x, p as u32])
                     .collect();

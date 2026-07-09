@@ -39,4 +39,4 @@ Volume rendering is split across five classes — one visual per mode, not a sin
 
 ## Adding a New Visual Type
 
-Implement the `Visual` trait for your struct, constructing it with a `wgpu::Device` reference from `viewer.renderer()`. `src/visuals/points.rs` and `src/visuals/lines.rs` are the simplest examples; `src/visuals/image.rs` shows per-frame GPU updates. All visuals share the camera bind group (`@group(0)`), which `Renderer` sets once per frame before iterating the scene.
+Implement the `Visual` trait for your struct, constructing it with a `wgpu::Device` reference from `viewer.renderer()`. `bovista-core/src/visuals/points.rs` and `lines.rs` are the simplest examples; `image.rs` shows per-frame GPU updates. All visuals share the camera bind group (`@group(0)`), which `Renderer` sets once per frame before iterating the scene.

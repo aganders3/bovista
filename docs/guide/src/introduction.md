@@ -27,7 +27,7 @@ It provides:
 
 ### One Codebase, Multiple Targets
 
-The core library has no Python or browser dependencies. Target-specific code lives in `src/python.rs` and `src/wasm.rs`, which are intended to be thin wrappers.
+The core library (`bovista-core`) has no Python or browser dependencies. Target-specific code lives in the `bovista-py` and `bovista-wasm` crates, thin wrappers over core.
 
 ### Pull-Based Loading
 
