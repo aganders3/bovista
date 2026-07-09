@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     bindings_common::{self, VisualRef},
     BlendMode, Camera, Custom, Image, Labels, Lines, Points, Renderer, Scene, SlicePlane,
-    AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
+    AverageVolume, DirectVolume, IsosurfaceVolume, LabelVolume, MinipVolume, MipVolume,
     VertexBufferLayout, Visual,
 };
 use bovista_codegen::{camera_methods, visual_methods};
@@ -297,6 +297,7 @@ impl PyViewer {
         if let Ok(v) = visual.extract::<PyRef<PyMinipVolume>>()     { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyAverageVolume>>()   { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyIsosurfaceVolume>>(){ return Ok(self.scene.add(v.inner.clone())); }
+        if let Ok(v) = visual.extract::<PyRef<PyLabelVolume>>()     { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(custom) = visual.extract::<PyRef<PyCustom>>() {
             return Ok(self.scene.add(custom.inner.clone()));
         }
@@ -1044,6 +1045,34 @@ py_vt_visual!(PyIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra: {
     fn set_iso_threshold(&self, threshold: f32) -> PyResult<()> {}
 });
 
+// LabelVolume: 3D segmentation as a first-hit isosurface colored per label.
+// Tiles packed raw-magnitude (integer IDs); shares the volume common API.
+py_vt_visual!(@full PyLabelVolume, "LabelVolume", LabelVolume,
+    bindings_common::pack_u16_label_tile, bindings_common::pack_u8_label_tile,
+    extra: {
+        /// Step size in LOD-0 voxels (1.0 = Nyquist at finest LOD).
+        fn set_relative_step_size(&self, step: f32) -> PyResult<()> {}
+        /// Reshuffle the label→color mapping (napari "shuffle colors").
+        fn set_label_seed(&self, seed: f32) -> PyResult<()> {}
+        /// Provide uint16 label tile data (raw integer IDs; exact up to 2048).
+        fn set_label_data_u16(
+            &self,
+            lod_level: usize, t: u32, z: u32, y: u32, x: u32,
+            data: PyReadonlyArray3<u16>,
+        ) -> PyResult<()> {
+            self.set_chunk_data_u16(lod_level, t, z, y, x, data)
+        }
+        /// Provide uint8 label tile data (raw integer IDs).
+        fn set_label_data_u8(
+            &self,
+            lod_level: usize, t: u32, z: u32, y: u32, x: u32,
+            data: PyReadonlyArray3<u8>,
+        ) -> PyResult<()> {
+            self.set_chunk_data_u8(lod_level, t, z, y, x, data)
+        }
+    }
+);
+
 /// Python module definition
 #[pymodule]
 fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1057,6 +1086,7 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMinipVolume>()?;
     m.add_class::<PyAverageVolume>()?;
     m.add_class::<PyIsosurfaceVolume>()?;
+    m.add_class::<PyLabelVolume>()?;
     m.add_class::<PyLevelMetadata>()?;
     m.add_class::<PyCustom>()?;
     m.add_class::<PyVertexBufferLayout>()?;

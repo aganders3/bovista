@@ -67,7 +67,7 @@ use web_sys::console;
 use crate::{
     bindings_common::{self, VisualRef},
     BlendMode, Camera, Image, Labels, Lines, Points, Renderer, Scene, SlicePlane, Visual,
-    AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
+    AverageVolume, DirectVolume, IsosurfaceVolume, LabelVolume, MinipVolume, MipVolume,
     visuals::virtual_texture::{LodLevelConfig, PendingChunks},
     visuals::gpu_structs::TileKey,
     visuals::points::PointVertex,
@@ -300,6 +300,11 @@ impl JsViewer {
 
     #[wasm_bindgen(js_name = addIsosurfaceVolume)]
     pub fn add_isosurface_volume(&mut self, visual: &JsIsosurfaceVolume) -> usize {
+        self.scene.add(visual.get_inner())
+    }
+
+    #[wasm_bindgen(js_name = addLabelVolume)]
+    pub fn add_label_volume(&mut self, visual: &JsLabelVolume) -> usize {
         self.scene.add(visual.get_inner())
     }
 
@@ -785,6 +790,43 @@ js_vt_visual!(JsIsosurfaceVolume, "IsosurfaceVolume", IsosurfaceVolume, extra: {
     pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
     pub fn set_iso_threshold(&self, threshold: f32) -> Result<(), JsValue> {}
 });
+
+// LabelVolume: 3D segmentation as a first-hit isosurface colored per label.
+// Tiles packed raw-magnitude (integer IDs).
+js_vt_visual!(@full JsLabelVolume, "LabelVolume", LabelVolume,
+    bindings_common::pack_u16_label_tile, bindings_common::pack_u8_label_tile,
+    extra: {
+        pub fn set_relative_step_size(&self, step: f32) -> Result<(), JsValue> {}
+
+        /// Reshuffle the label→color mapping (napari "shuffle colors").
+        #[wasm_bindgen(js_name = setLabelSeed)]
+        pub fn set_label_seed(&self, seed: f32) -> Result<(), JsValue> {}
+
+        /// Provide uint16 label tile data (raw integer IDs; exact up to 2048).
+        #[wasm_bindgen(js_name = setLabelDataU16)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn set_label_data_u16(
+            &self,
+            lod: usize, t: u32, z: u32, y: u32, x: u32,
+            data: &js_sys::Uint16Array,
+            z_shape: u32, y_shape: u32, x_shape: u32,
+        ) {
+            self.set_chunk_data_u16(lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+        }
+
+        /// Provide uint8 label tile data (raw integer IDs).
+        #[wasm_bindgen(js_name = setLabelDataU8)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn set_label_data_u8(
+            &self,
+            lod: usize, t: u32, z: u32, y: u32, x: u32,
+            data: &js_sys::Uint8Array,
+            z_shape: u32, y_shape: u32, x_shape: u32,
+        ) {
+            self.set_chunk_data_u8(lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+        }
+    }
+);
 
 /// JavaScript wrapper for Points — colored point cloud.
 #[wasm_bindgen(js_name = "Points")]
