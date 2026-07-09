@@ -24,18 +24,18 @@ else
     WASM_BINDGEN="$HOME/.cargo/bin/wasm-bindgen"
 fi
 
-# Build for wasm32
+# Build for wasm32 (the wasm binding crate; its lib is named bovista_wasm)
 echo "📦 Compiling to WebAssembly..."
-cargo build --lib --target wasm32-unknown-unknown --release
+cargo build -p bovista-wasm --lib --target wasm32-unknown-unknown --release
 
-# Generate JS bindings
+# Generate JS bindings — output name stays `bovista` so examples import bovista.js
 echo "🔗 Generating JavaScript bindings..."
 $WASM_BINDGEN \
     --out-dir $OUTPUT_DIR \
     --out-name $OUTPUT_NAME \
     --target web \
     --no-typescript \
-    target/wasm32-unknown-unknown/release/bovista.wasm
+    target/wasm32-unknown-unknown/release/bovista_wasm.wasm
 
 echo ""
 echo "✅ Build complete!"

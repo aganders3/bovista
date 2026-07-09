@@ -1,0 +1,34 @@
+[package]
+name = "bovista-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "WebAssembly bindings for the bovista WebGPU volumetric renderer"
+repository = "https://github.com/aganders3/bovista"
+
+[dependencies]
+# Aliased to bovista_core internally for symmetry with bovista-py. Published
+# crate name stays `bovista`.
+bovista_core = { package = "bovista", path = "../bovista-core" }
+bovista-codegen = { path = "../bovista-codegen" }
+wasm-bindgen = "0.2"
+# Referenced by the #[wasm_bindgen] expansion of async methods (JsViewer::new).
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlCanvasElement",
+    "console",
+] }
+console_error_panic_hook = "0.1"
+# `camera_methods` expands to glam::Vec3; wgpu types appear in tile-upload signatures.
+glam = "0.29"
+wgpu = "26"
+
+[lib]
+# Distinct from the core crate's `bovista` lib name (see bovista-py). build_wasm.sh
+# points wasm-bindgen at bovista_wasm.wasm and emits JS under the name `bovista`.
+name = "bovista_wasm"
+crate-type = ["cdylib"]

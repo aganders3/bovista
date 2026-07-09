@@ -12,8 +12,51 @@ use pyo3::prelude::*;
 use numpy::PyReadonlyArray3;
 use std::sync::{Arc, Mutex};
 
-use crate::{
-    bindings_common::{self, VisualRef},
+/// Binding-side glue the generated `Visual` wrappers expand against: the tile
+/// packers (from core, where the correctness-sensitive packing has one home)
+/// plus the native `Arc<Mutex>` `VisualRef` and the downcast helpers the
+/// `visual_methods` macro references as `bindings_common::…`. Trivial and
+/// coupled to that macro, so it lives here rather than in core's public API.
+mod bindings_common {
+    use std::any::Any;
+    use std::sync::{Arc, Mutex};
+
+    use bovista_core::Visual;
+
+    pub use bovista_core::packing::{
+        pack_u16_label_tile, pack_u16_tile, pack_u8_label_tile, pack_u8_tile,
+    };
+
+    pub type VisualRef = Arc<Mutex<dyn Visual>>;
+
+    pub fn with_visual_mut<T, F, R>(visual_ref: &VisualRef, f: F) -> Result<R, String>
+    where
+        T: Visual + 'static,
+        F: FnOnce(&mut T) -> R,
+    {
+        let mut visual = visual_ref.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let visual_any: &mut dyn Any = &mut *visual;
+        visual_any
+            .downcast_mut::<T>()
+            .map(f)
+            .ok_or_else(|| format!("Failed to downcast to {}", std::any::type_name::<T>()))
+    }
+
+    pub fn with_visual_ref<T, F, R>(visual_ref: &VisualRef, f: F) -> Result<R, String>
+    where
+        T: Visual + 'static,
+        F: FnOnce(&T) -> R,
+    {
+        let visual = visual_ref.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let visual_any: &dyn Any = &*visual;
+        visual_any
+            .downcast_ref::<T>()
+            .map(f)
+            .ok_or_else(|| format!("Failed to downcast to {}", std::any::type_name::<T>()))
+    }
+}
+use crate::bindings_common::VisualRef;
+use bovista_core::{
     BlendMode, Camera, Custom, Image, Labels, Lines, Points, Renderer, Scene, SlicePlane,
     AverageVolume, DirectVolume, IsosurfaceVolume, LabelVolume, MinipVolume, MipVolume,
     VertexBufferLayout, Visual,
@@ -30,20 +73,20 @@ pub enum PyProjectionMode {
     Orthographic = 1,
 }
 
-impl From<PyProjectionMode> for crate::ProjectionMode {
+impl From<PyProjectionMode> for bovista_core::ProjectionMode {
     fn from(mode: PyProjectionMode) -> Self {
         match mode {
-            PyProjectionMode::Perspective => crate::ProjectionMode::Perspective,
-            PyProjectionMode::Orthographic => crate::ProjectionMode::Orthographic,
+            PyProjectionMode::Perspective => bovista_core::ProjectionMode::Perspective,
+            PyProjectionMode::Orthographic => bovista_core::ProjectionMode::Orthographic,
         }
     }
 }
 
-impl From<crate::ProjectionMode> for PyProjectionMode {
-    fn from(mode: crate::ProjectionMode) -> Self {
+impl From<bovista_core::ProjectionMode> for PyProjectionMode {
+    fn from(mode: bovista_core::ProjectionMode) -> Self {
         match mode {
-            crate::ProjectionMode::Perspective => PyProjectionMode::Perspective,
-            crate::ProjectionMode::Orthographic => PyProjectionMode::Orthographic,
+            bovista_core::ProjectionMode::Perspective => PyProjectionMode::Perspective,
+            bovista_core::ProjectionMode::Orthographic => PyProjectionMode::Orthographic,
         }
     }
 }
@@ -342,7 +385,7 @@ impl PyViewer {
         renderer.update_camera(&self.camera);
 
         // Build CameraInfo for visuals that need LOD selection / culling
-        let camera_info = crate::visual::CameraInfo {
+        let camera_info = bovista_core::visual::CameraInfo {
             position: self.camera.position,
             target: self.camera.target,
             fov_y: self.camera.fov_y,
@@ -463,7 +506,7 @@ impl PyPoints {
         let mut vertices = Vec::with_capacity(n_points);
 
         for i in 0..n_points {
-            vertices.push(crate::visuals::points::PointVertex {
+            vertices.push(bovista_core::visuals::points::PointVertex {
                 position: [pos_array[[i, 0, 0]], pos_array[[i, 0, 1]], pos_array[[i, 0, 2]]],
                 color: [col_array[[i, 0, 0]], col_array[[i, 0, 1]], col_array[[i, 0, 2]]],
             });
@@ -589,8 +632,8 @@ impl PyLevelMetadata {
 }
 
 impl PyLevelMetadata {
-    fn to_lod_level_config(&self) -> crate::visuals::virtual_texture::LodLevelConfig {
-        crate::visuals::virtual_texture::LodLevelConfig {
+    fn to_lod_level_config(&self) -> bovista_core::visuals::virtual_texture::LodLevelConfig {
+        bovista_core::visuals::virtual_texture::LodLevelConfig {
             volume_size: self.volume_size,
             tile_size: self.chunk_size,
             voxel_size: self.voxel_size,
@@ -721,7 +764,7 @@ impl PyVertexBufferLayout {
 
 impl PyVertexBufferLayout {
     fn into_rust(self) -> VertexBufferLayout {
-        use crate::visual::VertexFormat;
+        use bovista_core::visual::VertexFormat;
 
         let attributes = self.attributes.into_iter().map(|(location, format_str, _offset)| {
             let format = match format_str.to_lowercase().as_str() {
@@ -731,7 +774,7 @@ impl PyVertexBufferLayout {
                 "float32x4" => VertexFormat::Float32x4,
                 _ => panic!("Unknown vertex format: {}", format_str),
             };
-            crate::visual::VertexAttribute {
+            bovista_core::visual::VertexAttribute {
                 name: format!("attr_{}", location),
                 format,
                 location,
@@ -784,8 +827,8 @@ macro_rules! py_vt_visual {
         #[pyclass(name = $py_name)]
         pub struct $wrapper {
             pub(crate) inner: VisualRef,
-            pending_chunks: crate::visuals::virtual_texture::PendingChunks,
-            wanted: crate::visuals::virtual_texture::Wanted,
+            pending_chunks: bovista_core::visuals::virtual_texture::PendingChunks,
+            wanted: bovista_core::visuals::virtual_texture::Wanted,
         }
 
         impl PyVisualWrapper for $wrapper {
@@ -834,7 +877,7 @@ macro_rules! py_vt_visual {
             /// Returned as `[(lod, t, z, y, x, priority), ...]` sorted by
             /// priority (lower = more urgent; 0 = current t, positive = prefetch).
             fn wanted_keys(&self) -> Vec<(usize, u32, u32, u32, u32, i32)> {
-                crate::visuals::virtual_texture::wanted_sorted(&self.wanted)
+                bovista_core::visuals::virtual_texture::wanted_sorted(&self.wanted)
             }
 
             fn set_contrast(&self, min: f32, max: f32) -> PyResult<()> {
@@ -884,7 +927,7 @@ macro_rules! py_vt_visual {
                     a.shape()[0] as u32, a.shape()[1] as u32, a.shape()[2] as u32,
                 );
                 self.pending_chunks.lock().unwrap()
-                    .insert(crate::visuals::gpu_structs::TileKey { lod_level, t, z, y, x }, tile);
+                    .insert(bovista_core::visuals::gpu_structs::TileKey { lod_level, t, z, y, x }, tile);
                 Ok(())
             }
 
@@ -900,7 +943,7 @@ macro_rules! py_vt_visual {
                     a.shape()[0] as u32, a.shape()[1] as u32, a.shape()[2] as u32,
                 );
                 self.pending_chunks.lock().unwrap()
-                    .insert(crate::visuals::gpu_structs::TileKey { lod_level, t, z, y, x }, tile);
+                    .insert(bovista_core::visuals::gpu_structs::TileKey { lod_level, t, z, y, x }, tile);
                 Ok(())
             }
 

@@ -2,14 +2,14 @@
 
 Volumetric datasets routinely dwarf VRAM — light-sheet and whole-brain imaging reach tens of terabytes, and 4D time-series go further. Bovista renders them by streaming through a **virtual texture**: the volume is divided into tiles at multiple LOD levels, and only the visible ones — typically tens resident out of millions virtual — ever reach the GPU. VRAM stays fixed (a bounded atlas with LRU eviction) regardless of dataset size, so terabyte-scale data renders interactively straight from remote storage (S3 / Zarr / HTTP).
 
-This back-end (`src/visuals/virtual_texture.rs`) is shared by `Image` (slice rendering) and the volume visuals (`DirectVolume`, `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume`). `Points`, `Lines`, and `Custom` visuals don't use it.
+This back-end (`bovista-core/src/visuals/virtual_texture.rs`) is shared by `Image` (slice rendering) and the volume visuals (`DirectVolume`, `MipVolume`, `MinipVolume`, `AverageVolume`, `IsosurfaceVolume`). `Points`, `Lines`, and `Custom` visuals don't use it.
 
 ## Atlas and Page Table
 
 The full volume is logically a grid of uniform tiles at each LOD, but only resident tiles live on the GPU. Two textures implement the indirection:
 
 - **Atlas** (`AtlasAllocator` + 3D `wgpu::Texture`) — a fixed-size 3D texture holding all resident tiles in a uniform grid of slots, sized at creation from `max_tiles` and the finest LOD's tile size. When it fills, the least-recently-used slot is evicted.
-- **Page table** (`PageTable` + 2D-array `wgpu::Texture`; `src/visuals/page_table.rs`) — a small integer texture with one layer per LOD. Each texel holds an atlas slot index (resident) or a sentinel (absent). The shader reads it at runtime to locate a tile — or learn it's absent and fall back to a coarser LOD.
+- **Page table** (`PageTable` + 2D-array `wgpu::Texture`; `bovista-core/src/visuals/page_table.rs`) — a small integer texture with one layer per LOD. Each texel holds an atlas slot index (resident) or a sentinel (absent). The shader reads it at runtime to locate a tile — or learn it's absent and fall back to a coarser LOD.
 
 ```
 Virtual address:  (lod, z_tile, y_tile, x_tile)

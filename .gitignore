@@ -4,7 +4,8 @@
 __pycache__/
 *.pyc
 .DS_Store
-web/pkg/
+# Generated wasm-bindgen bundle (produced by ./build_wasm.sh)
+examples/pkg/
 TODO.txt
 /*.md
 .claude/

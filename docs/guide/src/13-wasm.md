@@ -198,7 +198,7 @@ requestAnimationFrame(frame);
 
 ## Binding structure
 
-The WASM bindings live in `src/wasm.rs`. As with Python, `#[visual_methods(VisualType)]` generates the downcast + error-mapping boilerplate for empty-body methods. `bindings_common.rs` provides `with_visual_ref` / `with_visual_mut` helpers that work with either `Arc<Mutex<>>` (native) or `Rc<RefCell<>>` (WASM) via a conditional type alias.
+The WASM bindings live in the `bovista-wasm` crate (`src/lib.rs`). As with Python, `#[visual_methods(VisualType)]` generates the downcast + error-mapping boilerplate for empty-body methods. It expands against a small inline `bindings_common` module in each binding: the type-erased `VisualRef` and `with_visual_ref` / `with_visual_mut` helpers — `bovista-wasm` uses `Rc<RefCell<>>` (single-threaded, since wgpu types aren't `Send`/`Sync` on wasm) where `bovista-py` uses `Arc<Mutex<>>`. Both pull the correctness-sensitive tile packers from `bovista::packing` in core.
 
 ## Browser requirements
 

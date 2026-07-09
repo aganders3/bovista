@@ -116,33 +116,42 @@ Pass `--help`-style flags such as `--zarr`, `--lod-bias`, `--contrast-min/--cont
 
 ## Architecture
 
-The core library is platform-agnostic Rust. Bindings add a thin layer at the edges.
+The workspace is one platform-agnostic core renderer plus three thin binding
+crates — the "one engine, many frontends" layout, so each target can publish to
+its own registry.
 
 ```
-src/
-  lib.rs                    — crate root, public API
-  renderer.rs               — wgpu device/queue, render pass
-  camera.rs                 — orbit controls, frustum, projection
-  scene.rs                  — collection of visuals
-  visual.rs                 — Visual trait
-  bindings_common.rs        — shared Python/WASM binding logic
-  visuals/
-    image.rs                — Image: slice-plane rendering
-    volume.rs               — DirectVolume/MipVolume/MinipVolume/AverageVolume/IsosurfaceVolume: ray marching DVR
-    virtual_texture.rs      — VirtualTextureData: atlas, page table, LOD
-    atlas.rs                — AtlasAllocator: 3D texture atlas
-    page_table.rs           — PageTable: 2D-array indirection texture
-    gpu_structs.rs          — TileKey, TileData, vertex/uniform structs
-    points.rs               — Points
-    lines.rs                — Lines
-    custom.rs               — Custom (user-defined shaders)
-  shaders/
-    virtual_tile.wgsl       — slice shader (reads from atlas via page table)
-    volume_raymarch.wgsl    — ray marching DVR shader
-    point_cloud.wgsl
-    lines.wgsl
-  python.rs                 — PyO3 bindings (Viewer, Image, Volume, Lines, ...)
-  wasm.rs                   — wasm-bindgen bindings
+bovista-core/               — platform-agnostic Rust renderer (crates.io: bovista)
+  src/
+    lib.rs                  — crate root, public API
+    renderer.rs             — wgpu device/queue, render pass
+    camera.rs               — orbit controls, frustum, projection
+    scene.rs                — collection of visuals
+    visual.rs               — Visual trait
+    packing.rs              — tile packing helpers shared by the bindings
+    visuals/
+      image.rs              — Image: slice-plane rendering
+      volume.rs             — DirectVolume/MipVolume/MinipVolume/AverageVolume/IsosurfaceVolume: ray marching DVR
+      virtual_texture.rs    — VirtualTextureData: atlas, page table, LOD
+      atlas.rs              — AtlasAllocator: 3D texture atlas
+      page_table.rs         — PageTable: 2D-array indirection texture
+      gpu_structs.rs        — TileKey, TileData, vertex/uniform structs
+      points.rs             — Points
+      lines.rs              — Lines
+      custom.rs             — Custom (user-defined shaders)
+    shaders/
+      virtual_tile.wgsl     — slice shader (reads from atlas via page table)
+      volume_raymarch.wgsl  — ray marching DVR shader
+      point_cloud.wgsl
+      lines.wgsl
+
+bovista-py/                 — PyO3 bindings (PyPI: bovista, built with maturin)
+  src/lib.rs                — Viewer, Image, Volume, Lines, ... (+ inline binding glue)
+
+bovista-wasm/               — wasm-bindgen bindings (NPM), built via ./build_wasm.sh
+  src/lib.rs
+
+bovista-codegen/            — proc macros generating binding boilerplate
 
 examples/
   slice_renderer/             — arbitrary-orientation slice plane
@@ -271,8 +280,8 @@ cargo build
 # Build the WASM bindings (outputs to examples/pkg/)
 ./build_wasm.sh
 
-# Build the Python extension in dev mode
-uv run maturin develop --features python
+# Build the Python extension in dev mode (builds the bovista-py crate)
+uv run maturin develop
 
 # Build and serve the mdBook docs
 ./serve_docs.sh

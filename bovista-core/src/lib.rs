@@ -103,14 +103,8 @@ pub mod spatial;
 pub mod visual;
 pub mod visuals;
 
-// Shared utilities for bindings
-pub mod bindings_common;
-
-#[cfg(feature = "python")]
-pub mod python;
-
-#[cfg(target_arch = "wasm32")]
-pub mod wasm;
+// Tile packing helpers shared by the Python and WASM binding crates.
+pub mod packing;
 
 pub use camera::{Camera, FrustumPlanes, ProjectionMode};
 pub use renderer::{CameraUniforms, Renderer};
