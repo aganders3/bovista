@@ -1,7 +1,7 @@
 // Force recompilation when any shader file changes.
 const _SHADER_HASH: &str = env!("SHADER_HASH");
 
-use crate::visual::{BlendMode, Transform, Visual};
+use crate::visual::{BlendMode, ColorMode, Transform, Visual};
 use crate::visuals::virtual_texture::{LodLevelConfig, PendingChunks, VirtualTextureData};
 use crate::visuals::gpu_structs::{ADDITIVE_BLENDING, TileVertex, VTUniforms, VTLodInfo, VT_MAX_LODS};
 use wgpu::RenderPass;
@@ -106,6 +106,8 @@ pub struct Image {
     contrast_limits: (f32, f32),
     debug_mode: bool,
     blend_mode: BlendMode,
+    color_mode: ColorMode,
+    label_seed: f32,
     opacity: f32,
     frame_number: u64,
 
@@ -378,6 +380,8 @@ impl Image {
             contrast_limits: (0.0, 1.0),
             debug_mode: false,
             blend_mode: BlendMode::Normal,
+            color_mode: ColorMode::Intensity,
+            label_seed: 0.0,
             opacity: 1.0,
             frame_number: 0,
             transform: Transform::identity(),
@@ -461,6 +465,18 @@ impl Image {
     /// Enable or disable debug LOD tinting (green=LOD0, red=coarsest)
     pub fn set_debug_mode(&mut self, debug: bool) {
         self.debug_mode = debug;
+    }
+
+    /// Select how atlas samples become colors (Intensity vs LabelHash).
+    /// The `Labels` visual sets this to `LabelHash`; Image leaves it Intensity.
+    pub fn set_color_mode(&mut self, mode: ColorMode) {
+        self.color_mode = mode;
+    }
+
+    /// Reshuffle seed for label hashing (LabelHash mode only). Changing it
+    /// recolors the segmentation without touching the data.
+    pub fn set_label_seed(&mut self, seed: f32) {
+        self.label_seed = seed;
     }
 
     /// Set LOD bias. Positive = prefer higher resolution (finer), negative = prefer lower (coarser).
@@ -583,8 +599,8 @@ impl Visual for Image {
             target_lod: vt.cached_ideal_lod as u32,
             desired_t: vt.desired_t(),
             opacity: self.opacity,
-            _pad_op0: 0.0,
-            _pad_op1: 0.0,
+            color_mode: self.color_mode.as_u32(),
+            label_seed: self.label_seed,
             _pad_op2: 0.0,
             lods,
         };

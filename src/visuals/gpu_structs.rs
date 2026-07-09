@@ -284,10 +284,17 @@ pub struct VTUniforms {
     /// Per-visual opacity multiplier in [0, 1], applied to the final
     /// (premultiplied) fragment output.
     pub opacity: f32,
+    /// Fragment color path: 0 = Intensity (contrast + colormap), 1 = LabelHash
+    /// (integer ID → hashed colormap coordinate, ID 0 transparent). See
+    /// `crate::visual::ColorMode`.
+    pub color_mode: u32,
+    /// Reshuffle seed for `LabelHash` — perturbs the ID→color hash so the same
+    /// segmentation can be recolored (napari's "shuffle colors"). Unused in
+    /// Intensity mode.
+    pub label_seed: f32,
     // Pad the header to a 16-byte boundary so `lods` stays aligned (12 scalars
-    // + opacity + 3 pad = 16 scalars = 64 bytes; 64 mod 16 = 0 ✓).
-    pub _pad_op0: f32,
-    pub _pad_op1: f32,
+    // + opacity + color_mode + label_seed + 1 pad = 16 scalars = 64 bytes;
+    // 64 mod 16 = 0 ✓).
     pub _pad_op2: f32,
     pub lods: [VTLodInfo; VT_MAX_LODS],
 }
@@ -308,8 +315,8 @@ impl Default for VTUniforms {
             target_lod: 0,
             desired_t: 0,
             opacity: 1.0,
-            _pad_op0: 0.0,
-            _pad_op1: 0.0,
+            color_mode: 0,
+            label_seed: 0.0,
             _pad_op2: 0.0,
             lods: [VTLodInfo {
                 grid_dims: [1, 1, 1], _pad: 0,

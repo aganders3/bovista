@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     bindings_common::{self, VisualRef},
-    BlendMode, Camera, Custom, Image, Lines, Points, Renderer, Scene, SlicePlane,
+    BlendMode, Camera, Custom, Image, Labels, Lines, Points, Renderer, Scene, SlicePlane,
     AverageVolume, DirectVolume, IsosurfaceVolume, MinipVolume, MipVolume,
     VertexBufferLayout, Visual,
 };
@@ -289,6 +289,9 @@ impl PyViewer {
         if let Ok(image) = visual.extract::<PyRef<PyImage>>() {
             return Ok(self.scene.add(image.inner.clone()));
         }
+        if let Ok(labels) = visual.extract::<PyRef<PyLabels>>() {
+            return Ok(self.scene.add(labels.inner.clone()));
+        }
         if let Ok(v) = visual.extract::<PyRef<PyDirectVolume>>()    { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyMipVolume>>()       { return Ok(self.scene.add(v.inner.clone())); }
         if let Ok(v) = visual.extract::<PyRef<PyMinipVolume>>()     { return Ok(self.scene.add(v.inner.clone())); }
@@ -299,7 +302,7 @@ impl PyViewer {
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
-            "Expected a visual object (Points, Lines, Image, *Volume, or Custom)"
+            "Expected a visual object (Points, Lines, Image, Labels, *Volume, or Custom)"
         ))
     }
 
@@ -752,10 +755,29 @@ impl PyVertexBufferLayout {
 /// Generate the Python wrapper struct + `#[pymethods]` impl for a
 /// virtual-texture-backed visual (the slice `Image` and every volume mode).
 macro_rules! py_vt_visual {
+    // Public arm: default (normalized) u16/u8 packers — full-range → [0, 1].
     (
         $wrapper:ident,
         $py_name:literal,
         $rust_ty:ident
+        $(, extra: { $($extra:tt)* })?
+    ) => {
+        py_vt_visual!(
+            @full $wrapper, $py_name, $rust_ty,
+            bindings_common::pack_u16_tile, bindings_common::pack_u8_tile
+            $(, extra: { $($extra)* })?
+        );
+    };
+    // Full arm: caller supplies the tile packers. Labels pass the
+    // raw-magnitude variants so integer IDs survive the R16Float atlas
+    // (see bindings_common::pack_u16_label_tile).
+    (
+        @full
+        $wrapper:ident,
+        $py_name:literal,
+        $rust_ty:ident,
+        $pack16:path,
+        $pack8:path
         $(, extra: { $($extra:tt)* })?
     ) => {
         #[pyclass(name = $py_name)]
@@ -856,7 +878,7 @@ macro_rules! py_vt_visual {
                 data: PyReadonlyArray3<u16>,
             ) -> PyResult<()> {
                 let a = data.as_array();
-                let tile = bindings_common::pack_u16_tile(
+                let tile = $pack16(
                     a.iter().copied(),
                     a.shape()[0] as u32, a.shape()[1] as u32, a.shape()[2] as u32,
                 );
@@ -872,7 +894,7 @@ macro_rules! py_vt_visual {
                 data: PyReadonlyArray3<u8>,
             ) -> PyResult<()> {
                 let a = data.as_array();
-                let tile = bindings_common::pack_u8_tile(
+                let tile = $pack8(
                     a.iter().copied(),
                     a.shape()[0] as u32, a.shape()[1] as u32, a.shape()[2] as u32,
                 );
@@ -922,6 +944,67 @@ py_vt_visual!(PyImage, "Image", Image, extra: {
     fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
 });
 
+// Labels: a 2D segmentation-mask visual. Same slice-plane surface as Image,
+// but tile data is packed by magnitude (integer IDs, not normalized) and the
+// shader renders each ID as a flat hashed color (ID 0 transparent). `set_contrast`
+// is inherited from the shared macro but has no effect in label color mode.
+py_vt_visual!(@full PyLabels, "Labels", Labels,
+    bindings_common::pack_u16_label_tile, bindings_common::pack_u8_label_tile,
+    extra: {
+        /// Set the slice plane position along the Z axis.
+        fn set_slice_z(&self, z: f32) -> PyResult<()> {}
+        /// Set the slice plane position along the Y axis.
+        fn set_slice_y(&self, y: f32) -> PyResult<()> {}
+        /// Set the slice plane position along the X axis.
+        fn set_slice_x(&self, x: f32) -> PyResult<()> {}
+
+        /// Set an arbitrary slice plane from a point and normal.
+        fn set_slice_plane(&self, px: f32, py: f32, pz: f32, nx: f32, ny: f32, nz: f32) -> PyResult<()> {
+            bindings_common::with_visual_mut::<Labels, _, _>(
+                &self.inner,
+                |v| v.set_slice_plane(SlicePlane::new([px, py, pz], [nx, ny, nz]))
+            ).map_err(pyo3::exceptions::PyTypeError::new_err)
+        }
+
+        /// Set an oblique slice plane from two angles + an offset about `center`,
+        /// returning the resulting unit normal `(nx, ny, nz)`.
+        fn set_slice_from_angles(
+            &self, cx: f32, cy: f32, cz: f32, angle_x: f32, angle_y: f32, offset: f32,
+        ) -> PyResult<(f32, f32, f32)> {
+            let plane = SlicePlane::from_angles([cx, cy, cz], angle_x, angle_y, offset);
+            bindings_common::with_visual_mut::<Labels, _, _>(
+                &self.inner,
+                |v| { v.set_slice_plane(plane); (plane.normal[0], plane.normal[1], plane.normal[2]) }
+            ).map_err(pyo3::exceptions::PyTypeError::new_err)
+        }
+
+        /// Reshuffle the label→color mapping (napari "shuffle colors"). Any
+        /// distinct value recolors the segmentation without touching the data.
+        fn set_label_seed(&self, seed: f32) -> PyResult<()> {}
+
+        /// Provide uint16 label tile data (raw integer IDs; exact up to 2048).
+        fn set_label_data_u16(
+            &self,
+            lod_level: usize, t: u32, z: u32, y: u32, x: u32,
+            data: PyReadonlyArray3<u16>,
+        ) -> PyResult<()> {
+            self.set_chunk_data_u16(lod_level, t, z, y, x, data)
+        }
+
+        /// Provide uint8 label tile data (raw integer IDs).
+        fn set_label_data_u8(
+            &self,
+            lod_level: usize, t: u32, z: u32, y: u32, x: u32,
+            data: PyReadonlyArray3<u8>,
+        ) -> PyResult<()> {
+            self.set_chunk_data_u8(lod_level, t, z, y, x, data)
+        }
+
+        /// Enable or disable debug LOD tinting.
+        fn set_debug_mode(&self, enabled: bool) -> PyResult<()> {}
+    }
+);
+
 py_vt_visual!(PyDirectVolume, "DirectVolume", DirectVolume, extra: {
     /// Step size in LOD-0 voxels (1.0 = Nyquist at finest LOD).
     fn set_relative_step_size(&self, step: f32) -> PyResult<()> {}
@@ -968,6 +1051,7 @@ fn bovista(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPoints>()?;
     m.add_class::<PyLines>()?;
     m.add_class::<PyImage>()?;
+    m.add_class::<PyLabels>()?;
     m.add_class::<PyDirectVolume>()?;
     m.add_class::<PyMipVolume>()?;
     m.add_class::<PyMinipVolume>()?;
