@@ -694,6 +694,188 @@ export class IsosurfaceVolume {
 }
 if (Symbol.dispose) IsosurfaceVolume.prototype[Symbol.dispose] = IsosurfaceVolume.prototype.free;
 
+export class LabelVolume {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        LabelVolumeFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_labelvolume_free(ptr, 0);
+    }
+    /**
+     * Returns [loaded, visible] tile counts.
+     * @returns {Uint32Array}
+     */
+    getStats() {
+        const ret = wasm.jslabelvolume_getStats(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {Viewer} viewer
+     * @param {LevelMetadata[]} levels
+     * @param {number} max_chunks
+     * @param {number | null} [atlas_count]
+     */
+    constructor(viewer, levels, max_chunks, atlas_count) {
+        _assertClass(viewer, Viewer);
+        const ptr0 = passArrayJsValueToWasm0(levels, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.jslabelvolume_new(viewer.__wbg_ptr, ptr0, len0, max_chunks, isLikeNone(atlas_count) ? Number.MAX_SAFE_INTEGER : (atlas_count) >>> 0);
+        this.__wbg_ptr = ret;
+        LabelVolumeFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Set the blend mode (Normal or Additive). Additive enables
+     * order-independent multi-channel compositing.
+     * @param {BlendMode} mode
+     */
+    setBlendMode(mode) {
+        const ret = wasm.jslabelvolume_setBlendMode(this.__wbg_ptr, mode);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Provide uint16 tile data (full u16 range maps to [0, 1]).
+     *
+     * TODO: switch to `({ lod, t, z, y, x, shape, channel }, data)` object-args
+     * when multi-channel support lands.
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint16Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jslabelvolume_setChunkDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * Provide uint8 tile data (full u8 range maps to [0, 1]).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setChunkDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jslabelvolume_setChunkDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * Set a colormap LUT (Uint8Array of 1024 bytes: 256 RGBA entries, values 0-255).
+     * Pass a zero-length array to reset to grayscale.
+     * @param {Uint8Array} rgba
+     */
+    setColormap(rgba) {
+        const ret = wasm.jslabelvolume_setColormap(this.__wbg_ptr, rgba);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} min
+     * @param {number} max
+     */
+    setContrast(min, max) {
+        const ret = wasm.jslabelvolume_setContrast(this.__wbg_ptr, min, max);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * r" Provide uint16 label tile data (raw integer IDs; exact up to 2048).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint16Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setLabelDataU16(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jslabelvolume_setLabelDataU16(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * r" Provide uint8 label tile data (raw integer IDs).
+     * @param {number} lod
+     * @param {number} t
+     * @param {number} z
+     * @param {number} y
+     * @param {number} x
+     * @param {Uint8Array} data
+     * @param {number} z_shape
+     * @param {number} y_shape
+     * @param {number} x_shape
+     */
+    setLabelDataU8(lod, t, z, y, x, data, z_shape, y_shape, x_shape) {
+        wasm.jslabelvolume_setLabelDataU8(this.__wbg_ptr, lod, t, z, y, x, data, z_shape, y_shape, x_shape);
+    }
+    /**
+     * r#" Reshuffle the label→color mapping (napari "shuffle colors")."#
+     * @param {number} seed
+     */
+    setLabelSeed(seed) {
+        const ret = wasm.jslabelvolume_setLabelSeed(this.__wbg_ptr, seed);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} bias
+     */
+    setLodBias(bias) {
+        const ret = wasm.jslabelvolume_setLodBias(this.__wbg_ptr, bias);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Set per-visual opacity in [0, 1].
+     * @param {number} opacity
+     */
+    setOpacity(opacity) {
+        const ret = wasm.jslabelvolume_setOpacity(this.__wbg_ptr, opacity);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} step
+     */
+    setRelativeStepSize(step) {
+        const ret = wasm.jslabelvolume_setRelativeStepSize(this.__wbg_ptr, step);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Snapshot of the tile keys bovista currently wants. Returned as a
+     * flat Uint32Array `[lod, t, z, y, x, priority, lod, t, ...]`
+     * sorted by priority.
+     * @returns {Uint32Array}
+     */
+    wantedKeys() {
+        const ret = wasm.jslabelvolume_wantedKeys(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) LabelVolume.prototype[Symbol.dispose] = LabelVolume.prototype.free;
+
 export class Labels {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -1516,6 +1698,15 @@ export class Viewer {
     addIsosurfaceVolume(visual) {
         _assertClass(visual, IsosurfaceVolume);
         const ret = wasm.jsviewer_addIsosurfaceVolume(this.__wbg_ptr, visual.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {LabelVolume} visual
+     * @returns {number}
+     */
+    addLabelVolume(visual) {
+        _assertClass(visual, LabelVolume);
+        const ret = wasm.jsviewer_addLabelVolume(this.__wbg_ptr, visual.__wbg_ptr);
         return ret >>> 0;
     }
     /**
@@ -2719,7 +2910,7 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 148, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 149, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_4bc461d618501849___convert__closures_____invoke___wasm_bindgen_4bc461d618501849___JsValue__core_7d5f0a2ba6a62c33___result__Result_____wasm_bindgen_4bc461d618501849___JsError___true_);
             return ret;
         },
@@ -2851,6 +3042,9 @@ const ImageFinalization = (typeof FinalizationRegistry === 'undefined')
 const IsosurfaceVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_isosurfacevolume_free(ptr, 1));
+const LabelVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_labelvolume_free(ptr, 1));
 const LabelsFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_labels_free(ptr, 1));
